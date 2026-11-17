@@ -1,0 +1,418 @@
+package app.focal.feature.browser
+
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.MutableFloatState
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import app.focal.design.FocalMotion
+import app.focal.design.FocalTheme
+import app.focal.design.shaders.SmokedGlassBox
+import app.focal.engine.api.EngineTelemetryState
+import kotlinx.coroutines.flow.StateFlow
+import kotlin.math.abs
+
+private enum class CenterPillAxisLock {
+    UNDECIDED,
+    HORIZONTAL_TAB_SCRUB,
+    VERTICAL_SPACES_SWIPE,
+}
+
+/**
+ * Focal's 3-Part Floating Smoked Glass Bottom Bar (`48.dp` height):
+ * - **Left Capsule (`[Tabs]`)**: Tab counter squircle (`Tap = Tab Switcher`, `Long-Press = Quick Close / Private`).
+ * - **Center Pill (`[⌕ domain.com]`)**: Vector-locked within `10.dp` touch slop:
+ *   - `Tap`: Opens Search-First Sheet above IME.
+ *   - `Horizontal Scrub` (`|dx| > |dy| * 1.35f`): Live horizontal tab scrubbing with haptic ticks.
+ *   - `Vertical Swipe-Up` (`dy < -touchSlop && |dy| >= |dx|`): Continuously pulls up Spaces & Bookmarks Sheet 1:1.
+ * - **Right Capsule (`[···]`)**: Opens Page Menu, Reader & Per-Site Overrides sheet.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun FocalBottomBar(
+    tabCount: Int,
+    domainOrHint: String,
+    isHttps: Boolean,
+    isPrivateAperture: Boolean,
+    isLoading: Boolean,
+    loadProgress: Int = 0,
+    telemetryFlow: StateFlow<EngineTelemetryState>? = null,
+    scrubOffsetPxState: MutableFloatState,
+    spacesDragOffsetPxState: MutableFloatState? = null,
+    spacesSheetRevealDistancePx: Float = 0f,
+    onOpenTabSwitcher: () -> Unit,
+    onCloseCurrentTab: () -> Unit,
+    onOpenNewPrivateTab: () -> Unit,
+    onTapCenterSearch: () -> Unit,
+    onStepToAdjacentTab: (directionDelta: Int) -> Unit,
+    onSwipeUpOpenSpaces: () -> Unit,
+    onSettleSpacesSwipeUp: (committed: Boolean) -> Unit = {},
+    onOpenPageMenu: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = FocalTheme.colors
+    val typography = FocalTheme.typography
+    val haptics = LocalHapticFeedback.current
+    val density = LocalDensity.current
+    val barTintState = rememberUpdatedState(colors.effectiveBarGlass)
+
+    val latestOnTapSearch = rememberUpdatedState(onTapCenterSearch)
+    val latestOnStepTab = rememberUpdatedState(onStepToAdjacentTab)
+    val latestOnOpenSpaces = rememberUpdatedState(onSwipeUpOpenSpaces)
+    val latestOnSettleSpaces = rememberUpdatedState(onSettleSpacesSwipeUp)
+
+    var showTabQuickMenu by remember { mutableStateOf(false) }
+
+    val slopPx = with(density) { 10.dp.toPx() }
+    val tabCrossingStepPx = with(density) { 88.dp.toPx() }
+    val revealTravelPx = if (spacesSheetRevealDistancePx > 0f) {
+        spacesSheetRevealDistancePx
+    } else {
+        with(density) { 420.dp.toPx() }
+    }
+    val commitSwipePx = with(density) { 88.dp.toPx() }
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // 1. Left Capsule: Tab Counter Squircle (`48.dp` circular glass pill)
+        Box {
+            SmokedGlassBox(
+                shape = CircleShape,
+                glassTintState = barTintState,
+                borderSpecular = colors.borderSpecular,
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(48.dp)
+                    .combinedClickable(
+                        onClick = onOpenTabSwitcher,
+                        onLongClick = {
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            showTabQuickMenu = true
+                        },
+                    ),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .border(
+                            width = 1.5.dp,
+                            color = colors.inkPrimary,
+                            shape = RoundedCornerShape(7.dp),
+                        )
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = tabCount.coerceAtLeast(1).toString(),
+                        style = typography.tabBadgeNumeral,
+                        color = colors.inkPrimary,
+                    )
+                }
+            }
+
+            DropdownMenu(
+                expanded = showTabQuickMenu,
+                onDismissRequest = { showTabQuickMenu = false },
+                containerColor = colors.effectiveSheetGlass,
+            ) {
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = "Close Current Tab",
+                            style = typography.controlPillLabel,
+                            color = colors.inkPrimary,
+                        )
+                    },
+                    onClick = {
+                        showTabQuickMenu = false
+                        onCloseCurrentTab()
+                    },
+                )
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = "◎ New Private Tab",
+                            style = typography.controlPillLabel,
+                            color = colors.inkPrimary,
+                        )
+                    },
+                    onClick = {
+                        showTabQuickMenu = false
+                        onOpenNewPrivateTab()
+                    },
+                )
+            }
+        }
+
+        // 2. Center Capsule: Tap = Search · Horizontal Scrub = Switch Tabs · Vertical Swipe-Up = Spaces
+        SmokedGlassBox(
+            shape = CircleShape,
+            glassTintState = barTintState,
+            borderSpecular = colors.borderSpecular,
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .weight(1f)
+                .height(48.dp)
+                .pointerInput(slopPx, tabCrossingStepPx, revealTravelPx, commitSwipePx) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        var totalDx = 0f
+                        var totalDy = 0f
+                        var axisLock = CenterPillAxisLock.UNDECIDED
+                        var emittedSteps = 0
+                        var spacesSwipeOpened = false
+                        var commitHapticSent = false
+
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id }
+                                ?: event.changes.firstOrNull()
+                                ?: break
+
+                            if (!change.pressed) {
+                                break
+                            }
+
+                            val delta = change.positionChange()
+                            totalDx += delta.x
+                            totalDy += delta.y
+
+                            if (axisLock == CenterPillAxisLock.UNDECIDED) {
+                                val absDx = abs(totalDx)
+                                val absDy = abs(totalDy)
+                                if (absDx > slopPx && absDx > absDy * 1.35f) {
+                                    axisLock = CenterPillAxisLock.HORIZONTAL_TAB_SCRUB
+                                    change.consume()
+                                } else if (totalDy < -slopPx && absDy >= absDx) {
+                                    axisLock = CenterPillAxisLock.VERTICAL_SPACES_SWIPE
+                                    spacesSwipeOpened = true
+                                    spacesDragOffsetPxState?.floatValue =
+                                        (revealTravelPx + totalDy).coerceIn(0f, revealTravelPx)
+                                    latestOnOpenSpaces.value()
+                                    change.consume()
+                                }
+                            } else {
+                                change.consume()
+                            }
+
+                            when (axisLock) {
+                                CenterPillAxisLock.HORIZONTAL_TAB_SCRUB -> {
+                                    scrubOffsetPxState.floatValue = totalDx * 0.42f
+                                    val targetSteps = (totalDx / tabCrossingStepPx).toInt()
+                                    if (targetSteps != emittedSteps) {
+                                        val stepDir = if (targetSteps > emittedSteps) -1 else 1
+                                        emittedSteps = targetSteps
+                                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        latestOnStepTab.value(stepDir)
+                                    }
+                                }
+                                CenterPillAxisLock.VERTICAL_SPACES_SWIPE -> {
+                                    spacesDragOffsetPxState?.floatValue =
+                                        (revealTravelPx + totalDy).coerceIn(0f, revealTravelPx)
+                                    if (!commitHapticSent && -totalDy >= commitSwipePx) {
+                                        commitHapticSent = true
+                                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    } else if (commitHapticSent && -totalDy < commitSwipePx) {
+                                        commitHapticSent = false
+                                    }
+                                }
+                                CenterPillAxisLock.UNDECIDED -> Unit
+                            }
+                        }
+
+                        scrubOffsetPxState.floatValue = 0f
+                        if (spacesSwipeOpened) {
+                            latestOnSettleSpaces.value(-totalDy >= commitSwipePx)
+                        } else if (
+                            axisLock == CenterPillAxisLock.UNDECIDED &&
+                            abs(totalDx) <= slopPx &&
+                            abs(totalDy) <= slopPx
+                        ) {
+                            latestOnTapSearch.value()
+                        }
+                    }
+                },
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    Text(
+                        text = when {
+                            isPrivateAperture -> "◎"
+                            domainOrHint.isBlank() -> "⌕"
+                            isHttps -> "⌕"
+                            else -> "!"
+                        },
+                        style = typography.captionMetadata,
+                        color = colors.inkSecondary,
+                    )
+                    Text(
+                        text = domainOrHint.ifBlank { "Search or enter address" },
+                        style = typography.urlDomainPill,
+                        color = if (domainOrHint.isBlank()) colors.inkSecondary else colors.inkPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+
+                // Isolated sub-composable collecting volatile loadProgress so root/bar never recomposes
+                LoadProgressHairline(
+                    isLoading = isLoading,
+                    fallbackProgress = loadProgress,
+                    telemetryFlow = telemetryFlow,
+                )
+            }
+        }
+
+        // 3. Right Capsule: `···` Page Menu & Site Overrides (`48.dp` circular glass pill)
+        SmokedGlassBox(
+            shape = CircleShape,
+            glassTintState = barTintState,
+            borderSpecular = colors.borderSpecular,
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(48.dp)
+                .clickable(onClick = onOpenPageMenu),
+        ) {
+            Text(
+                text = "···",
+                style = typography.cardTitle,
+                color = colors.inkPrimary,
+            )
+        }
+    }
+}
+
+@Composable
+private fun LoadProgressHairline(
+    isLoading: Boolean,
+    fallbackProgress: Int,
+    telemetryFlow: StateFlow<EngineTelemetryState>?,
+) {
+    val colors = FocalTheme.colors
+    val telemetry = telemetryFlow?.collectAsState()?.value
+    val progress = telemetry?.loadProgress ?: fallbackProgress
+    if (isLoading && progress in 1..99) {
+        Box(
+            modifier = Modifier
+                .padding(top = 3.dp)
+                .fillMaxWidth((progress / 100f).coerceIn(0.08f, 1f))
+                .height(1.5.dp)
+                .clip(CircleShape)
+                .background(colors.inkPrimary.copy(alpha = 0.65f)),
+        )
+    }
+}
+
+/**
+ * Smart Contextual Pills (`Aa Reader` and `文A Translate`) floating `8.dp` above the right side
+ * of the 3-part bottom bar and collapsing smoothly on `> 18.dp` downward scroll.
+ */
+@Composable
+fun SmartContextualPillsRow(
+    visible: Boolean,
+    showReaderPill: Boolean,
+    showTranslatePill: Boolean,
+    onOpenReader: () -> Unit,
+    onTriggerTranslate: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = FocalTheme.colors
+    val typography = FocalTheme.typography
+    val barTint = rememberUpdatedState(colors.effectiveBarGlass)
+
+    AnimatedVisibility(
+        visible = visible && (showReaderPill || showTranslatePill),
+        enter = fadeIn() + scaleIn(
+            initialScale = 0.88f,
+            animationSpec = FocalMotion.smartPillSpring(),
+        ),
+        exit = fadeOut() + scaleOut(
+            targetScale = 0.88f,
+            animationSpec = FocalMotion.smartPillSpring(),
+        ),
+        modifier = modifier,
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (showTranslatePill) {
+                SmokedGlassBox(
+                    shape = CircleShape,
+                    glassTintState = barTint,
+                    borderSpecular = colors.borderSpecular,
+                    modifier = Modifier.clickable(onClick = onTriggerTranslate),
+                ) {
+                    Text(
+                        text = "文A Translate",
+                        style = typography.controlPillLabel,
+                        color = colors.inkPrimary,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                    )
+                }
+            }
+
+            if (showReaderPill) {
+                SmokedGlassBox(
+                    shape = CircleShape,
+                    glassTintState = barTint,
+                    borderSpecular = colors.borderSpecular,
+                    modifier = Modifier.clickable(onClick = onOpenReader),
+                ) {
+                    Text(
+                        text = "Aa Reader",
+                        style = typography.controlPillLabel,
+                        color = colors.inkPrimary,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                    )
+                }
+            }
+        }
+    }
+}

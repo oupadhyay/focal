@@ -1,0 +1,282 @@
+package app.focal.feature.browser
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.MutableFloatState
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.dp
+import app.focal.ai.GroundedBullet
+import app.focal.ai.GroundedPageSummary
+import app.focal.ai.LocalSummarizerBackend
+import app.focal.design.FocalTheme
+import app.focal.design.consumeClicks
+import app.focal.design.shaders.SmokedGlassBox
+
+const val PINCH_SUMMARIZE_SNAP_THRESHOLD: Float = 0.68f
+
+/**
+ * Two-finger inward Pinch-to-Summarize gesture detector (`Screen 04`).
+ *
+ * Strictly ignores 1-finger touches and **never** intercepts the left or right `24.dp` screen
+ * edges on gesture start so Android 14–16 `PredictiveBackHandler` stays 100% unobstructed.
+ *
+ * When webpage scale is at minimum (`<= 1.04f`) and two fingers pinch inward (`cumulativeZoom < 0.96f`),
+ * continuously drives [pinchProgressState] (`0f..1f`) and [pinchCenterYState] (`0f..1f`) at 120Hz.
+ */
+@Composable
+fun Modifier.pinchToSummarizeDetector(
+    enabled: Boolean,
+    isPageAtMinimumZoom: () -> Boolean,
+    pinchProgressState: MutableFloatState,
+    pinchCenterYState: MutableFloatState,
+    onSnapSummarizeCommitted: () -> Unit,
+    onSnapCancelled: () -> Unit,
+): Modifier {
+    val haptics = LocalHapticFeedback.current
+    val latestIsAtMinZoom = rememberUpdatedState(isPageAtMinimumZoom)
+    val latestOnCommitted = rememberUpdatedState(onSnapSummarizeCommitted)
+    val latestOnCancelled = rememberUpdatedState(onSnapCancelled)
+
+    if (!enabled) return this
+
+    return this.pointerInput(Unit) {
+        val edgeGuardPx = 24.dp.toPx()
+
+        awaitEachGesture {
+            var cumulativeZoom = 1f
+            var activeInwardPinch = false
+            var crossedThresholdHapticSent = false
+
+            do {
+                val event = awaitPointerEvent(pass = PointerEventPass.Initial)
+                val pressedPointers = event.changes.filter { it.pressed }
+
+                if (pressedPointers.size >= 2 && (activeInwardPinch || latestIsAtMinZoom.value())) {
+                    // Only reject gestures starting inside Android's 24.dp Predictive Back edge zones
+                    // BEFORE activeInwardPinch latches so mid-pinch finger drift never freezes progress.
+                    val blockedByBackEdge = !activeInwardPinch && pressedPointers.any { change ->
+                        change.position.x < edgeGuardPx || change.position.x > (size.width - edgeGuardPx)
+                    }
+                    if (!blockedByBackEdge) {
+                        val stepZoom = event.calculateZoom()
+                        if (stepZoom > 0f) {
+                            cumulativeZoom *= stepZoom
+                        }
+
+                        if (!activeInwardPinch && cumulativeZoom < 0.96f) {
+                            activeInwardPinch = true
+                        }
+
+                        if (activeInwardPinch) {
+                            val centroid = event.calculateCentroid(useCurrent = true)
+                            if (centroid != Offset.Unspecified && size.height > 0) {
+                                pinchCenterYState.floatValue =
+                                    (centroid.y / size.height.toFloat()).coerceIn(0.2f, 0.8f)
+                            }
+
+                            // Map zoom [0.96 -> 0.52] smoothly onto pinchProgress [0.0 -> 1.0]
+                            val progress = ((0.96f - cumulativeZoom) / 0.44f).coerceIn(0f, 1f)
+                            pinchProgressState.floatValue = progress
+
+                            if (progress >= PINCH_SUMMARIZE_SNAP_THRESHOLD && !crossedThresholdHapticSent) {
+                                crossedThresholdHapticSent = true
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            } else if (progress < PINCH_SUMMARIZE_SNAP_THRESHOLD) {
+                                crossedThresholdHapticSent = false
+                            }
+
+                            event.changes.forEach { it.consume() }
+                        }
+                    }
+                }
+            } while (event.changes.any { it.pressed })
+
+            if (activeInwardPinch) {
+                if (pinchProgressState.floatValue >= PINCH_SUMMARIZE_SNAP_THRESHOLD) {
+                    latestOnCommitted.value()
+                } else {
+                    latestOnCancelled.value()
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Screen 04 · Smoked Glass Grounded Local AI Summary Sheet.
+ *
+ * Displays truthful on-device runtime badge (`Gemini Nano · On-Device` / `Gemma 3 1B` / `Focal Local · Offline RAM`),
+ * `Allo Crisp` thesis headline, and 3–5 `Switzer` grounded bullet cards. Tapping any bullet
+ * unpinches the sheet (`pinchProgress -> 0f`) and smooth-scrolls the WebView to `[data-focal-para-id="N"]`.
+ */
+@Composable
+fun PinchSummarySheet(
+    isSummarizing: Boolean,
+    summary: GroundedPageSummary?,
+    activeBackendLabel: String = LocalSummarizerBackend.LOCAL_SALIENT_EXTRACTOR.badgeLabel,
+    onJumpToGroundedParagraph: (GroundedBullet) -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = FocalTheme.colors
+    val typography = FocalTheme.typography
+    val sheetTint = rememberUpdatedState(colors.effectiveSheetGlass)
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.28f))
+            .clickable(onClick = onDismiss),
+        contentAlignment = Alignment.BottomCenter,
+    ) {
+        SmokedGlassBox(
+            shape = RoundedCornerShape(26.dp),
+            glassTintState = sheetTint,
+            borderSpecular = colors.borderSpecular,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp)
+                .navigationBarsPadding()
+                .padding(bottom = 12.dp)
+                .consumeClicks(),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                // Top Runtime Privacy Badge + Close
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(colors.surfacePillSubtle)
+                            .border(1.dp, colors.borderSpecular, CircleShape)
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                    ) {
+                        Text(
+                            text = summary?.backend?.badgeLabel ?: activeBackendLabel,
+                            style = typography.captionMetadata,
+                            color = colors.inkPrimary,
+                        )
+                    }
+
+                Text(
+                    text = "Unpinch ✕",
+                    style = typography.controlPillLabel,
+                    color = colors.inkSecondary,
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .clickable(onClick = onDismiss)
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                )
+            }
+
+            if (isSummarizing || summary == null) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = "Distilling & grounding source paragraphs on-device…",
+                        style = typography.cardTitle,
+                        color = colors.inkPrimary,
+                    )
+                    Text(
+                        text = "Zero bytes leave device RAM · BM25 + 4-gram Jaccard grounding",
+                        style = typography.captionMetadata,
+                        color = colors.inkFaint,
+                    )
+                }
+            } else {
+                Text(
+                    text = summary.headline,
+                    style = typography.sheetTitle,
+                    color = colors.inkPrimary,
+                )
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    summary.bullets.forEach { bullet ->
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(colors.surfacePillSubtle)
+                                .border(1.dp, colors.borderSpecular, RoundedCornerShape(16.dp))
+                                .clickable { onJumpToGroundedParagraph(bullet) }
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Text(
+                                text = bullet.text,
+                                style = typography.bodyCompact,
+                                color = colors.inkPrimary,
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = "Tap to jump & pulse source §${bullet.groundedParaId + 1}",
+                                    style = typography.captionMetadata,
+                                    color = colors.inkFaint,
+                                )
+                                Text(
+                                    text = "§${bullet.groundedParaId + 1} ↗",
+                                    style = typography.tabBadgeNumeral,
+                                    color = colors.inkSecondary,
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(2.dp))
+            }
+        }
+        }
+    }
+}
