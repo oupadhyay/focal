@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  HARD PRIVACY INVARIANT:
+  :core:ai-summarizer intentionally declares ZERO permissions (specifically NO android.permission.INTERNET).
+  All summarization and DOM paragraph grounding run 100% on-device in RAM.
+-->
+<manifest />
