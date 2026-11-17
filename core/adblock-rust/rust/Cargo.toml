@@ -1,0 +1,27 @@
+[package]
+name = "focal_adblock"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Focal native ad/tracker blocker, cosmetic CSS engine, and URL tracker canonicalizer over JNI"
+publish = false
+
+[lib]
+name = "focal_adblock"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+adblock = { version = "0.13", default-features = false, features = ["embedded-domain-resolver", "full-regex-handling"] }
+jni = "0.21"
+once_cell = "1.19"
+url = "2.5"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+# IMPORTANT: Keep `panic = "unwind"` (default) so `std::panic::catch_unwind` at every
+# JNI entrypoint catches Rust panics cleanly instead of aborting the host Android process
+# or causing undefined behavior across the C-ABI FFI boundary.
+panic = "unwind"
