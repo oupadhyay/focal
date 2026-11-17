@@ -1,0 +1,25 @@
+# Gradle & Android Studio
+.gradle/
+**/build/
+local.properties
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Rust / Cargo
+**/target/
+
+# Node / TypeScript
+**/node_modules/
+**/dist/
+*.tsbuildinfo
+
+# OS / Editor
+.DS_Store
+Thumbs.db
