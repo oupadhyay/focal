@@ -1,0 +1,17 @@
+{
+  "name": "@focal/sync-relay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Zero-knowledge stateless E2EE Cloudflare Worker + Durable Object WebSocket relay for Focal",
+  "type": "module",
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test tests/relay.test.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261117.1",
+    "typescript": "^5.9.3"
+  }
+}

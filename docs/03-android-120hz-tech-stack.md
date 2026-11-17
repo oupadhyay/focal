@@ -26,7 +26,7 @@ focal/
 │   ├── engine-gecko/             # Phase-2 Mozilla GeckoView implementation behind identical BrowserEngine API
 │   ├── adblock-rust/             # Cargo crate (Brave adblock-rs) + JNI C-ABI bridge + FilterList updater
 │   ├── ai-summarizer/            # AICore (Gemini Nano) + LiteRT-LM (Gemma 3 1B int4) + DOM Source Grounder
-│   ├── sync-e2ee/                # X25519 QR pairing, XChaCha20-Poly1305, Loro CRDT, WebSocket + FCM client
+│   ├── sync-e2ee/                # 256-bit QR pairing, HKDF-SHA256 + AES-256-GCM, 4-part SAS, TLS WebSocket client
 │   └── database/                 # Room SQLite (Spaces, Bookmarks, 24h Tab Metadata, Per-Origin Overrides)
 ├── feature/
 │   ├── search/                   # Search-first sheet, Double-Space PrefixTrie, Private Aperture toggle
@@ -67,11 +67,11 @@ interface EngineSession {
 
 ### `engine-webview` Specific Optimizations (`androidx.webkit:webkit:1.13+`)
 - **`WebViewCompat.startSafeBrowsing` disabled** (replaced by local privacy-preserving URL blocklists so Google receives zero browsed URLs).
-- **`WebViewCompat.addDocumentStartJavaScript(webView, script, setOf("*"))`**: Injects three ultra-lightweight (`< 6 KB` minified) scripts **at document creation before any page script or first paint**:
-  1. `focal_cosmetic.js`: Pulls domain-specific CSS hide selectors (`##.ad-slot`, `##[id^="google_ads"]`) from `adblock-rust` via `WebViewCompat.addWebMessageListener` / synchronous custom scheme bootstrap.
-  2. `focal_overrides.js`: Applies per-origin custom font (`Allo` + `Switzer`), dark-surface CSS filter/variables, and dirty-form listener (`input` event sets `window.__focalFormDirty = true`).
-  3. `focal_media_hook.js`: Hooks `<video>` and `<audio>` `play`/`ratechange` events to feed the `MediaSessionService` mini-player and enforce user playback speed (`1.25×`, `1.5×`, `2.0×`).
-- **Private Aperture Isolation (`◎`)**: Uses `androidx.webkit.ProfileStore` (`WebViewFeature.MULTI_PROFILE`) to assign Private sessions to a dedicated ephemeral profile (`"focal_ephemeral"`) whose cookies, `localStorage`, IndexedDB, and HTTP cache are wiped immediately when the last private tab closes.
+- **`WebViewCompat.addDocumentStartJavaScript(webView, script, setOf("https://*", "http://*"))`**: Injects an isolated closure IIFE **at document creation before any page script or first paint**, capturing and deleting `window.focalBridge` so untrusted page scripts can never forge native bridge messages:
+  1. **Pre-Paint Cosmetic Hiding**: Validates `sourceOrigin.host` on `"doc_start"` and `"dom_classes_ids"` messages to inject domain- and DOM-specific CSS hide selectors (`##.ad-slot`, `##[id^="google_ads"]`) from `adblock-rust`.
+  2. **Per-Origin Live Overrides & Dirty-Form Guard**: Serves `Allo` (`ROND 0`) + `Switzer` via `WebViewAssetLoader` (`https://appassets.androidplatform.net/...`), applies algorithmic dark-surface tokens, and tracks editable `<input>/<textarea>/[contenteditable]` dirty state (resetting cleanly when cleared).
+  3. **Main-Frame Media Hook**: Hooks `<video>` and `<audio>` `play`/`pause`/`ratechange` events (`isMainFrame` enforced) to feed the multi-tab `FocalMediaSessionService` mini-player and enforce user playback speed (`1.25×`, `1.5×`, `2.0×`).
+- **Private Aperture Isolation (`◎`)**: Uses `androidx.webkit.ProfileStore` (`WebViewFeature.MULTI_PROFILE`) to assign Private sessions to a dedicated ephemeral profile (`"focal_ephemeral"`) wiped when the last private tab closes, and Link Peek previews to `"focal_link_peek"` wiped on sheet dismiss (with storage/cookie-disabled isolation on pre-`MULTI_PROFILE` devices so regular logged-in sessions are never touched).
 
 ---
 
@@ -83,7 +83,7 @@ Focal embeds **Brave's battle-tested Rust `adblock` crate** (`crates.io/crates/a
 `WebViewClient.shouldInterceptRequest(WebView, WebResourceRequest)` runs on a background Chromium network worker thread for **every single subresource**. Running regex/domain checks in Kotlin/Java allocates Strings/Maps per request and triggers GC pauses.
 
 In `:core:adblock-rust`:
-1. **Serialized Engine Mmap (`< 10ms` Startup)**: Default filter lists (*EasyList*, *EasyPrivacy*, *uBlock Origin Filters & Annoyances*, *Peter Lowe's Ad/Tracking Server List*) are compiled into Brave's compact binary DAT format (`engine.deserialize(...)`), loading into native heap in ~8ms without blocking UI startup.
+1. **Serialized Engine Cache (`Dispatchers.IO` Startup)**: Default filter lists (*EasyList*, *EasyPrivacy*, *uBlock Origin Filters & Annoyances*, *Peter Lowe's Ad/Tracking Server List*) are serialized into Brave's compact binary DAT cache (`focal_adblock_engine.dat`) on `Dispatchers.IO` via `initializeOrLoadCache(...)`, avoiding any main-thread rule compilation in `Application.onCreate()`.
 2. **Fast-Path JNI Call**:
    ```rust
    #[no_mangle]
@@ -126,7 +126,7 @@ flowchart LR
 ### Deterministic Source Grounding (How `"Tap to jump to §"` Works Reliably)
 Small on-device models (1B–3B parameters) occasionally hallucinate JSON citation indices if asked to emit raw IDs. Instead, Focal uses **post-hoc lexical + dense overlap grounding** in Kotlin (`< 2ms` CPU):
 1. Before summarization, `focal_extractor.js` assigns `data-focal-para-id="0..N"` to every substantive `<p>` / `<li>` node and returns `List<IndexedParagraph(id, text)>`.
-2. Gemini Nano / Gemma 3 1B generates a clean, structured 3–5 bullet summary (`Headline` + `Bullets`).
+2. Gemini Nano / Gemma 3 1B (or the deterministic local salient-sentence extractor when neural delegates are absent) generates a clean, structured 3–5 bullet summary (`Headline` + `Bullets`) with truthful runtime badge attribution.
 3. For each summary bullet, `ParagraphGrounder` computes BM25 + character 4-gram Jaccard similarity against `IndexedParagraph` entries and attaches the highest-scoring `paraId`.
 4. Tapping that bullet unpinches the sheet (`pinchProgress -> 0f`) and invokes `scrollIntoView({ behavior: 'smooth', block: 'center' })` + a 1.2s CSS highlight pulse on `[data-focal-para-id="${paraId}"]`.
 
@@ -136,15 +136,17 @@ Small on-device models (1B–3B parameters) occasionally hallucinate JSON citati
 
 Focal syncs **Spaces, Pinned Sites, Saved Bookmarks, Live Open Tabs, and Instant Link Handoffs** between Android and any desktop browser (`Chrome`, `Helium`, `Brave`, `Zen`, `Edge`, `Firefox`) **without accounts, emails, or server-readable state**.
 
-### Cryptographic & Network Protocol
-1. **QR Pairing Bootstrap**:
-   - Focal Android generates a 256-bit `DeviceGroupSecret` + `X25519` keypair and encodes `focal-pair://v1?r=<derived_room_id>&k=<base64url_secret>&pk=<ephemeral_pub>` in the Screen 09 QR code.
-   - Desktop `Focal Bridge` MV3 extension scans the QR (via webcam or 6-word paste code), derives:
-     - `roomId = HKDF-SHA256(secret, "focal-room-id-v1")` (opaque 32-byte routing handle seen by relay)
-     - `symKey = HKDF-SHA256(secret, "focal-xchacha20-key-v1")` (never transmitted!)
-     - `sasWords = SAS4Words(SHA256(transcript))` (`optics · glacier · shutter · 49`) displayed on both screens for visual verification.
-2. **Conflict-Free Encrypted State (`Loro` CRDT + `XChaCha20-Poly1305`)**:
-   - Spaces, Pins, and Folder trees are modeled as a **Loro CRDT** document. Incremental binary updates are sealed with `XChaCha20-Poly1305(symKey, random24ByteNonce, crdtDelta)`.
-3. **Stateless Relay + FCM Wakeup**:
-   - A ~150-line **Cloudflare Worker + Durable Object** routes opaque ciphertext frames inside `roomId` WebSockets and buffers encrypted deltas for up to 7 days if a device is offline.
-   - Pushing `"Send to Phone"` from the Desktop Extension includes an encrypted wake payload routed via **Firebase Cloud Messaging (FCM)** high-priority data push so Android displays an instant handoff notification / Search-Sheet banner even when Focal is backgrounded.
+### Cryptographic & Network Protocol (`HKDF-SHA256` + `AES-256-GCM`)
+1. **QR Pairing Bootstrap & Explicit SAS Confirmation**:
+   - Focal generates a 256-bit CSPRNG secret (`32 bytes`) and encodes `focal-pair://v1?secret=<base64url_nopad_32bytes>` (with optional `wss://` / `https://` `relay` override; cleartext `ws://` / `http://` relays are rejected).
+   - Both Focal Android and the Desktop `Focal Bridge` MV3 extension derive keys locally via `HKDF-SHA256` (UTF-8 salt `"focal-sync-v1-salt"`):
+     - `roomId` (`64-char` lowercase hex) = `HKDF-Expand(PRK, "focal-room-id-v1", 32)` (opaque routing handle seen by the relay)
+     - `symKey` (`32 bytes`) = `HKDF-Expand(PRK, "focal-aead-key-v1", 32)` (never transmitted!)
+     - `sasBytes` (`4 bytes`) = `HKDF-Expand(PRK, "focal-sas-v1", 4)` formatted into a 4-part 64-word Short Authentication String (`word1 · word2 · word3 · NN`).
+   - Incoming `focal-pair://` deep links never auto-join; Focal displays an explicit confirmation modal showing the derived 4-part SAS code and TLS relay host requiring a deliberate `"Confirm & Pair"` tap.
+2. **Authenticated Envelopes, Anti-Replay & Hardware-Backed Persistence**:
+   - Sync events (`TabHandoffEvent`, `PresenceTabsEvent`, `SpacesSnapshotEvent`) are wrapped in `EncryptedEnvelope(seq, senderId, timestampMs, event)` and sealed with **`AES-256-GCM`** (`12-byte` CSPRNG IV prepended to `ciphertext || 16-byte tag`, `AAD = UTF-8(roomId)`), encoded on the wire as `base64url_nopad`.
+   - `ReplayTracker` enforces strictly increasing per-sender `seq` numbers **only after** `AES-256-GCM` tag authentication and schema validation succeed.
+   - Pairing credentials, `deviceId`, `outboundSeq`, and the `ReplayTracker` high-water snapshot are persisted across app restarts inside `MODE_PRIVATE` preferences encrypted by an `AndroidKeyStore` hardware-backed `AES-256-GCM` key.
+3. **Stateless TLS WebSocket Relay & Exponential Backoff**:
+   - A stateless **Cloudflare Worker + Durable Object** (`sync-relay/`) routes opaque `base64url` ciphertext frames inside `/v1/rooms/{roomId}` WebSockets, while `SyncRelaySessionManager` maintains connectivity with generation-guarded exponential backoff + jitter.

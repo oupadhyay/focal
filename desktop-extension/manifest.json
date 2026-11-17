@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "Focal Bridge",
+  "short_name": "Focal Bridge",
+  "version": "0.1.0",
+  "description": "Zero-account E2EE tab handoff, live presence, and Spaces bookmark continuity with Focal Android.",
+  "permissions": [
+    "activeTab",
+    "tabs",
+    "storage",
+    "contextMenus",
+    "alarms"
+  ],
+  "background": {
+    "service_worker": "dist/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Focal Bridge · E2EE Continuity",
+    "default_popup": "src/popup.html"
+  },
+  "commands": {
+    "send-active-tab": {
+      "suggested_key": {
+        "default": "Alt+Shift+F",
+        "mac": "Alt+Shift+F"
+      },
+      "description": "Send active tab to Focal Android"
+    }
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "focal-bridge@focal.browser",
+      "strict_min_version": "128.0"
+    }
+  }
+}

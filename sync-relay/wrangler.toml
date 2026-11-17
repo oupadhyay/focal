@@ -1,0 +1,14 @@
+name = "focal-sync-relay"
+main = "src/index.ts"
+compatibility_date = "2025-02-01"
+
+[observability]
+enabled = false
+
+[[durable_objects.bindings]]
+name = "FOCAL_ROOMS"
+class_name = "FocalRoomDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["FocalRoomDO"]

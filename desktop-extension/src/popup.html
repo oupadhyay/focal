@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Focal Bridge</title>
+    <link rel="stylesheet" href="./popup.css" />
+  </head>
+  <body>
+    <main class="popover-shell" id="app-root" data-space="personal">
+      <!-- Top Optical Smoked Glass Header -->
+      <header class="topbar">
+        <div class="brand-cluster">
+          <span class="aperture-dot" id="status-dot" aria-hidden="true"></span>
+          <span class="brand-title">Focal Bridge</span>
+        </div>
+        <div class="topbar-actions">
+          <span class="e2ee-pill" id="connection-pill">E2EE</span>
+          <button
+            type="button"
+            class="ghost-btn hidden"
+            id="unpair-btn"
+            title="Disconnect and wipe local room keys"
+          >
+            Unpair
+          </button>
+        </div>
+      </header>
+
+      <!-- State 1: Zero-Account E2EE Pairing Screen -->
+      <section class="view-section" id="pairing-view" aria-label="Pair with Focal Android">
+        <div class="glass-card pairing-hero">
+          <div class="aperture-mark" aria-hidden="true">◎</div>
+          <h1 class="section-heading">Pair Focal Android</h1>
+          <p class="section-copy">
+            Open <strong>Spaces → Pair Desktop</strong> on Focal Android and paste your
+            <code>focal-pair://v1</code> URI. Keys never leave your devices.
+          </p>
+        </div>
+
+        <form id="pairing-form" class="stack-md" novalidate>
+          <label class="field-group" for="pairing-uri-input">
+            <span class="field-label">Pairing URI</span>
+            <input
+              id="pairing-uri-input"
+              class="glass-input mono"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="focal-pair://v1?secret=..."
+              required
+            />
+          </label>
+
+          <!-- Live SAS Verification Badge -->
+          <div class="sas-badge hidden" id="sas-preview-badge" role="status" aria-live="polite">
+            <span class="sas-caption">Verify 4-part SAS on Android</span>
+            <span class="sas-words" id="sas-preview-text">—</span>
+          </div>
+
+          <details class="relay-disclosure">
+            <summary class="relay-summary">Custom Sync Relay</summary>
+            <label class="field-group relay-field" for="relay-url-input">
+              <span class="field-label">Relay WebSocket Origin</span>
+              <input
+                id="relay-url-input"
+                class="glass-input mono"
+                type="url"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="wss://relay.focal.app"
+                value="wss://relay.focal.app"
+              />
+            </label>
+          </details>
+
+          <p class="feedback-banner error hidden" id="pairing-error" role="alert"></p>
+
+          <button type="submit" class="primary-pill-btn" id="pair-submit-btn">
+            <span>Pair Desktop Extension</span>
+            <span class="arrow-glyph" aria-hidden="true">→</span>
+          </button>
+        </form>
+      </section>
+
+      <!-- State 2: Paired Continuity View -->
+      <section class="view-section hidden" id="continuity-view" aria-label="Focal Continuity">
+        <!-- Verified SAS Fingerprint Bar -->
+        <div class="sas-inline-row" title="Short Authentication String shared with Focal Android">
+          <span class="sas-inline-label">SAS</span>
+          <span class="sas-inline-value" id="paired-sas-text">—</span>
+        </div>
+
+        <!-- 1-Click Send Active Tab to Phone -->
+        <button type="button" class="primary-pill-btn send-tab-cta" id="send-active-tab-btn">
+          <div class="cta-text-col">
+            <span class="cta-title" id="send-cta-label">Send Active Tab to Phone</span>
+            <span class="cta-subtitle" id="active-tab-domain">Current browser tab</span>
+          </div>
+          <span class="arrow-glyph" aria-hidden="true">→</span>
+        </button>
+
+        <p class="feedback-banner hidden" id="handoff-feedback" role="status" aria-live="polite"></p>
+
+        <!-- Live Android Open Tabs -->
+        <section class="panel-group" aria-labelledby="remote-tabs-heading">
+          <div class="panel-header">
+            <h2 class="panel-title" id="remote-tabs-heading">Live on Android (0)</h2>
+            <span class="panel-meta" id="sync-queue-meta">0ms E2EE</span>
+          </div>
+          <ul class="item-list" id="remote-tabs-list"></ul>
+        </section>
+
+        <!-- Spaces Bookmarks (Personal / Work / Reading) -->
+        <section class="panel-group spaces-panel" id="spaces-panel" aria-labelledby="spaces-heading">
+          <div class="panel-header">
+            <h2 class="panel-title" id="spaces-heading">Spaces</h2>
+            <button type="button" class="subtle-action-btn" id="save-to-space-btn">
+              + Save Active Tab
+            </button>
+          </div>
+
+          <div class="space-tabs" role="tablist" aria-label="Focal Spaces">
+            <button
+              type="button"
+              role="tab"
+              class="space-tab-pill active"
+              data-space-tab="personal"
+              aria-selected="true"
+            >
+              Personal
+            </button>
+            <button
+              type="button"
+              role="tab"
+              class="space-tab-pill"
+              data-space-tab="work"
+              aria-selected="false"
+            >
+              Work
+            </button>
+            <button
+              type="button"
+              role="tab"
+              class="space-tab-pill"
+              data-space-tab="reading"
+              aria-selected="false"
+            >
+              Reading
+            </button>
+          </div>
+
+          <ul class="item-list" id="space-bookmarks-list"></ul>
+        </section>
+      </section>
+    </main>
+
+    <script type="module" src="../dist/popup.js"></script>
+  </body>
+</html>
