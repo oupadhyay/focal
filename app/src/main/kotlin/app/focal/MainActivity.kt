@@ -187,11 +187,6 @@ private fun FocalRootCoordinator(
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
 
-    // Connect MediaSessionService so background/foreground tab audio promotes system controls (P1-11)
-    LaunchedEffect(context) {
-        FocalMediaBridge.ensureServiceConnected(context)
-    }
-
     // Off-thread 16x16 PixelCopy AdaptiveGlassController (0.44f / 0.52f hysteresis)
     val adaptiveGlass = remember { AdaptiveGlassController(initialDarkGlass = true) }
     val glassState by adaptiveGlass.state.collectAsState()
@@ -245,6 +240,14 @@ private fun FocalRootCoordinator(
 
     val syncUiState by syncManager.state.collectAsState()
     val mediaBridgeState by FocalMediaBridge.activeMedia.collectAsState()
+    val hasActiveMedia = mediaBridgeState != null
+
+    // Connect MediaSessionService lazily once background/foreground tab audio or video activates (P1-11)
+    LaunchedEffect(context, hasActiveMedia) {
+        if (hasActiveMedia) {
+            FocalMediaBridge.ensureServiceConnected(context)
+        }
+    }
 
     val activeSession: EngineSession? = selectedTabId?.let { liveSessions[it] }
     val activeSessionState = activeSession?.state?.collectAsState()?.value

@@ -29,6 +29,7 @@ import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.unit.Dp
@@ -48,10 +49,14 @@ val LocalFocalBackdropLayer = staticCompositionLocalOf<GraphicsLayer?> { null }
 @Composable
 fun Modifier.recordFocalBackdrop(backdropLayer: GraphicsLayer): Modifier {
     return this.drawWithContent {
-        backdropLayer.record {
-            this@drawWithContent.drawContent()
+        if (drawContext.canvas.nativeCanvas.isHardwareAccelerated) {
+            backdropLayer.record {
+                this@drawWithContent.drawContent()
+            }
+            drawLayer(backdropLayer)
+        } else {
+            drawContent()
         }
-        drawLayer(backdropLayer)
     }
 }
 
@@ -145,7 +150,7 @@ fun Modifier.opticalVignetteBackground(
     bloomColorState: State<Color>,
 ): Modifier {
     val api33Holder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        remember { OpticalVignetteShaderHolder() }
+        remember { runCatching { OpticalVignetteShaderHolder() }.getOrNull() }
     } else {
         null
     }
@@ -153,7 +158,11 @@ fun Modifier.opticalVignetteBackground(
     return this.drawBehind {
         val base = baseColorState.value
         val bloom = bloomColorState.value
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && api33Holder != null) {
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            api33Holder != null &&
+            drawContext.canvas.nativeCanvas.isHardwareAccelerated
+        ) {
             val w = size.width.coerceAtLeast(1f)
             val h = size.height.coerceAtLeast(1f)
             val vignetteShader = api33Holder.shader
@@ -189,7 +198,7 @@ fun Modifier.smokedGlassBackdropEffect(
     enabled: Boolean = true,
 ): Modifier {
     val api33Holder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        remember { SmokedGlassShaderHolder() }
+        remember { runCatching { SmokedGlassShaderHolder() }.getOrNull() }
     } else {
         null
     }
@@ -262,6 +271,11 @@ fun SmokedGlassBox(
     val emptyAmbient = remember { mutableStateOf(Color.Transparent) }
     val effectiveAmbient = spaceAmbientState ?: emptyAmbient
     val coordHolder = remember { BackdropCoordHolder() }
+    val agslGlassHolder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        remember { runCatching { SmokedGlassShaderHolder() }.getOrNull() }
+    } else {
+        null
+    }
 
     val useLiveBackdrop = backdropLayer != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
 
@@ -288,7 +302,7 @@ fun SmokedGlassBox(
             },
         contentAlignment = contentAlignment,
     ) {
-        if (useLiveBackdrop && backdropLayer != null) {
+        if (backdropLayer != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             Box(
                 modifier = Modifier
                     .matchParentSize()
@@ -299,12 +313,14 @@ fun SmokedGlassBox(
                     )
                     .drawBehind {
                         drawRect(color = fallbackCanvasColor)
-                        translate(left = -coordHolder.rootX, top = -coordHolder.rootY) {
-                            drawLayer(backdropLayer)
+                        if (drawContext.canvas.nativeCanvas.isHardwareAccelerated) {
+                            translate(left = -coordHolder.rootX, top = -coordHolder.rootY) {
+                                drawLayer(backdropLayer)
+                            }
                         }
                     },
             )
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            if (agslGlassHolder == null) {
                 Box(
                     modifier = Modifier
                         .matchParentSize()

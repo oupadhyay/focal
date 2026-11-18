@@ -69,6 +69,8 @@ class FocalApplication : Application() {
             }
         }
 
-        AutoArchiveTabsWorker.schedulePeriodicSweep(this)
+        runCatching {
+            AutoArchiveTabsWorker.schedulePeriodicSweep(this)
+        }
     }
 }

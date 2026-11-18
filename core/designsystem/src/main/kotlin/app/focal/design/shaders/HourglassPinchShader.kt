@@ -59,13 +59,13 @@ half4 main(float2 fragCoord) {
     float2 rUv = clamp(warpedUv + dispOffset, float2(0.0), float2(1.0));
     float2 bUv = clamp(warpedUv - dispOffset, float2(0.0), float2(1.0));
 
-    half r = content.eval(rUv * resolution).r;
+    half4 rSample = content.eval(rUv * resolution);
     half4 gba = content.eval(warpedUv * resolution);
-    half b = content.eval(bUv * resolution).b;
+    half4 bSample = content.eval(bUv * resolution);
 
     // Subtle edge darkening along pinched waist for 3D depth cue
     half vignette = half(1.0 - strength * 0.28 * waistProfile * abs(centered.x) * 2.0);
-    return half4(r * vignette, gba.g * vignette, b * vignette, gba.a);
+    return half4(rSample.r * vignette, gba.g * vignette, bSample.b * vignette, gba.a);
 }
 """
 
@@ -88,7 +88,7 @@ fun Modifier.hourglassPinchEffect(
     pinchCenterYState: FloatState,
 ): Modifier {
     val api33Holder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        remember { HourglassShaderHolder() }
+        remember { runCatching { HourglassShaderHolder() }.getOrNull() }
     } else {
         null
     }
