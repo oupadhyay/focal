@@ -332,7 +332,7 @@ class WebViewSession internal constructor(
         }
 
         view.setOnLongClickListener { webViewInstance ->
-            val hit = webViewInstance.hitTestResult
+            val hit = (webViewInstance as? WebView)?.hitTestResult ?: view.hitTestResult
             val type = hit.type
             if (
                 type == WebView.HitTestResult.SRC_ANCHOR_TYPE ||

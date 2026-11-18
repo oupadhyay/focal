@@ -64,7 +64,7 @@ jobs:
           gradle-version: "8.11.1"
 
       - name: Assemble Focal Debug APK & run JVM unit tests
-        run: gradle :app:assembleDebug testDebugUnitTest --no-daemon --stacktrace
+        run: gradle :app:assembleDebug testDebugUnitTest --continue --no-daemon --stacktrace
 
       - name: Rename APK for easy install
         run: cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/focal-v0.1.0-debug.apk
