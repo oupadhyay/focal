@@ -12,15 +12,15 @@ permissions:
 jobs:
   android-and-rust:
     name: Android Debug APK + Rust adblock-rs JNI
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "17"
@@ -61,7 +61,7 @@ jobs:
           ls -lh ../src/main/jniLibs/*/*.so
 
       - name: Set up Gradle 8.11.1
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "8.11.1"
 
@@ -81,7 +81,7 @@ jobs:
         run: cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/focal-debug.apk
 
       - name: Upload installable Focal Android APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: focal-android-debug-apk
           path: app/build/outputs/apk/debug/focal-debug.apk
@@ -89,15 +89,15 @@ jobs:
 
   desktop-extension-and-relay:
     name: Focal Bridge MV3 Extension & E2EE Relay
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
-      - name: Set up Node.js 22
-        uses: actions/setup-node@v4
+      - name: Set up Node.js 24 LTS
+        uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "24"
 
       - name: Build & test Focal Bridge MV3 Extension
         working-directory: desktop-extension
@@ -113,7 +113,7 @@ jobs:
           npm test
 
       - name: Upload unpack-ready Focal Bridge Extension
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: focal-bridge-desktop-extension
           path: focal-bridge-extension.zip
