@@ -49,13 +49,14 @@ jobs:
           echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
 
       - name: Cross-compile libfocal_adblock.so (arm64-v8a & x86_64)
+        working-directory: core/adblock-rust/rust
         run: |
           cargo ndk \
             -t arm64-v8a \
             -t x86_64 \
-            -o core/adblock-rust/src/main/jniLibs \
-            build --manifest-path core/adblock-rust/rust/Cargo.toml --release --locked
-          ls -lh core/adblock-rust/src/main/jniLibs/*/*.so
+            -o ../src/main/jniLibs \
+            build --release --locked
+          ls -lh ../src/main/jniLibs/*/*.so
 
       - name: Set up Gradle 8.11.1
         uses: gradle/actions/setup-gradle@v4
