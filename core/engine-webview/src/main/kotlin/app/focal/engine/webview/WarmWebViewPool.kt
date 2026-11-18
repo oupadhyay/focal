@@ -84,6 +84,9 @@ class WarmWebViewPool(
     @SuppressLint("SetJavaScriptEnabled")
     private fun createConfiguredWebView(wrapper: MutableContextWrapper): WebView {
         return WebView(wrapper).apply {
+            // Programmatic WebViews lack XML resource IDs, which causes Android's default AUTO
+            // heuristic to skip OS Autofill unless explicitly marked IMPORTANT_FOR_AUTOFILL_YES.
+            importantForAutofill = android.view.View.IMPORTANT_FOR_AUTOFILL_YES
             isVerticalScrollBarEnabled = false
             isHorizontalScrollBarEnabled = false
             overScrollMode = WebView.OVER_SCROLL_NEVER

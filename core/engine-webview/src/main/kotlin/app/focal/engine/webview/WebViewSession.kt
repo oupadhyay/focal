@@ -168,6 +168,7 @@ class WebViewSession internal constructor(
             mediaPlaybackRequiresUserGesture = true
         }
         if (isPrivate) {
+            view.importantForAutofill = android.view.View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
             val multiProfileBound = WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE) &&
                 runCatching { WebViewCompat.setProfile(view, EPHEMERAL_PROFILE_NAME) }.isSuccess
             if (multiProfileBound) {
@@ -183,6 +184,7 @@ class WebViewSession internal constructor(
             view.settings.cacheMode = WebSettings.LOAD_NO_CACHE
             runCatching { CookieManager.getInstance().setAcceptThirdPartyCookies(view, false) }
         } else {
+            view.importantForAutofill = android.view.View.IMPORTANT_FOR_AUTOFILL_YES
             runCatching { CookieManager.getInstance().setAcceptThirdPartyCookies(view, false) }
         }
     }
