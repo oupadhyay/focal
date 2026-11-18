@@ -1,0 +1,108 @@
+name: Build Focal Android APK & Bridge Extension
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android-and-rust:
+    name: Android Debug APK + Rust adblock-rs JNI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Rust + Android NDK targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+
+      - name: Cache Cargo registry & build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core/adblock-rust/rust
+
+      - name: Install cargo-ndk prebuilt binary
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+
+      - name: Run host Rust adblock & JNI unit tests
+        working-directory: core/adblock-rust/rust
+        run: cargo test --locked
+
+      - name: Configure preinstalled Android NDK path
+        run: |
+          NDK_DIR=$(ls -d "$ANDROID_HOME"/ndk/* | sort -V | tail -n 1)
+          echo "Using ANDROID_NDK_HOME=$NDK_DIR"
+          echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
+
+      - name: Cross-compile libfocal_adblock.so (arm64-v8a & x86_64)
+        run: |
+          cargo ndk \
+            -t arm64-v8a \
+            -t x86_64 \
+            -o core/adblock-rust/src/main/jniLibs \
+            build --manifest-path core/adblock-rust/rust/Cargo.toml --release --locked
+          ls -lh core/adblock-rust/src/main/jniLibs/*/*.so
+
+      - name: Set up Gradle 8.11.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Assemble Focal Debug APK & run JVM unit tests
+        run: gradle :app:assembleDebug testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Rename APK for easy install
+        run: cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/focal-v0.1.0-debug.apk
+
+      - name: Upload installable Focal Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: focal-android-debug-apk
+          path: app/build/outputs/apk/debug/focal-v0.1.0-debug.apk
+          if-no-files-found: error
+
+  desktop-extension-and-relay:
+    name: Focal Bridge MV3 Extension & E2EE Relay
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build & test Focal Bridge MV3 Extension
+        working-directory: desktop-extension
+        run: |
+          npm ci
+          npm test
+          zip -r ../focal-bridge-extension.zip manifest.json dist src/popup.html src/popup.css
+
+      - name: Build & test Stateless E2EE Sync Relay
+        working-directory: sync-relay
+        run: |
+          npm ci
+          npm test
+
+      - name: Upload unpack-ready Focal Bridge Extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: focal-bridge-desktop-extension
+          path: focal-bridge-extension.zip
+          if-no-files-found: error

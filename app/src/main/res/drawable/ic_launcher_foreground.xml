@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Outer subtle smoked glass rim -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M54,31A23,23 0 1,1 53.99,31Z"
+        android:strokeWidth="2.5"
+        android:strokeColor="#66F5F6F8" />
+    <!-- Crisp inner optical focal aperture ring -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M54,41A13,13 0 1,1 53.99,41Z"
+        android:strokeWidth="3.5"
+        android:strokeColor="#F5F6F8" />
+    <!-- Specular focal dot -->
+    <path
+        android:fillColor="#F5F6F8"
+        android:pathData="M54,51.5A2.5,2.5 0 1,1 53.99,51.5Z" />
+</vector>
