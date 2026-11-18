@@ -7,7 +7,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
@@ -38,6 +38,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
@@ -58,6 +59,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import app.focal.design.FocalFaviconTile
+import app.focal.design.FocalGeometry
+import app.focal.design.FocalGlyphs
 import app.focal.design.FocalMotion
 import app.focal.design.FocalTheme
 import app.focal.design.SiteFavicon
@@ -85,14 +89,12 @@ val DefaultSearchSquirclePins: ImmutableList<QuickSquirclePin> = persistentListO
 )
 
 /**
- * Screen 02 · Floating Search-First Smoked Glass Sheet anchored `8.dp` above `WindowInsets.ime`.
+ * Screen 02 · Concentric Smoked Glass Search Sheet anchored cleanly above `WindowInsets.ime`.
  *
- * Features:
- * - E2EE Continuity Handoff Banner at top (when a paired Desktop browser shares a tab/link).
- * - 5 Quick Squircle Favicon Pins in lower thumb reach.
- * - Double-Space Site Search (`im␣␣`, `wi␣␣`, `rd␣␣`, `yt␣␣`, `gh␣␣`) with `135.dp` radial contextual
- *   glow strictly clipped inside the left side of the input pill + Backspace chip unwrap.
- * - Right-aligned `28.dp` Private Aperture `◎` circular toggle darkening sheet to `surface.glass.private`.
+ * - Zero permanent command/bang hint clutter in or above the search bar.
+ * - Double-Space Site Search (`GitHub␣␣`, `GH␣␣`, `git␣␣`, `YouTube␣␣`, `YT␣␣`, `Wiki␣␣`, etc. +
+ *   user pinned sites) with `135.dp` radial contextual glow clipped inside the input pill.
+ * - Borderless tonal Favicon Squircles + crisp optical vector glyphs.
  */
 @Composable
 fun SearchSheet(
@@ -108,7 +110,13 @@ fun SearchSheet(
     val colors = FocalTheme.colors
     val typography = FocalTheme.typography
     val haptics = LocalHapticFeedback.current
-    val detector = remember { DoubleSpaceSiteDetector() }
+    val detector = remember(pins) {
+        DoubleSpaceSiteDetector().apply {
+            for (pinEngine in DoubleSpaceSiteDetector.enginesFromPins(pins)) {
+                registerShortcut(pinEngine, overwrite = false)
+            }
+        }
+    }
     val focusRequester = remember { FocusRequester() }
     val displayedPins = remember(pins) { pins.take(5).toImmutableList() }
 
@@ -129,47 +137,49 @@ fun SearchSheet(
     val effectiveSheetTint = rememberUpdatedState(
         if (isPrivateAperture) colors.surfaceGlassPrivate else colors.surfaceGlassSheet,
     )
-    val sheetShape = RoundedCornerShape(26.dp)
-    val inputPillShape = RoundedCornerShape(18.dp)
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.34f))
+            .background(Color.Black.copy(alpha = 0.52f))
             .clickable(onClick = onDismiss),
         contentAlignment = Alignment.BottomCenter,
     ) {
         SmokedGlassBox(
-            shape = sheetShape,
+            shape = FocalGeometry.SheetOuterShape,
             glassTintState = effectiveSheetTint,
             borderSpecular = colors.borderSpecular,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp)
+                .padding(horizontal = 10.dp)
                 .navigationBarsPadding()
                 .imePadding()
                 .padding(bottom = 8.dp)
-                // Consume clicks inside the sheet so tapping backdrop dismisses cleanly
+                .shadow(
+                    elevation = 24.dp,
+                    shape = FocalGeometry.SheetOuterShape,
+                    ambientColor = Color.Black.copy(alpha = 0.45f),
+                    spotColor = Color.Black.copy(alpha = 0.55f),
+                )
                 .consumeClicks(),
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 // Optional E2EE Desktop Continuity Handoff Banner
                 if (continuityHandoff != null) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(16.dp))
+                            .clip(FocalGeometry.TileShape)
                             .background(colors.surfacePillSubtle)
-                            .border(1.dp, colors.borderSpecular, RoundedCornerShape(16.dp))
                             .clickable {
                                 onNavigateToUrl(continuityHandoff.url, isPrivateAperture)
                             }
-                            .padding(horizontal = 12.dp, vertical = 9.dp),
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
@@ -181,7 +191,7 @@ fun SearchSheet(
                         )
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "⇄ From ${continuityHandoff.sourceDeviceName ?: "Desktop"} · E2EE",
+                                text = "From ${continuityHandoff.sourceDeviceName ?: "Desktop"}",
                                 style = typography.captionMetadata,
                                 color = colors.inkSecondary,
                             )
@@ -193,281 +203,270 @@ fun SearchSheet(
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
-                        Text(
-                            text = "Open ↗",
-                            style = typography.controlPillLabel,
-                            color = colors.inkPrimary,
+                        Icon(
+                            imageVector = FocalGlyphs.ExternalArrow,
+                            contentDescription = "Open",
+                            tint = colors.inkSecondary,
+                            modifier = Modifier.size(17.dp),
                         )
                     }
                 }
 
-                // 5 Squircle Favicon Pins Row
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    displayedPins.forEach { pin ->
-                        val compactLabel = if (pin.title.equals("HackerNews", ignoreCase = true)) {
-                            "HN"
-                        } else {
-                            pin.title
-                        }
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(colors.surfacePillSubtle)
-                                .border(1.dp, colors.borderSpecular, RoundedCornerShape(16.dp))
-                                .clickable { onNavigateToUrl(pin.url, isPrivateAperture) }
-                                .padding(vertical = 10.dp, horizontal = 3.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            SiteFavicon(
-                                urlOrDomain = pin.url,
+                // 5 Borderless Tonal Squircle Favicon Tiles
+                if (displayedPins.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    ) {
+                        displayedPins.forEach { pin ->
+                            FocalFaviconTile(
+                                title = pin.title,
+                                url = pin.url,
                                 allowNetworkFetch = !isPrivateAperture,
-                                size = 26.dp,
-                                cornerRadius = 7.dp,
-                            )
-                            Text(
-                                text = compactLabel,
-                                style = typography.captionMetadata,
-                                color = colors.inkSecondary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
+                                onClick = { onNavigateToUrl(pin.url, isPrivateAperture) },
+                                modifier = Modifier.weight(1f),
                             )
                         }
                     }
                 }
 
-            // Shortcut Hint Strip + Private Aperture Status
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 2.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = if (isPrivateAperture) {
-                        "◎ Private Aperture · Ephemeral Zero-History Session"
-                    } else {
-                        "Type im␣␣ · wi␣␣ · rd␣␣ · yt␣␣ · gh␣␣ for site search"
-                    },
-                    style = typography.captionMetadata,
-                    color = if (isPrivateAperture) colors.inkPrimary else colors.inkFaint,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-
-            // Main Search Input Pill (with strictly-clipped 135.dp left contextual site glow)
-            val siteGlowColor = activeSite?.colors?.radialInputGlow ?: Color.Transparent
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(50.dp)
-                    .clip(inputPillShape)
-                    .background(colors.surfacePillSubtle)
-                    .drawBehind {
-                        if (siteGlowColor.alpha > 0.005f) {
-                            val glowRadius = 135.dp.toPx()
-                            drawRect(
-                                brush = Brush.radialGradient(
-                                    colors = listOf(siteGlowColor, Color.Transparent),
-                                    center = Offset(24.dp.toPx(), size.height * 0.5f),
-                                    radius = glowRadius,
-                                ),
-                            )
-                        }
-                    }
-                    .border(1.dp, colors.borderSpecular, inputPillShape)
-                    .padding(horizontal = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                // Spring-animated Site Search Chip (`[Wikipedia ×]`) with crisp site favicon
-                AnimatedVisibility(
-                    visible = activeSite != null,
-                    enter = fadeIn() + scaleIn(
-                        initialScale = 0.75f,
-                        animationSpec = FocalMotion.siteChipSpring(),
-                    ),
-                    exit = fadeOut() + scaleOut(
-                        targetScale = 0.80f,
-                        animationSpec = FocalMotion.siteChipSpring(),
-                    ),
-                ) {
-                    val site = activeSite
-                    if (site != null) {
-                        Row(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(site.colors.badgeBackground)
-                                .clickable {
-                                    activeSite = null
-                                }
-                                .padding(horizontal = 8.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp),
-                        ) {
-                            SiteFavicon(
-                                urlOrDomain = site.urlTemplate,
-                                allowNetworkFetch = !isPrivateAperture,
-                                size = 15.dp,
-                                cornerRadius = 4.dp,
-                            )
-                            Text(
-                                text = site.label,
-                                style = typography.controlPillLabel,
-                                color = site.colors.badgeForeground,
-                            )
-                            Text(
-                                text = "×",
-                                style = typography.controlPillLabel,
-                                color = site.colors.badgeForeground.copy(alpha = 0.75f),
-                            )
-                        }
-                    }
-                }
-
-                if (activeSite == null) {
-                    Text(
-                        text = "⌕",
-                        style = typography.focusInput,
-                        color = colors.inkSecondary,
-                    )
-                }
-
-                // Core Input Field with Backspace unwrap + Double-Space detection
-                Box(
-                    modifier = Modifier.weight(1f),
-                    contentAlignment = Alignment.CenterStart,
-                ) {
-                    if (textFieldValue.text.isEmpty()) {
+                // Quiet Private Aperture Status Indicator (only shown when Private mode is armed)
+                if (isPrivateAperture) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Icon(
+                            imageVector = FocalGlyphs.Aperture,
+                            contentDescription = null,
+                            tint = colors.inkSecondary,
+                            modifier = Modifier.size(13.dp),
+                        )
                         Text(
-                            text = activeSite?.placeholder ?: "Search or enter address…",
-                            style = typography.focusInput,
-                            color = colors.inkFaint,
+                            text = "Private Aperture · Ephemeral Session",
+                            style = typography.captionMetadata,
+                            color = colors.inkSecondary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
-
-                    BasicTextField(
-                        value = textFieldValue,
-                        onValueChange = { nextFieldValue ->
-                            val transition = detector.onQueryChanged(
-                                previousQuery = textFieldValue.text,
-                                newQuery = nextFieldValue.text,
-                                currentSite = activeSite,
-                                eventTimeMs = SystemClock.uptimeMillis(),
-                            )
-                            if (transition.chipJustActivated) {
-                                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                activeSite = transition.activeSite
-                                textFieldValue = TextFieldValue(
-                                    text = transition.updatedQuery,
-                                    selection = TextRange(transition.updatedQuery.length),
-                                )
-                            } else {
-                                textFieldValue = nextFieldValue
-                            }
-                        },
-                        singleLine = true,
-                        textStyle = typography.focusInput.copy(color = colors.inkPrimary),
-                        cursorBrush = SolidColor(colors.inkPrimary),
-                        keyboardOptions = KeyboardOptions(
-                            capitalization = KeyboardCapitalization.None,
-                            autoCorrectEnabled = false,
-                            keyboardType = KeyboardType.Uri,
-                            imeAction = ImeAction.Go,
-                        ),
-                        keyboardActions = KeyboardActions(
-                            onGo = {
-                                val targetUrl = detector.resolveDestinationUrl(
-                                    rawQuery = textFieldValue.text,
-                                    activeSite = activeSite,
-                                )
-                                if (targetUrl != "about:blank") {
-                                    onNavigateToUrl(targetUrl, isPrivateAperture)
-                                }
-                            },
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .focusRequester(focusRequester)
-                            .onPreviewKeyEvent { keyEvent ->
-                                if (
-                                    keyEvent.type == KeyEventType.KeyDown &&
-                                    keyEvent.key == Key.Backspace
-                                ) {
-                                    val unwrap = detector.onBackspacePressed(
-                                        currentQuery = textFieldValue.text,
-                                        currentSite = activeSite,
-                                    )
-                                    if (unwrap != null) {
-                                        activeSite = null
-                                        textFieldValue = TextFieldValue(
-                                            text = unwrap.updatedQuery,
-                                            selection = TextRange(unwrap.updatedQuery.length),
-                                        )
-                                        return@onPreviewKeyEvent true
-                                    }
-                                }
-                                false
-                            },
-                    )
                 }
 
-                // Go Pill when input has text
-                if (textFieldValue.text.isNotBlank()) {
+                // Concentric Main Search Input Pill (with strictly-clipped 135.dp left contextual site glow)
+                val siteGlowColor = activeSite?.colors?.radialInputGlow ?: Color.Transparent
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp)
+                        .clip(FocalGeometry.InputPillShape)
+                        .background(colors.surfacePillSubtle)
+                        .drawBehind {
+                            if (siteGlowColor.alpha > 0.005f) {
+                                val glowRadius = 135.dp.toPx()
+                                drawRect(
+                                    brush = Brush.radialGradient(
+                                        colors = listOf(siteGlowColor, Color.Transparent),
+                                        center = Offset(24.dp.toPx(), size.height * 0.5f),
+                                        radius = glowRadius,
+                                    ),
+                                )
+                            }
+                        }
+                        .padding(start = 13.dp, end = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                ) {
+                    // Spring-animated Site Search Chip (`[GitHub ×]`) — appears strictly when triggered
+                    AnimatedVisibility(
+                        visible = activeSite != null,
+                        enter = fadeIn() + scaleIn(
+                            initialScale = 0.78f,
+                            animationSpec = FocalMotion.siteChipSpring(),
+                        ),
+                        exit = fadeOut() + scaleOut(
+                            targetScale = 0.82f,
+                            animationSpec = FocalMotion.siteChipSpring(),
+                        ),
+                    ) {
+                        val site = activeSite
+                        if (site != null) {
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(11.dp))
+                                    .background(site.colors.badgeBackground)
+                                    .clickable {
+                                        activeSite = null
+                                    }
+                                    .padding(horizontal = 8.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            ) {
+                                SiteFavicon(
+                                    urlOrDomain = site.homeUrl,
+                                    allowNetworkFetch = !isPrivateAperture,
+                                    size = 15.dp,
+                                    cornerRadius = 4.dp,
+                                )
+                                Text(
+                                    text = site.label,
+                                    style = typography.controlPillLabel,
+                                    color = site.colors.badgeForeground,
+                                )
+                                Icon(
+                                    imageVector = FocalGlyphs.Close,
+                                    contentDescription = "Remove ${site.label} filter",
+                                    tint = site.colors.badgeForeground.copy(alpha = 0.72f),
+                                    modifier = Modifier.size(12.dp),
+                                )
+                            }
+                        }
+                    }
+
+                    if (activeSite == null) {
+                        Icon(
+                            imageVector = FocalGlyphs.Search,
+                            contentDescription = null,
+                            tint = colors.inkSecondary,
+                            modifier = Modifier.size(17.dp),
+                        )
+                    }
+
+                    // Core Input Field with Backspace unwrap + Double-Space detection
+                    Box(
+                        modifier = Modifier.weight(1f),
+                        contentAlignment = Alignment.CenterStart,
+                    ) {
+                        if (textFieldValue.text.isEmpty()) {
+                            Text(
+                                text = activeSite?.placeholder ?: "Search or enter address",
+                                style = typography.focusInput,
+                                color = colors.inkFaint,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+
+                        BasicTextField(
+                            value = textFieldValue,
+                            onValueChange = { nextFieldValue ->
+                                val transition = detector.onQueryChanged(
+                                    previousQuery = textFieldValue.text,
+                                    newQuery = nextFieldValue.text,
+                                    currentSite = activeSite,
+                                    eventTimeMs = SystemClock.uptimeMillis(),
+                                )
+                                if (transition.chipJustActivated) {
+                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    activeSite = transition.activeSite
+                                    textFieldValue = TextFieldValue(
+                                        text = transition.updatedQuery,
+                                        selection = TextRange(transition.updatedQuery.length),
+                                    )
+                                } else {
+                                    textFieldValue = nextFieldValue
+                                }
+                            },
+                            singleLine = true,
+                            textStyle = typography.focusInput.copy(color = colors.inkPrimary),
+                            cursorBrush = SolidColor(colors.inkPrimary),
+                            keyboardOptions = KeyboardOptions(
+                                capitalization = KeyboardCapitalization.None,
+                                autoCorrectEnabled = false,
+                                keyboardType = KeyboardType.Text,
+                                imeAction = ImeAction.Go,
+                            ),
+                            keyboardActions = KeyboardActions(
+                                onGo = {
+                                    val targetUrl = detector.resolveDestinationUrl(
+                                        rawQuery = textFieldValue.text,
+                                        activeSite = activeSite,
+                                    )
+                                    if (targetUrl != "about:blank") {
+                                        onNavigateToUrl(targetUrl, isPrivateAperture)
+                                    }
+                                },
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .focusRequester(focusRequester)
+                                .onPreviewKeyEvent { keyEvent ->
+                                    if (
+                                        keyEvent.type == KeyEventType.KeyDown &&
+                                        keyEvent.key == Key.Backspace
+                                    ) {
+                                        val unwrap = detector.onBackspacePressed(
+                                            currentQuery = textFieldValue.text,
+                                            currentSite = activeSite,
+                                        )
+                                        if (unwrap != null) {
+                                            activeSite = null
+                                            textFieldValue = TextFieldValue(
+                                                text = unwrap.updatedQuery,
+                                                selection = TextRange(unwrap.updatedQuery.length),
+                                            )
+                                            return@onPreviewKeyEvent true
+                                        }
+                                    }
+                                    false
+                                },
+                        )
+                    }
+
+                    // Go Pill when input has text or a site chip is active
+                    if (textFieldValue.text.isNotBlank() || activeSite != null) {
+                        Box(
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .background(colors.surfacePillActive)
+                                .clickable {
+                                    val targetUrl = detector.resolveDestinationUrl(
+                                        rawQuery = textFieldValue.text,
+                                        activeSite = activeSite,
+                                    )
+                                    if (targetUrl != "about:blank") {
+                                        onNavigateToUrl(targetUrl, isPrivateAperture)
+                                    }
+                                }
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = "Go",
+                                style = typography.controlPillLabel,
+                                color = colors.inkOnPillActive,
+                            )
+                        }
+                    }
+
+                    // Right-aligned 32.dp Private Aperture Toggle
                     Box(
                         modifier = Modifier
+                            .size(32.dp)
                             .clip(CircleShape)
-                            .background(colors.surfacePillActive)
+                            .background(
+                                if (isPrivateAperture) {
+                                    colors.surfacePillActive
+                                } else {
+                                    colors.inkPrimary.copy(alpha = 0.08f)
+                                },
+                            )
                             .clickable {
-                                val targetUrl = detector.resolveDestinationUrl(
-                                    rawQuery = textFieldValue.text,
-                                    activeSite = activeSite,
-                                )
-                                if (targetUrl != "about:blank") {
-                                    onNavigateToUrl(targetUrl, isPrivateAperture)
-                                }
-                            }
-                            .padding(horizontal = 10.dp, vertical = 5.dp),
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onTogglePrivateAperture(!isPrivateAperture)
+                            },
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text(
-                            text = "Go",
-                            style = typography.controlPillLabel,
-                            color = colors.inkOnPillActive,
+                        Icon(
+                            imageVector = FocalGlyphs.Aperture,
+                            contentDescription = "Private Aperture",
+                            tint = if (isPrivateAperture) colors.inkOnPillActive else colors.inkSecondary,
+                            modifier = Modifier.size(16.dp),
                         )
                     }
                 }
-
-                // Right-aligned 28.dp Private Aperture `◎` Circular Toggle
-                Box(
-                    modifier = Modifier
-                        .size(28.dp)
-                        .clip(CircleShape)
-                        .background(
-                            if (isPrivateAperture) colors.surfacePillActive else colors.surfacePillSubtle,
-                        )
-                        .border(1.dp, colors.borderSpecular, CircleShape)
-                        .clickable {
-                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onTogglePrivateAperture(!isPrivateAperture)
-                        },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = "◎",
-                        style = typography.controlPillLabel,
-                        color = if (isPrivateAperture) colors.inkOnPillActive else colors.inkSecondary,
-                    )
-                }
-            }
             }
         }
     }

@@ -1,7 +1,7 @@
 package app.focal.feature.browser
 
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -10,13 +10,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -29,6 +28,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -37,6 +37,8 @@ import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import app.focal.design.FocalGlyphs
+import app.focal.design.FocalMotion
 import app.focal.design.FocalTheme
 import app.focal.design.SiteFavicon
 import app.focal.design.shaders.LocalFocalBackdropLayer
@@ -67,6 +69,7 @@ fun BrowserViewportScreen(
     activeSession: EngineSession?,
     tabCount: Int,
     isPrivateAperture: Boolean,
+    isOverlaySheetOpen: Boolean = false,
     isInPictureInPictureMode: Boolean = false,
     backdropGraphicsLayer: GraphicsLayer = rememberGraphicsLayer(),
     continuityHandoff: SyncEvent.TabHandoffEvent?,
@@ -102,14 +105,20 @@ fun BrowserViewportScreen(
     val scrubOffsetPxState = remember { mutableFloatStateOf(0f) }
     val hasLoadedWebUrl = activeSession != null && sessionState.url.isNotBlank() && sessionState.url != "about:blank"
 
+    val overlayDimProgress by animateFloatAsState(
+        targetValue = if (isOverlaySheetOpen) 1f else 0f,
+        animationSpec = FocalMotion.smartPillSpring(),
+        label = "FocalOverlayDimProgress",
+    )
+
     val deviceLang = remember { Locale.getDefault().language.lowercase() }
     val foreignLanguageDetected = remember(sessionState.pageLanguageTag, deviceLang) {
         val tag = sessionState.pageLanguageTag?.substringBefore('-')?.lowercase()
         !tag.isNullOrBlank() && tag != deviceLang
     }
 
-    val pillsVisible by remember(bottomBarScrollHideFraction) {
-        derivedStateOf { bottomBarScrollHideFraction.floatValue < 0.5f }
+    val pillsVisible by remember(bottomBarScrollHideFraction, isOverlaySheetOpen) {
+        derivedStateOf { !isOverlaySheetOpen && bottomBarScrollHideFraction.floatValue < 0.5f }
     }
 
     Box(
@@ -122,7 +131,7 @@ fun BrowserViewportScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .pinchToSummarizeDetector(
-                    enabled = hasLoadedWebUrl && !isInPictureInPictureMode,
+                    enabled = hasLoadedWebUrl && !isInPictureInPictureMode && !isOverlaySheetOpen,
                     isPageAtMinimumZoom = {
                         (activeSession?.telemetry?.value?.currentScaleFactor ?: 1f) <= 1.04f
                     },
@@ -136,16 +145,17 @@ fun BrowserViewportScreen(
                     pinchCenterYState = pinchCenterYState,
                 )
                 .graphicsLayer {
-                    // Horizontal tab scrub parallax + Android 14–16 Predictive Back page preview curve
+                    // Horizontal tab scrub parallax + Android 14–16 Predictive Back + subtle sheet recession
                     val scrubPx = scrubOffsetPxState.floatValue
                     val backProg = predictiveBackProgressState.floatValue
                     val scrubActive = kotlin.math.abs(scrubPx) > 1f
                     val scrubScale = if (scrubActive) 0.94f else 1f
                     val backScale = 1f - (backProg * 0.06f)
+                    val sheetRecedeScale = 1f - (overlayDimProgress * 0.025f)
 
                     translationX = scrubPx
-                    scaleX = scrubScale * backScale
-                    scaleY = scrubScale * backScale
+                    scaleX = scrubScale * backScale * sheetRecedeScale
+                    scaleY = scrubScale * backScale * sheetRecedeScale
                 },
         ) {
             if (hasLoadedWebUrl && activeSession != null) {
@@ -161,6 +171,7 @@ fun BrowserViewportScreen(
                 ) {
                     CalmOpticalLaunchCanvas(
                         isPrivateAperture = isPrivateAperture,
+                        overlayDimProgress = overlayDimProgress,
                         continuityHandoff = continuityHandoff,
                         onOpenContinuityHandoff = onOpenContinuityHandoff,
                         onTapStartSearch = onOpenSearchSheet,
@@ -169,8 +180,8 @@ fun BrowserViewportScreen(
             }
         }
 
-        // Layer 2: Floating Lower Dock (hidden completely in Picture-in-Picture mode)
-        if (!isInPictureInPictureMode) {
+        // Layer 2: Floating Lower Dock (hidden in Picture-in-Picture and smoothly recedes when a sheet opens)
+        if (!isInPictureInPictureMode && overlayDimProgress < 0.99f) {
             val effectiveBackdropLayer = if (hasLoadedWebUrl) null else backdropGraphicsLayer
             CompositionLocalProvider(LocalFocalBackdropLayer provides effectiveBackdropLayer) {
                 Column(
@@ -180,8 +191,10 @@ fun BrowserViewportScreen(
                         .navigationBarsPadding()
                         .padding(bottom = 12.dp)
                         .graphicsLayer {
-                            // Hide contextual chrome smoothly via hardware layer only (0 layout pass)
-                            translationY = bottomBarScrollHideFraction.floatValue * 18.dp.toPx()
+                            val scrollHideY = bottomBarScrollHideFraction.floatValue * 18.dp.toPx()
+                            val sheetHideY = overlayDimProgress * 28.dp.toPx()
+                            translationY = scrollHideY + sheetHideY
+                            alpha = (1f - overlayDimProgress * 1.15f).coerceIn(0f, 1f)
                         },
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
@@ -192,7 +205,7 @@ fun BrowserViewportScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 14.dp),
+                                .padding(horizontal = 16.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
@@ -247,12 +260,15 @@ fun BrowserViewportScreen(
 }
 
 /**
- * Screen 01 · Calm Optical Launch / Empty State.
- * Zero news feed, zero crypto/rewards bloat — pure AGSL radial optical vignette + optional E2EE handoff pill.
+ * Screen 01 · Serene Optical Launch Canvas.
+ *
+ * Positioned at upper-optical center (`verticalBias = -0.22f`) and faded cleanly when an overlay
+ * sheet opens so it never collides with or pokes behind floating Smoked Glass sheets.
  */
 @Composable
 private fun CalmOpticalLaunchCanvas(
     isPrivateAperture: Boolean,
+    overlayDimProgress: Float,
     continuityHandoff: SyncEvent.TabHandoffEvent?,
     onOpenContinuityHandoff: (SyncEvent.TabHandoffEvent) -> Unit,
     onTapStartSearch: () -> Unit,
@@ -262,9 +278,9 @@ private fun CalmOpticalLaunchCanvas(
     val baseColorState = rememberUpdatedState(colors.canvasBackground)
     val bloomColorState = rememberUpdatedState(
         if (colors.isDarkGlass || isPrivateAperture) {
-            Color.White.copy(alpha = 0.05f)
+            Color.White.copy(alpha = 0.042f)
         } else {
-            Color.Black.copy(alpha = 0.038f)
+            Color.Black.copy(alpha = 0.032f)
         },
     )
 
@@ -275,17 +291,21 @@ private fun CalmOpticalLaunchCanvas(
                 baseColorState = baseColorState,
                 bloomColorState = bloomColorState,
             )
+            .clickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null,
+                onClick = onTapStartSearch,
+            )
             .statusBarsPadding()
             .padding(horizontal = 24.dp, vertical = 18.dp),
     ) {
         // Optional Top E2EE Desktop Continuity Handoff Chip (only rendered when active)
-        if (continuityHandoff != null) {
+        if (continuityHandoff != null && overlayDimProgress < 0.5f) {
             Row(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .clip(CircleShape)
-                    .background(colors.effectiveBarGlass)
-                    .border(1.dp, colors.borderSpecular, CircleShape)
+                    .background(colors.surfacePillSubtle)
                     .clickable { onOpenContinuityHandoff(continuityHandoff) }
                     .padding(horizontal = 14.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -298,7 +318,7 @@ private fun CalmOpticalLaunchCanvas(
                     cornerRadius = 4.dp,
                 )
                 Text(
-                    text = "⇄ ${continuityHandoff.sourceDeviceName ?: "Desktop"} · ${continuityHandoff.title.ifBlank { continuityHandoff.url }}",
+                    text = "${continuityHandoff.sourceDeviceName ?: "Desktop"} · ${continuityHandoff.title.ifBlank { continuityHandoff.url }}",
                     style = typography.captionMetadata,
                     color = colors.inkPrimary,
                     maxLines = 1,
@@ -307,44 +327,47 @@ private fun CalmOpticalLaunchCanvas(
             }
         }
 
-        // Centered Minimal Focal Aperture Mark
+        // Upper-Optical Serene Aperture Emblem (recedes completely when sheets open)
         Column(
             modifier = Modifier
-                .align(Alignment.Center)
-                .clickable(onClick = onTapStartSearch)
+                .align(BiasAlignment(horizontalBias = 0f, verticalBias = -0.22f))
+                .graphicsLayer {
+                    val markAlpha = (1f - overlayDimProgress * 1.4f).coerceIn(0f, 1f)
+                    alpha = markAlpha
+                    scaleX = 1f - overlayDimProgress * 0.06f
+                    scaleY = 1f - overlayDimProgress * 0.06f
+                }
                 .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Box(
                 modifier = Modifier
-                    .size(56.dp)
+                    .size(52.dp)
                     .clip(CircleShape)
-                    .background(colors.surfacePillSubtle)
-                    .border(1.dp, colors.borderSpecular, CircleShape),
+                    .background(colors.surfacePillSubtle),
                 contentAlignment = Alignment.Center,
             ) {
-                Text(
-                    text = "◎",
-                    style = typography.displayHeadline,
-                    color = colors.inkPrimary,
+                Icon(
+                    imageVector = FocalGlyphs.Aperture,
+                    contentDescription = null,
+                    tint = colors.inkPrimary.copy(alpha = 0.85f),
+                    modifier = Modifier.size(24.dp),
                 )
             }
 
             Text(
                 text = if (isPrivateAperture) "Private Aperture" else "Focal",
                 style = typography.sheetTitle,
-                color = colors.inkPrimary,
+                color = colors.inkPrimary.copy(alpha = 0.88f),
             )
-            Text(
-                text = if (isPrivateAperture) {
-                    "Isolated ephemeral memory · Zero history writes"
-                } else {
-                    "Tap anywhere to search · Swipe ↑ bar for Spaces"
-                },
-                style = typography.captionMetadata,
-                color = colors.inkFaint,
-            )
+            if (isPrivateAperture) {
+                Text(
+                    text = "Zero history · Ephemeral memory",
+                    style = typography.captionMetadata,
+                    color = colors.inkSecondary,
+                )
+            }
         }
     }
 }

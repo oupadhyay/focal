@@ -8,11 +8,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasSetTextAction
@@ -22,6 +20,7 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -29,13 +28,12 @@ import app.focal.database.BookmarkEntity
 import app.focal.database.SpaceEntity
 import app.focal.database.TabMetadataEntity
 import app.focal.design.FocalTheme
-import app.focal.feature.browser.FocalBottomBar
+import app.focal.engine.api.OriginOverrides
 import app.focal.feature.reader.PageMenuAndSiteOverridesSheet
 import app.focal.feature.search.SearchSheet
 import app.focal.feature.spaces.SpacesSheet
 import app.focal.feature.spaces.SpacesSheetUiState
 import app.focal.feature.tabs.TabSwitcherSheet
-import app.focal.engine.api.OriginOverrides
 import app.focal.sync.PresenceTabItem
 import app.focal.sync.SyncConnectionStatus
 import app.focal.sync.SyncSessionUiState
@@ -65,7 +63,7 @@ class FocalComposeUiHarnessTest {
     val composeRule = createAndroidComposeRule<ComponentActivity>()
 
     @Test
-    fun searchSheet_rendersFavicons_activatesSiteChip_andNavigatesToGoogleDotCom() {
+    fun searchSheet_hasNoPermanentHint_activatesGitDoubleSpaceChip_andNavigatesToGoogleDotCom() {
         var navigatedUrl: String? = null
         var navigatedPrivate: Boolean? = null
 
@@ -87,28 +85,40 @@ class FocalComposeUiHarnessTest {
 
         composeRule.waitForIdle()
 
-        // Verify all 5 default squircle pin titles & SiteFavicons render (no 2-letter monogram text nodes)
+        // Verify 5 borderless squircle favicon tiles render with zero permanent command hint clutter
         composeRule.onNodeWithText("IMDb").assertIsDisplayed()
         composeRule.onNodeWithText("Wikipedia").assertIsDisplayed()
         composeRule.onNodeWithText("GitHub").assertIsDisplayed()
         composeRule.onNodeWithText("Ars").assertIsDisplayed()
         composeRule.onNodeWithText("Reddit").assertIsDisplayed()
+        composeRule.onNodeWithText("for site search", substring = true).assertDoesNotExist()
         composeRule.onNodeWithText("IM").assertDoesNotExist()
         composeRule.onNodeWithText("GH").assertDoesNotExist()
 
-        // Verify typing "google.com" + clicking Go resolves cleanly to https://google.com
+        val cleanSnap = composeRule.captureSnapshotPng("01a_search_sheet_clean.png")
+        assertTrue(cleanSnap.length() > 1_000L)
+
+        // Verify typing "git  " activates the GitHub site chip & radial glow
+        composeRule.onNode(hasSetTextAction()).performTextInput("git  ")
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("Remove GitHub filter").assertIsDisplayed()
+
+        val chipSnap = composeRule.captureSnapshotPng("01b_search_sheet_github_chip.png")
+        assertTrue(chipSnap.length() > 1_000L)
+
+        // Dismiss chip and verify typing "google.com" + Go resolves cleanly to https://google.com
+        composeRule.onNodeWithContentDescription("Remove GitHub filter").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNode(hasSetTextAction()).performTextClearance()
         composeRule.onNode(hasSetTextAction()).performTextInput("google.com")
         composeRule.waitForIdle()
         composeRule.onNodeWithText("Go").performClick()
         assertEquals("https://google.com", navigatedUrl)
         assertEquals(false, navigatedPrivate)
-
-        val snap = composeRule.captureSnapshotPng("01_search_sheet_google_navigation.png")
-        assertTrue("Expected non-empty PNG snapshot at ${snap.absolutePath}", snap.length() > 1_000L)
     }
 
     @Test
-    fun spacesSheet_rendersFaviconsForPinnedSquirclesBookmarksAndDesktopTabs() {
+    fun spacesSheet_rendersConcentricGroupedCardsAndFavicons() {
         val now = 1_763_400_000_000L
         val uiState = SpacesSheetUiState(
             spaces = persistentListOf(
@@ -150,22 +160,17 @@ class FocalComposeUiHarnessTest {
         }
 
         composeRule.waitForIdle()
-
-        // Legacy "HackerNews" title is normalized to "HN" label while 2-letter shortCode text nodes ("GH", "DV", "RS") do not exist
         composeRule.onNodeWithText("GitHub").assertIsDisplayed()
         composeRule.onNodeWithText("Android").assertIsDisplayed()
         composeRule.onNodeWithText("Docs.rs").assertIsDisplayed()
         composeRule.onNodeWithText("HN").assertIsDisplayed()
-        composeRule.onNodeWithText("GH").assertDoesNotExist()
-        composeRule.onNodeWithText("DV").assertDoesNotExist()
-        composeRule.onNodeWithText("RS").assertDoesNotExist()
 
         val snap = composeRule.captureSnapshotPng("02_spaces_sheet_favicons.png")
         assertTrue(snap.length() > 1_000L)
     }
 
     @Test
-    fun bottomBar_pageMenu_andTabSwitcher_renderLiveDomainFavicons() {
+    fun tabSwitcherSheet_rendersCleanCardsWithoutOverlappingBottomBar() {
         val now = 1_763_400_000_000L
         val tabs = persistentListOf(
             TabMetadataEntity(
@@ -191,7 +196,6 @@ class FocalComposeUiHarnessTest {
         )
 
         composeRule.setContent {
-            val scrubState = remember { mutableFloatStateOf(0f) }
             FocalTheme(darkGlass = true) {
                 Box(
                     modifier = Modifier
@@ -210,23 +214,6 @@ class FocalComposeUiHarnessTest {
                         onNewSearch = {},
                         onDone = {},
                     )
-                    FocalBottomBar(
-                        tabCount = 2,
-                        domainOrHint = "google.com",
-                        pageUrl = "https://www.google.com",
-                        isHttps = true,
-                        isPrivateAperture = false,
-                        isLoading = false,
-                        scrubOffsetPxState = scrubState,
-                        onOpenTabSwitcher = {},
-                        onCloseCurrentTab = {},
-                        onOpenNewPrivateTab = {},
-                        onTapCenterSearch = {},
-                        onStepToAdjacentTab = {},
-                        onSwipeUpOpenSpaces = {},
-                        onOpenPageMenu = {},
-                        modifier = Modifier.align(Alignment.BottomCenter),
-                    )
                 }
             }
         }
@@ -234,13 +221,16 @@ class FocalComposeUiHarnessTest {
         composeRule.waitForIdle()
         composeRule.onAllNodesWithText("focal - Google Search")[0].assertIsDisplayed()
 
-        val tabSnap = composeRule.captureSnapshotPng("03_tab_switcher_and_bottom_bar_favicons.png")
+        val tabSnap = composeRule.captureSnapshotPng("03_tab_switcher_clean.png")
         assertTrue(tabSnap.length() > 1_000L)
     }
 
     @Test
-    fun pageMenuSheet_rendersFaviconBesideDomain() {
+    fun pageMenuSheet_rendersLensAndYabGradeActionsAndSiteSettings() {
         composeRule.setContent {
+            var overrides by remember {
+                mutableStateOf(OriginOverrides(origin = "github.com"))
+            }
             FocalTheme(darkGlass = true) {
                 PageMenuAndSiteOverridesSheet(
                     domain = "github.com",
@@ -249,7 +239,7 @@ class FocalComposeUiHarnessTest {
                     canGoBack = true,
                     canGoForward = false,
                     blockedCountInTab = 7L,
-                    overrides = OriginOverrides(origin = "github.com"),
+                    overrides = overrides,
                     onGoBack = {},
                     onGoForward = {},
                     onReload = {},
@@ -258,7 +248,7 @@ class FocalComposeUiHarnessTest {
                     onPinToSpace = {},
                     onSaveBookmark = {},
                     onOpenReaderMode = {},
-                    onUpdateSiteOverrides = {},
+                    onUpdateSiteOverrides = { overrides = it },
                     onDismiss = {},
                 )
             }
@@ -266,10 +256,66 @@ class FocalComposeUiHarnessTest {
 
         composeRule.waitForIdle()
         composeRule.onNodeWithText("github.com").assertIsDisplayed()
-        composeRule.onNodeWithContentDescription("github.com").assertIsDisplayed()
+        composeRule.onNodeWithText("focal://calm").assertDoesNotExist()
 
-        val menuSnap = composeRule.captureSnapshotPng("04_page_menu_sheet_favicon.png")
-        assertTrue(menuSnap.length() > 1_000L)
+        val actionsSnap = composeRule.captureSnapshotPng("04a_page_menu_actions.png")
+        assertTrue(actionsSnap.length() > 1_000L)
+
+        // Switch to Site Settings subtab and capture snapshot matching user's 2nd screenshot
+        composeRule.onAllNodesWithText("Site Settings")[0].performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("Block Ads & Trackers").assertIsDisplayed()
+        composeRule.onNodeWithText("Dark Web Pages").assertIsDisplayed()
+        composeRule.onNodeWithText("Editorial Fonts").assertIsDisplayed()
+
+        val settingsSnap = composeRule.captureSnapshotPng("04b_page_menu_site_settings.png")
+        assertTrue(settingsSnap.length() > 1_000L)
+    }
+
+    @Test
+    fun browserViewport_rendersCalmEmblemAndThreeCapsuleBottomBar() {
+        composeRule.setContent {
+            val pinchProgress = remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
+            val pinchCenterY = remember { androidx.compose.runtime.mutableFloatStateOf(0.5f) }
+            val backProgress = remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
+            val scrollHide = remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
+
+            FocalTheme(darkGlass = true) {
+                app.focal.feature.browser.BrowserViewportScreen(
+                    activeSession = null,
+                    tabCount = 2,
+                    isPrivateAperture = false,
+                    isOverlaySheetOpen = false,
+                    continuityHandoff = null,
+                    mediaMiniPlayerInfo = null,
+                    pinchProgressState = pinchProgress,
+                    pinchCenterYState = pinchCenterY,
+                    predictiveBackProgressState = backProgress,
+                    bottomBarScrollHideFraction = scrollHide,
+                    onOpenSearchSheet = {},
+                    onOpenTabSwitcher = {},
+                    onCloseCurrentTab = {},
+                    onOpenNewPrivateTab = {},
+                    onStepToAdjacentTab = {},
+                    onOpenSpacesSheet = {},
+                    onOpenPageMenu = {},
+                    onOpenReaderMode = {},
+                    onPinchSnapSummarize = {},
+                    onPinchSnapCancelled = {},
+                    onOpenContinuityHandoff = {},
+                    onToggleMediaPlayPause = {},
+                    onCycleMediaPlaybackRate = {},
+                    onEnterPictureInPicture = {},
+                )
+            }
+        }
+
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("Focal").assertIsDisplayed()
+        composeRule.onNodeWithText("Search or enter address").assertIsDisplayed()
+
+        val viewportSnap = composeRule.captureSnapshotPng("06_calm_viewport_and_bottom_bar.png")
+        assertTrue(viewportSnap.length() > 1_000L)
     }
 
     @Test

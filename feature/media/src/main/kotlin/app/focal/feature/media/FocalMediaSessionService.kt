@@ -6,7 +6,6 @@ import android.content.Context
 import android.content.Intent
 import android.os.Looper
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -351,7 +350,7 @@ fun MediaMiniPlayerDock(
     val colors = FocalTheme.colors
     val typography = FocalTheme.typography
     val barTint = rememberUpdatedState(colors.effectiveBarGlass)
-    val dockShape = RoundedCornerShape(22.dp)
+    val dockShape = RoundedCornerShape(24.dp)
 
     SmokedGlassBox(
         shape = dockShape,
@@ -373,10 +372,11 @@ fun MediaMiniPlayerDock(
                     .clickable { onTogglePlayPause(!mediaInfo.isPlaying) },
                 contentAlignment = Alignment.Center,
             ) {
-                Text(
-                    text = if (mediaInfo.isPlaying) "❚❚" else "▶",
-                    style = typography.tabBadgeNumeral,
-                    color = colors.inkOnPillActive,
+                androidx.compose.material3.Icon(
+                    imageVector = if (mediaInfo.isPlaying) app.focal.design.FocalGlyphs.Pause else app.focal.design.FocalGlyphs.Play,
+                    contentDescription = if (mediaInfo.isPlaying) "Pause" else "Play",
+                    tint = colors.inkOnPillActive,
+                    modifier = Modifier.size(14.dp),
                 )
             }
 
@@ -409,11 +409,10 @@ fun MediaMiniPlayerDock(
                 modifier = Modifier
                     .clip(CircleShape)
                     .background(colors.surfacePillSubtle)
-                    .border(1.dp, colors.borderSpecular, CircleShape)
                     .clickable {
                         onCyclePlaybackRate(FocalMediaBridge.nextCycledSpeed(mediaInfo.playbackRate))
                     }
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                    .padding(horizontal = 9.dp, vertical = 5.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
@@ -426,17 +425,17 @@ fun MediaMiniPlayerDock(
             // PiP Trigger Pill
             Box(
                 modifier = Modifier
+                    .size(28.dp)
                     .clip(CircleShape)
                     .background(colors.surfacePillSubtle)
-                    .border(1.dp, colors.borderSpecular, CircleShape)
-                    .clickable(onClick = onEnterPictureInPicture)
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                    .clickable(onClick = onEnterPictureInPicture),
                 contentAlignment = Alignment.Center,
             ) {
-                Text(
-                    text = "PiP ⧉",
-                    style = typography.tabBadgeNumeral,
-                    color = colors.inkPrimary,
+                androidx.compose.material3.Icon(
+                    imageVector = app.focal.design.FocalGlyphs.Pip,
+                    contentDescription = "Picture in Picture",
+                    tint = colors.inkPrimary,
+                    modifier = Modifier.size(15.dp),
                 )
             }
         }

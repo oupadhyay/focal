@@ -44,24 +44,24 @@ object FocalPalettes {
     val DarkSmokedOled = FocalColorTokens(
         isDarkGlass = true,
         isPrivateAperture = false,
-        canvasBackground = Color(0xFF0B0C0E),
-        // rgba(22, 23, 27, 0.82)
-        surfaceGlassBar = Color(0xD116171B),
-        // rgba(28, 30, 35, 0.90)
-        surfaceGlassSheet = Color(0xE61C1E23),
-        // rgba(10, 11, 14, 0.94)
-        surfaceGlassPrivate = Color(0xF00A0B0E),
-        // rgba(255, 255, 255, 0.08)
-        surfacePillSubtle = Color(0x14FFFFFF),
+        canvasBackground = Color(0xFF0A0B0D),
+        // rgba(22, 23, 27, 0.88)
+        surfaceGlassBar = Color(0xE016171B),
+        // rgba(24, 25, 29, 0.95) — rich velvety smoked sheet
+        surfaceGlassSheet = Color(0xF218191D),
+        // rgba(10, 11, 14, 0.96)
+        surfaceGlassPrivate = Color(0xF50A0B0E),
+        // rgba(255, 255, 255, 0.075) — borderless tonal card fill
+        surfacePillSubtle = Color(0x13FFFFFF),
         surfacePillActive = Color(0xFFF4F5F7),
         inkOnPillActive = Color(0xFF0B0C0E),
-        // rgba(255, 255, 255, 0.11)
-        borderSpecular = Color(0x1CFFFFFF),
+        // Top-edge specular highlight rgba(255, 255, 255, 0.15)
+        borderSpecular = Color(0x26FFFFFF),
         inkPrimary = Color(0xFFF5F6F8),
         // rgba(245, 246, 248, 0.64)
         inkSecondary = Color(0xA3F5F6F8),
-        // rgba(245, 246, 248, 0.38)
-        inkFaint = Color(0x61F5F6F8),
+        // rgba(245, 246, 248, 0.36)
+        inkFaint = Color(0x5CF5F6F8),
     )
 
     /**
@@ -70,24 +70,24 @@ object FocalPalettes {
     val LightAlabaster = FocalColorTokens(
         isDarkGlass = false,
         isPrivateAperture = false,
-        canvasBackground = Color(0xFFFAF9F6),
-        // rgba(246, 247, 249, 0.85)
-        surfaceGlassBar = Color(0xD9F6F7F9),
-        // rgba(255, 255, 255, 0.93)
-        surfaceGlassSheet = Color(0xEDFFFFFF),
-        // rgba(14, 15, 19, 0.94) — Always dark obsidian when Private Aperture ◎ is armed
-        surfaceGlassPrivate = Color(0xF00E0F13),
-        // rgba(15, 17, 21, 0.06)
-        surfacePillSubtle = Color(0x0F0F1115),
+        canvasBackground = Color(0xFFF7F7F8),
+        // rgba(246, 247, 249, 0.90)
+        surfaceGlassBar = Color(0xE6F6F7F9),
+        // rgba(252, 252, 253, 0.96)
+        surfaceGlassSheet = Color(0xF5FCFCFD),
+        // rgba(14, 15, 19, 0.96) — Always dark obsidian when Private Aperture ◎ is armed
+        surfaceGlassPrivate = Color(0xF50E0F13),
+        // rgba(15, 17, 21, 0.055)
+        surfacePillSubtle = Color(0x0E0F1115),
         surfacePillActive = Color(0xFF131417),
         inkOnPillActive = Color(0xFFFFFFFF),
         // rgba(15, 17, 21, 0.09)
         borderSpecular = Color(0x170F1115),
         inkPrimary = Color(0xFF121316),
-        // rgba(18, 19, 22, 0.62)
-        inkSecondary = Color(0x9E121316),
-        // rgba(18, 19, 22, 0.40)
-        inkFaint = Color(0x66121316),
+        // rgba(18, 19, 22, 0.60)
+        inkSecondary = Color(0x99121316),
+        // rgba(18, 19, 22, 0.38)
+        inkFaint = Color(0x61121316),
     )
 
     /**
@@ -96,9 +96,9 @@ object FocalPalettes {
      */
     val PrivateObsidian = DarkSmokedOled.copy(
         isPrivateAperture = true,
-        canvasBackground = Color(0xFF07080A),
-        surfaceGlassBar = Color(0xF00A0B0E),
-        surfaceGlassSheet = Color(0xF50A0B0E),
+        canvasBackground = Color(0xFF060709),
+        surfaceGlassBar = Color(0xF20A0B0E),
+        surfaceGlassSheet = Color(0xF70A0B0E),
     )
 }
 

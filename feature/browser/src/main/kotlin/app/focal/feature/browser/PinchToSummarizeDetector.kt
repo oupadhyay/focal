@@ -1,7 +1,6 @@
 package app.focal.feature.browser
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.calculateCentroid
@@ -16,10 +15,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableFloatState
@@ -37,6 +37,9 @@ import androidx.compose.ui.unit.dp
 import app.focal.ai.GroundedBullet
 import app.focal.ai.GroundedPageSummary
 import app.focal.ai.LocalSummarizerBackend
+import app.focal.design.FocalGeometry
+import app.focal.design.FocalGlyphs
+import app.focal.design.FocalSheetGrabber
 import app.focal.design.FocalTheme
 import app.focal.design.consumeClicks
 import app.focal.design.shaders.SmokedGlassBox
@@ -154,27 +157,29 @@ fun PinchSummarySheet(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.28f))
+            .background(Color.Black.copy(alpha = 0.52f))
             .clickable(onClick = onDismiss),
         contentAlignment = Alignment.BottomCenter,
     ) {
         SmokedGlassBox(
-            shape = RoundedCornerShape(26.dp),
+            shape = FocalGeometry.SheetOuterShape,
             glassTintState = sheetTint,
             borderSpecular = colors.borderSpecular,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp)
+                .padding(horizontal = 10.dp)
                 .navigationBarsPadding()
-                .padding(bottom = 12.dp)
+                .padding(bottom = 10.dp)
                 .consumeClicks(),
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
+                FocalSheetGrabber(modifier = Modifier.align(Alignment.CenterHorizontally))
+
                 // Top Runtime Privacy Badge + Close
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -185,98 +190,103 @@ fun PinchSummarySheet(
                         modifier = Modifier
                             .clip(CircleShape)
                             .background(colors.surfacePillSubtle)
-                            .border(1.dp, colors.borderSpecular, CircleShape)
                             .padding(horizontal = 10.dp, vertical = 4.dp),
                     ) {
                         Text(
                             text = summary?.backend?.badgeLabel ?: activeBackendLabel,
                             style = typography.captionMetadata,
-                            color = colors.inkPrimary,
+                            color = colors.inkSecondary,
                         )
                     }
 
-                Text(
-                    text = "Unpinch ✕",
-                    style = typography.controlPillLabel,
-                    color = colors.inkSecondary,
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .clickable(onClick = onDismiss)
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                )
-            }
-
-            if (isSummarizing || summary == null) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text(
-                        text = "Distilling & grounding source paragraphs on-device…",
-                        style = typography.cardTitle,
-                        color = colors.inkPrimary,
-                    )
-                    Text(
-                        text = "Zero bytes leave device RAM · BM25 + 4-gram Jaccard grounding",
-                        style = typography.captionMetadata,
-                        color = colors.inkFaint,
-                    )
-                }
-            } else {
-                Text(
-                    text = summary.headline,
-                    style = typography.sheetTitle,
-                    color = colors.inkPrimary,
-                )
-
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    summary.bullets.forEach { bullet ->
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(colors.surfacePillSubtle)
-                                .border(1.dp, colors.borderSpecular, RoundedCornerShape(16.dp))
-                                .clickable { onJumpToGroundedParagraph(bullet) }
-                                .padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            Text(
-                                text = bullet.text,
-                                style = typography.bodyCompact,
-                                color = colors.inkPrimary,
-                            )
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(
-                                    text = "Tap to jump & pulse source §${bullet.groundedParaId + 1}",
-                                    style = typography.captionMetadata,
-                                    color = colors.inkFaint,
-                                )
-                                Text(
-                                    text = "§${bullet.groundedParaId + 1} ↗",
-                                    style = typography.tabBadgeNumeral,
-                                    color = colors.inkSecondary,
-                                )
-                            }
-                        }
+                    Box(
+                        modifier = Modifier
+                            .size(28.dp)
+                            .clip(CircleShape)
+                            .background(colors.surfacePillSubtle)
+                            .clickable(onClick = onDismiss),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = FocalGlyphs.Close,
+                            contentDescription = "Close summary",
+                            tint = colors.inkSecondary,
+                            modifier = Modifier.size(14.dp),
+                        )
                     }
                 }
 
-                Spacer(Modifier.height(2.dp))
+                if (isSummarizing || summary == null) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 22.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            text = "Distilling on-device…",
+                            style = typography.cardTitle,
+                            color = colors.inkPrimary,
+                        )
+                        Text(
+                            text = "Grounded to source paragraphs · Offline",
+                            style = typography.captionMetadata,
+                            color = colors.inkSecondary,
+                        )
+                    }
+                } else {
+                    Text(
+                        text = summary.headline,
+                        style = typography.sheetTitle,
+                        color = colors.inkPrimary,
+                    )
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        summary.bullets.forEach { bullet ->
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(FocalGeometry.TileShape)
+                                    .background(colors.surfacePillSubtle)
+                                    .clickable { onJumpToGroundedParagraph(bullet) }
+                                    .padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Text(
+                                    text = bullet.text,
+                                    style = typography.bodyCompact,
+                                    color = colors.inkPrimary,
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = "Source §${bullet.groundedParaId + 1}",
+                                        style = typography.captionMetadata,
+                                        color = colors.inkSecondary,
+                                    )
+                                    Icon(
+                                        imageVector = FocalGlyphs.ExternalArrow,
+                                        contentDescription = "Jump to paragraph",
+                                        tint = colors.inkSecondary,
+                                        modifier = Modifier.size(14.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(2.dp))
+                }
             }
-        }
         }
     }
 }

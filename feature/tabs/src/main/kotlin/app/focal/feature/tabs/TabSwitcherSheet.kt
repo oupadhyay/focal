@@ -2,7 +2,6 @@ package app.focal.feature.tabs
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
@@ -23,6 +23,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -34,9 +35,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import app.focal.database.TabMetadataEntity
+import app.focal.design.FocalGlyphs
+import app.focal.design.FocalGroupedCard
+import app.focal.design.FocalHairlineDivider
 import app.focal.design.FocalTheme
 import app.focal.design.SiteFavicon
 import app.focal.design.shaders.SmokedGlassBox
@@ -49,7 +55,6 @@ import kotlin.math.absoluteValue
  *
  * Uses `HorizontalPager` + `Modifier.graphicsLayer` (`rotationY = -6deg..+6deg`, scale depth)
  * reading pager offsets strictly in the draw/layer phase for locked 120Hz frame pacing.
- * Supports isolated Private Aperture (`◎`) tab inspection and 1-tap `"Close All Private Tabs"` wipe.
  */
 @Composable
 fun TabSwitcherSheet(
@@ -71,7 +76,7 @@ fun TabSwitcherSheet(
     val typography = FocalTheme.typography
     val displayedTabs = if (isPrivateAperture) privateTabs else activeTabs
     val cardGlassTint = rememberUpdatedState(
-        if (isPrivateAperture) colors.surfaceGlassPrivate else colors.effectiveBarGlass,
+        if (isPrivateAperture) colors.surfaceGlassPrivate else colors.effectiveSheetGlass,
     )
 
     val initialIdx = displayedTabs.indexOfFirst { it.id == selectedTabId }.coerceAtLeast(0)
@@ -79,12 +84,12 @@ fun TabSwitcherSheet(
         initialPage = initialIdx,
         pageCount = { displayedTabs.size.coerceAtLeast(1) },
     )
-    var archiveExpanded by remember { mutableStateOf(true) }
+    var archiveExpanded by remember { mutableStateOf(false) }
 
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(colors.canvasBackground.copy(alpha = 0.96f))
+            .background(colors.canvasBackground.copy(alpha = 0.97f))
             .statusBarsPadding()
             .navigationBarsPadding()
             .padding(horizontal = 16.dp, vertical = 14.dp),
@@ -92,41 +97,51 @@ fun TabSwitcherSheet(
     ) {
         // Header Metadata Strip
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = if (isPrivateAperture) {
-                    "◎ ${privateTabs.size} Private ${if (privateTabs.size == 1) "Tab" else "Tabs"}"
-                } else {
-                    "${activeTabs.size} Active Tabs"
-                },
-                style = typography.urlDomainPill,
-                color = colors.inkPrimary,
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                if (isPrivateAperture) {
+                    Icon(
+                        imageVector = FocalGlyphs.Aperture,
+                        contentDescription = null,
+                        tint = colors.inkPrimary,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+                Text(
+                    text = if (isPrivateAperture) {
+                        "${privateTabs.size} Private ${if (privateTabs.size == 1) "Tab" else "Tabs"}"
+                    } else {
+                        "${activeTabs.size} ${if (activeTabs.size == 1) "Tab" else "Tabs"}"
+                    },
+                    style = typography.sheetTitle,
+                    color = colors.inkPrimary,
+                )
+            }
             if (isPrivateAperture && privateTabs.isNotEmpty()) {
                 Box(
                     modifier = Modifier
                         .clip(CircleShape)
                         .background(colors.surfacePillSubtle)
-                        .border(1.dp, colors.borderSpecular, CircleShape)
                         .clickable(onClick = onCloseAllPrivateTabs)
                         .padding(horizontal = 12.dp, vertical = 6.dp),
                 ) {
                     Text(
-                        text = "Close All Private Tabs",
+                        text = "Close All",
                         style = typography.controlPillLabel,
                         color = colors.inkPrimary,
                     )
                 }
             } else {
                 Text(
-                    text = if (isPrivateAperture) {
-                        "Ephemeral · Wiped on close"
-                    } else {
-                        "Auto-archives after 24h idle"
-                    },
+                    text = if (isPrivateAperture) "Ephemeral" else "24h auto-archive",
                     style = typography.captionMetadata,
                     color = colors.inkSecondary,
                 )
@@ -135,18 +150,30 @@ fun TabSwitcherSheet(
 
         // Horizontal 3D Tilted Card-Stack Pager
         if (displayedTabs.isEmpty()) {
-            Box(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
-                contentAlignment = Alignment.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
             ) {
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .background(colors.surfacePillSubtle),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = FocalGlyphs.Aperture,
+                        contentDescription = null,
+                        tint = colors.inkSecondary,
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
                 Text(
-                    text = if (isPrivateAperture) {
-                        "◎ Private Aperture · Zero History"
-                    } else {
-                        "Calm Canvas · No Open Tabs"
-                    },
+                    text = if (isPrivateAperture) "No Private Tabs" else "No Open Tabs",
                     style = typography.sheetTitle,
                     color = colors.inkSecondary,
                 )
@@ -158,25 +185,29 @@ fun TabSwitcherSheet(
                     .weight(1f),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(4.dp))
 
                 HorizontalPager(
                     state = pagerState,
                     key = { idx -> displayedTabs.getOrNull(idx)?.id ?: idx },
-                    contentPadding = PaddingValues(horizontal = 20.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp),
                     pageSpacing = 12.dp,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(220.dp),
+                        .height(212.dp),
                 ) { pageIndex ->
                     val tab = displayedTabs.getOrNull(pageIndex) ?: return@HorizontalPager
                     val isCurrent = tab.id == selectedTabId
-                    val cardShape = RoundedCornerShape(24.dp)
+                    val cardShape = RoundedCornerShape(28.dp)
 
                     SmokedGlassBox(
                         shape = cardShape,
                         glassTintState = cardGlassTint,
-                        borderSpecular = if (isCurrent) colors.inkPrimary else colors.borderSpecular,
+                        borderSpecular = if (isCurrent) {
+                            colors.inkPrimary.copy(alpha = 0.45f)
+                        } else {
+                            colors.borderSpecular
+                        },
                         modifier = Modifier
                             .fillMaxSize()
                             .graphicsLayer {
@@ -186,9 +217,9 @@ fun TabSwitcherSheet(
                                     ).coerceIn(-1.5f, 1.5f)
                                 val absOffset = pageOffset.absoluteValue
                                 cameraDistance = 12f * density
-                                rotationY = pageOffset * -6f
-                                scaleX = 1f - (absOffset * 0.06f).coerceAtMost(0.12f)
-                                scaleY = 1f - (absOffset * 0.06f).coerceAtMost(0.12f)
+                                rotationY = pageOffset * -5.5f
+                                scaleX = 1f - (absOffset * 0.055f).coerceAtMost(0.11f)
+                                scaleY = 1f - (absOffset * 0.055f).coerceAtMost(0.11f)
                                 alpha = 1f - (absOffset * 0.25f).coerceAtMost(0.45f)
                             }
                             .clickable { onSelectTab(tab.id) },
@@ -224,19 +255,29 @@ fun TabSwitcherSheet(
                                     )
                                 }
                                 Spacer(Modifier.width(8.dp))
-                                TabTtlOrDraftBadge(
-                                    tab = tab,
-                                    nowEpochMs = nowEpochMs,
-                                    isPrivate = isPrivateAperture,
-                                )
+                                Box(
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .clip(CircleShape)
+                                        .background(colors.surfacePillSubtle)
+                                        .clickable { onCloseTab(tab.id) },
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(
+                                        imageVector = FocalGlyphs.Close,
+                                        contentDescription = "Close tab",
+                                        tint = colors.inkSecondary,
+                                        modifier = Modifier.size(14.dp),
+                                    )
+                                }
                             }
 
-                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
                                 Text(
                                     text = tab.title.ifBlank { tab.url },
                                     style = typography.sheetTitle,
                                     color = colors.inkPrimary,
-                                    maxLines = 3,
+                                    maxLines = 2,
                                     overflow = TextOverflow.Ellipsis,
                                 )
                                 Text(
@@ -253,119 +294,142 @@ fun TabSwitcherSheet(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Text(
-                                    text = if (tab.blockedTrackersCount > 0) {
-                                        "${tab.blockedTrackersCount} trackers blocked"
-                                    } else {
-                                        "Clean surface"
-                                    },
-                                    style = typography.captionMetadata,
-                                    color = colors.inkSecondary,
-                                )
-                                Text(
-                                    text = "Close ✕",
-                                    style = typography.controlPillLabel,
-                                    color = colors.inkSecondary,
-                                    modifier = Modifier
-                                        .clip(CircleShape)
-                                        .clickable { onCloseTab(tab.id) }
-                                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                                if (tab.blockedTrackersCount > 0) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                    ) {
+                                        Icon(
+                                            imageVector = FocalGlyphs.Shield,
+                                            contentDescription = null,
+                                            tint = colors.inkSecondary,
+                                            modifier = Modifier.size(13.dp),
+                                        )
+                                        Text(
+                                            text = "${tab.blockedTrackersCount} blocked",
+                                            style = typography.captionMetadata,
+                                            color = colors.inkSecondary,
+                                        )
+                                    }
+                                } else {
+                                    Spacer(Modifier.size(1.dp))
+                                }
+
+                                TabTtlOrDraftBadge(
+                                    tab = tab,
+                                    nowEpochMs = nowEpochMs,
+                                    isPrivate = isPrivateAperture,
                                 )
                             }
                         }
                     }
                 }
 
-                // Compact Quick-Jump Stack + 24h Tidied Tray
+                // Grouped Borderless Quick-Jump Stack + Collapsible 24h Tidied Tray
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
                         .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    displayedTabs.forEach { tab ->
-                        val isSelected = tab.id == selectedTabId
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(18.dp))
-                                .background(colors.surfacePillSubtle)
-                                .border(
-                                    width = 1.dp,
-                                    color = if (isSelected) colors.inkPrimary else colors.borderSpecular,
-                                    shape = RoundedCornerShape(18.dp),
+                    FocalGroupedCard {
+                        displayedTabs.forEachIndexed { index, tab ->
+                            if (index > 0) {
+                                FocalHairlineDivider(insetStart = 48.dp)
+                            }
+                            val isSelected = tab.id == selectedTabId
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(
+                                        if (isSelected) {
+                                            colors.inkPrimary.copy(alpha = 0.06f)
+                                        } else {
+                                            androidx.compose.ui.graphics.Color.Transparent
+                                        },
+                                    )
+                                    .clickable { onSelectTab(tab.id) }
+                                    .padding(horizontal = 14.dp, vertical = 11.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                SiteFavicon(
+                                    urlOrDomain = tab.url.ifBlank { tab.domain },
+                                    allowNetworkFetch = !isPrivateAperture,
+                                    size = 20.dp,
+                                    cornerRadius = 5.dp,
                                 )
-                                .clickable { onSelectTab(tab.id) }
-                                .padding(horizontal = 14.dp, vertical = 11.dp),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            SiteFavicon(
-                                urlOrDomain = tab.url.ifBlank { tab.domain },
-                                allowNetworkFetch = !isPrivateAperture,
-                                size = 20.dp,
-                                cornerRadius = 5.dp,
-                            )
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = tab.domain.ifBlank { "New Tab" },
-                                    style = typography.captionMetadata,
-                                    color = colors.inkSecondary,
-                                )
-                                Text(
-                                    text = tab.title.ifBlank { tab.url },
-                                    style = typography.cardTitle,
-                                    color = colors.inkPrimary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = tab.title.ifBlank { tab.url },
+                                        style = typography.bodyCompact.copy(
+                                            fontWeight = FontWeight.Medium,
+                                            fontSize = 14.5.sp,
+                                        ),
+                                        color = colors.inkPrimary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        text = tab.domain.ifBlank { "New Tab" },
+                                        style = typography.captionMetadata,
+                                        color = colors.inkSecondary,
+                                    )
+                                }
+                                TabTtlOrDraftBadge(
+                                    tab = tab,
+                                    nowEpochMs = nowEpochMs,
+                                    isPrivate = isPrivateAperture,
                                 )
                             }
-                            TabTtlOrDraftBadge(
-                                tab = tab,
-                                nowEpochMs = nowEpochMs,
-                                isPrivate = isPrivateAperture,
-                            )
                         }
                     }
 
                     // Collapsible >24h Auto-Archived Tidied Tray (non-private tabs only)
-                    if (!isPrivateAperture) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(20.dp))
-                                .background(colors.surfacePillSubtle)
-                                .border(1.dp, colors.borderSpecular, RoundedCornerShape(20.dp))
-                                .clickable { archiveExpanded = !archiveExpanded }
-                                .padding(14.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically,
+                    if (!isPrivateAperture && archivedTabs.isNotEmpty()) {
+                        FocalGroupedCard {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { archiveExpanded = !archiveExpanded }
+                                    .padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
-                                Text(
-                                    text = "Tidied (>24h idle · ${archivedTabs.size} tabs)",
-                                    style = typography.controlPillLabel,
-                                    color = colors.inkSecondary,
-                                )
-                                Text(
-                                    text = "1-tap restore",
-                                    style = typography.captionMetadata,
-                                    color = colors.inkFaint,
-                                )
-                            }
-
-                            AnimatedVisibility(visible = archiveExpanded) {
-                                if (archivedTabs.isEmpty()) {
-                                    Text(
-                                        text = "Idle tabs without unsent form drafts tidy here automatically after 24h.",
-                                        style = typography.captionMetadata,
-                                        color = colors.inkFaint,
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                                    ) {
+                                        Icon(
+                                            imageVector = FocalGlyphs.Clock,
+                                            contentDescription = null,
+                                            tint = colors.inkSecondary,
+                                            modifier = Modifier.size(15.dp),
+                                        )
+                                        Text(
+                                            text = "Tidied (${archivedTabs.size})",
+                                            style = typography.controlPillLabel,
+                                            color = colors.inkSecondary,
+                                        )
+                                    }
+                                    Icon(
+                                        imageVector = if (archiveExpanded) {
+                                            FocalGlyphs.ChevronDown
+                                        } else {
+                                            FocalGlyphs.ChevronRight
+                                        },
+                                        contentDescription = null,
+                                        tint = colors.inkFaint,
+                                        modifier = Modifier.size(15.dp),
                                     )
-                                } else {
+                                }
+
+                                AnimatedVisibility(visible = archiveExpanded) {
                                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                         archivedTabs.take(8).forEach { archived ->
                                             Row(
@@ -407,7 +471,7 @@ fun TabSwitcherSheet(
             }
         }
 
-        // Bottom Controls Bar (`◎ Private` / `◈ Regular` · `+ New Search` · `Done`)
+        // Bottom Controls Bar (`Private` · `+ New Tab` · `Done`)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -415,33 +479,47 @@ fun TabSwitcherSheet(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
+            Row(
                 modifier = Modifier
                     .clip(CircleShape)
-                    .background(colors.effectiveBarGlass)
-                    .border(1.dp, colors.borderSpecular, CircleShape)
+                    .background(colors.surfacePillSubtle)
                     .clickable { onNewSearch(!isPrivateAperture) }
                     .padding(horizontal = 16.dp, vertical = 11.dp),
-                contentAlignment = Alignment.Center,
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
+                Icon(
+                    imageVector = FocalGlyphs.Aperture,
+                    contentDescription = null,
+                    tint = colors.inkPrimary,
+                    modifier = Modifier.size(15.dp),
+                )
                 Text(
-                    text = if (isPrivateAperture) "◈ Regular" else "◎ Private",
+                    text = if (isPrivateAperture) "Regular" else "Private",
                     style = typography.controlPillLabel,
                     color = colors.inkPrimary,
                 )
             }
 
-            Box(
+            Row(
                 modifier = Modifier
                     .weight(1f)
                     .clip(CircleShape)
                     .background(colors.surfacePillActive)
                     .clickable { onNewSearch(isPrivateAperture) }
                     .padding(vertical = 11.dp),
-                contentAlignment = Alignment.Center,
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
+                Icon(
+                    imageVector = FocalGlyphs.Plus,
+                    contentDescription = null,
+                    tint = colors.inkOnPillActive,
+                    modifier = Modifier.size(15.dp),
+                )
+                Spacer(Modifier.width(6.dp))
                 Text(
-                    text = if (isPrivateAperture) "+ New Private Tab" else "+ New Search",
+                    text = if (isPrivateAperture) "New Private Tab" else "New Tab",
                     style = typography.controlPillLabel,
                     color = colors.inkOnPillActive,
                 )
@@ -450,10 +528,9 @@ fun TabSwitcherSheet(
             Box(
                 modifier = Modifier
                     .clip(CircleShape)
-                    .background(colors.effectiveBarGlass)
-                    .border(1.dp, colors.borderSpecular, CircleShape)
+                    .background(colors.surfacePillSubtle)
                     .clickable(onClick = onDone)
-                    .padding(horizontal = 16.dp, vertical = 11.dp),
+                    .padding(horizontal = 18.dp, vertical = 11.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
@@ -475,25 +552,38 @@ private fun TabTtlOrDraftBadge(
     val colors = FocalTheme.colors
     val typography = FocalTheme.typography
 
+    val icon = when {
+        isPrivate -> FocalGlyphs.Aperture
+        tab.hasUnsentFormDraft -> FocalGlyphs.Lock
+        else -> FocalGlyphs.Clock
+    }
     val label = when {
-        isPrivate -> "◎ Ephemeral"
-        tab.hasUnsentFormDraft -> "🔒 Unsent Draft Protected"
+        isPrivate -> "Ephemeral"
+        tab.hasUnsentFormDraft -> "Draft"
         else -> {
             val remHours = (tab.remainingTtlMs(nowEpochMs) / (60L * 60L * 1000L)).coerceIn(1L, 24L)
-            "⏱ ${remHours}h left"
+            "${remHours}h"
         }
     }
 
-    Box(
+    Row(
         modifier = Modifier
             .clip(CircleShape)
             .background(colors.surfacePillSubtle)
-            .padding(horizontal = 8.dp, vertical = 3.dp),
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = colors.inkSecondary,
+            modifier = Modifier.size(11.dp),
+        )
         Text(
             text = label,
             style = typography.captionMetadata,
-            color = if (tab.hasUnsentFormDraft || isPrivate) colors.inkPrimary else colors.inkSecondary,
+            color = colors.inkSecondary,
         )
     }
 }

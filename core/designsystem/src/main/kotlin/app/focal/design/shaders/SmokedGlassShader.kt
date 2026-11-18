@@ -278,6 +278,15 @@ fun SmokedGlassBox(
     }
 
     val useLiveBackdrop = backdropLayer != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    val specularBrush = remember(borderSpecular) {
+        Brush.verticalGradient(
+            colors = listOf(
+                borderSpecular,
+                borderSpecular.copy(alpha = borderSpecular.alpha * 0.38f),
+                borderSpecular.copy(alpha = borderSpecular.alpha * 0.16f),
+            ),
+        )
+    }
 
     Box(
         modifier = modifier
@@ -290,7 +299,7 @@ fun SmokedGlassBox(
                 if (useLiveBackdrop) {
                     baseMod
                         .clip(shape)
-                        .border(width = 1.dp, color = borderSpecular, shape = shape)
+                        .border(width = 0.75.dp, brush = specularBrush, shape = shape)
                 } else {
                     baseMod.smokedGlassSurface(
                         shape = shape,
@@ -354,12 +363,12 @@ private fun DrawScope.drawSmokedGlassTintOverlay(
         )
     }
 
-    // 1.5px top specular rim matching SmokedGlassShader topRim refraction
-    val rimHeight = 2.dp.toPx().coerceAtMost(size.height)
+    // Subtle overhead refraction sheen along top edge
+    val rimHeight = 1.5.dp.toPx().coerceAtMost(size.height)
     if (rimHeight > 0f) {
         drawRect(
             brush = Brush.verticalGradient(
-                colors = listOf(Color.White.copy(alpha = 0.07f), Color.Transparent),
+                colors = listOf(Color.White.copy(alpha = 0.06f), Color.Transparent),
                 startY = 0f,
                 endY = rimHeight,
             ),
@@ -370,7 +379,7 @@ private fun DrawScope.drawSmokedGlassTintOverlay(
 /**
  * Draws a floating Smoked Glass container surface (bars, sheets, smart pills) reading animated
  * [glassTintState] and optional [spaceAmbientState] purely inside the draw phase (`drawBehind`),
- * paired with a `1.dp` specular hairline border and top-edge refraction highlight.
+ * paired with a directional `0.75.dp` top-lit specular gradient rim.
  */
 @Composable
 fun Modifier.smokedGlassSurface(
@@ -379,6 +388,15 @@ fun Modifier.smokedGlassSurface(
     borderSpecular: Color,
     spaceAmbientState: State<Color>? = null,
 ): Modifier {
+    val specularBrush = remember(borderSpecular) {
+        Brush.verticalGradient(
+            colors = listOf(
+                borderSpecular,
+                borderSpecular.copy(alpha = borderSpecular.alpha * 0.38f),
+                borderSpecular.copy(alpha = borderSpecular.alpha * 0.16f),
+            ),
+        )
+    }
     return this
         .clip(shape)
         .drawBehind {
@@ -387,5 +405,5 @@ fun Modifier.smokedGlassSurface(
                 ambient = spaceAmbientState?.value,
             )
         }
-        .border(width = 1.dp, color = borderSpecular, shape = shape)
+        .border(width = 0.75.dp, brush = specularBrush, shape = shape)
 }

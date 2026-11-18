@@ -149,9 +149,9 @@ val DefaultFocalTypeScale = FocalTypeScale(
     urlDomainPill = TextStyle(
         fontFamily = AlloCrispFocusUi,
         fontWeight = FontWeight.Medium,
-        fontSize = 13.sp,
-        lineHeight = 16.sp,
-        letterSpacing = (-0.05).sp,
+        fontSize = 14.sp,
+        lineHeight = 18.sp,
+        letterSpacing = (-0.1).sp,
         fontFeatureSettings = ALLO_CRISP_OPENTYPE_FEATURES,
     ),
     tabBadgeNumeral = TextStyle(
@@ -164,29 +164,30 @@ val DefaultFocalTypeScale = FocalTypeScale(
     controlPillLabel = TextStyle(
         fontFamily = AlloCrispFocusUi,
         fontWeight = FontWeight.Medium,
-        fontSize = 12.sp,
+        fontSize = 12.5.sp,
         lineHeight = 16.sp,
+        letterSpacing = (-0.05).sp,
         fontFeatureSettings = ALLO_CRISP_OPENTYPE_FEATURES,
     ),
     bodyReading = TextStyle(
         fontFamily = SwitzerBody,
         fontWeight = FontWeight.Normal,
-        fontSize = 16.sp,
-        lineHeight = 25.sp,
+        fontSize = 16.5.sp,
+        lineHeight = 26.sp,
     ),
     bodyCompact = TextStyle(
         fontFamily = SwitzerBody,
         fontWeight = FontWeight.Normal,
-        fontSize = 13.5.sp,
+        fontSize = 14.sp,
         lineHeight = 19.sp,
+        letterSpacing = (-0.05).sp,
     ),
     captionMetadata = TextStyle(
-        fontFamily = AlloCrispFocusUi,
+        fontFamily = SwitzerBody,
         fontWeight = FontWeight.Normal,
-        fontSize = 11.sp,
-        lineHeight = 14.sp,
-        letterSpacing = 0.2.sp,
-        fontFeatureSettings = ALLO_CRISP_OPENTYPE_FEATURES,
+        fontSize = 11.5.sp,
+        lineHeight = 15.sp,
+        letterSpacing = 0.sp,
     ),
 )
 

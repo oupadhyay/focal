@@ -449,6 +449,7 @@ private fun FocalRootCoordinator(
                 activeSession = activeSession,
                 tabCount = displayedTabCount,
                 isPrivateAperture = isPrivateAperture,
+                isOverlaySheetOpen = overlaySheet != ActiveOverlaySheet.None,
                 isInPictureInPictureMode = isInPictureInPictureMode,
                 backdropGraphicsLayer = viewportBackdropLayer,
                 continuityHandoff = syncUiState.incomingHandoff,

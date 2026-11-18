@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableFloatState
@@ -37,6 +38,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
@@ -44,6 +47,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import app.focal.design.FocalGlyphs
 import app.focal.design.FocalMotion
 import app.focal.design.FocalTheme
 import app.focal.design.SiteFavicon
@@ -61,11 +65,11 @@ private enum class CenterPillAxisLock {
 /**
  * Focal's 3-Part Floating Smoked Glass Bottom Bar (`48.dp` height):
  * - **Left Capsule (`[Tabs]`)**: Tab counter squircle (`Tap = Tab Switcher`, `Long-Press = Quick Close / Private`).
- * - **Center Pill (`[⌕ domain.com]`)**: Vector-locked within `10.dp` touch slop:
+ * - **Center Pill (`[Search / domain.com]`)**: Vector-locked within `10.dp` touch slop:
  *   - `Tap`: Opens Search-First Sheet above IME.
  *   - `Horizontal Scrub` (`|dx| > |dy| * 1.35f`): Live horizontal tab scrubbing with haptic ticks.
  *   - `Vertical Swipe-Up` (`dy < -touchSlop && |dy| >= |dx|`): Continuously pulls up Spaces & Bookmarks Sheet 1:1.
- * - **Right Capsule (`[···]`)**: Opens Page Menu, Reader & Per-Site Overrides sheet.
+ * - **Right Capsule (`[...]`)**: Opens Page Menu, Reader & Per-Site Settings sheet.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -117,7 +121,7 @@ fun FocalBottomBar(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 14.dp),
+            .padding(horizontal = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -130,6 +134,12 @@ fun FocalBottomBar(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
                     .size(48.dp)
+                    .shadow(
+                        elevation = 14.dp,
+                        shape = CircleShape,
+                        ambientColor = Color.Black.copy(alpha = 0.35f),
+                        spotColor = Color.Black.copy(alpha = 0.45f),
+                    )
                     .combinedClickable(
                         onClick = onOpenTabSwitcher,
                         onLongClick = {
@@ -140,12 +150,12 @@ fun FocalBottomBar(
             ) {
                 Box(
                     modifier = Modifier
+                        .size(width = 21.dp, height = 20.dp)
                         .border(
                             width = 1.5.dp,
-                            color = colors.inkPrimary,
-                            shape = RoundedCornerShape(7.dp),
-                        )
-                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                            color = colors.inkPrimary.copy(alpha = 0.88f),
+                            shape = RoundedCornerShape(6.dp),
+                        ),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
@@ -177,7 +187,7 @@ fun FocalBottomBar(
                 DropdownMenuItem(
                     text = {
                         Text(
-                            text = "◎ New Private Tab",
+                            text = "New Private Tab",
                             style = typography.controlPillLabel,
                             color = colors.inkPrimary,
                         )
@@ -199,6 +209,12 @@ fun FocalBottomBar(
             modifier = Modifier
                 .weight(1f)
                 .height(48.dp)
+                .shadow(
+                    elevation = 14.dp,
+                    shape = CircleShape,
+                    ambientColor = Color.Black.copy(alpha = 0.35f),
+                    spotColor = Color.Black.copy(alpha = 0.45f),
+                )
                 .pointerInput(slopPx, tabCrossingStepPx, revealTravelPx, commitSwipePx) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
@@ -286,7 +302,7 @@ fun FocalBottomBar(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
                     if (!isPrivateAperture && domainOrHint.isNotBlank()) {
                         SiteFavicon(
@@ -304,10 +320,11 @@ fun FocalBottomBar(
                             )
                         }
                     } else {
-                        Text(
-                            text = if (isPrivateAperture) "◎" else "⌕",
-                            style = typography.captionMetadata,
-                            color = colors.inkSecondary,
+                        Icon(
+                            imageVector = if (isPrivateAperture) FocalGlyphs.Aperture else FocalGlyphs.Search,
+                            contentDescription = null,
+                            tint = colors.inkSecondary,
+                            modifier = Modifier.size(15.dp),
                         )
                     }
                     Text(
@@ -328,7 +345,7 @@ fun FocalBottomBar(
             }
         }
 
-        // 3. Right Capsule: `···` Page Menu & Site Overrides (`48.dp` circular glass pill)
+        // 3. Right Capsule: Page Menu & Site Overrides (`48.dp` circular glass pill)
         SmokedGlassBox(
             shape = CircleShape,
             glassTintState = barTintState,
@@ -336,12 +353,19 @@ fun FocalBottomBar(
             contentAlignment = Alignment.Center,
             modifier = Modifier
                 .size(48.dp)
+                .shadow(
+                    elevation = 14.dp,
+                    shape = CircleShape,
+                    ambientColor = Color.Black.copy(alpha = 0.35f),
+                    spotColor = Color.Black.copy(alpha = 0.45f),
+                )
                 .clickable(onClick = onOpenPageMenu),
         ) {
-            Text(
-                text = "···",
-                style = typography.cardTitle,
-                color = colors.inkPrimary,
+            Icon(
+                imageVector = FocalGlyphs.MoreHorizontal,
+                contentDescription = "Page Menu",
+                tint = colors.inkPrimary,
+                modifier = Modifier.size(19.dp),
             )
         }
     }
@@ -369,7 +393,7 @@ private fun LoadProgressHairline(
 }
 
 /**
- * Smart Contextual Pills (`Aa Reader` and `文A Translate`) floating `8.dp` above the right side
+ * Smart Contextual Pills (`Reader` and `Translate`) floating `8.dp` above the right side
  * of the 3-part bottom bar and collapsing smoothly on `> 18.dp` downward scroll.
  */
 @Composable
@@ -405,12 +429,23 @@ fun SmartContextualPillsRow(
                     borderSpecular = colors.borderSpecular,
                     modifier = Modifier.clickable(onClick = onTriggerTranslate),
                 ) {
-                    Text(
-                        text = "文A Translate",
-                        style = typography.controlPillLabel,
-                        color = colors.inkPrimary,
+                    Row(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-                    )
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Icon(
+                            imageVector = FocalGlyphs.Translate,
+                            contentDescription = null,
+                            tint = colors.inkPrimary,
+                            modifier = Modifier.size(14.dp),
+                        )
+                        Text(
+                            text = "Translate",
+                            style = typography.controlPillLabel,
+                            color = colors.inkPrimary,
+                        )
+                    }
                 }
             }
 
@@ -421,12 +456,23 @@ fun SmartContextualPillsRow(
                     borderSpecular = colors.borderSpecular,
                     modifier = Modifier.clickable(onClick = onOpenReader),
                 ) {
-                    Text(
-                        text = "Aa Reader",
-                        style = typography.controlPillLabel,
-                        color = colors.inkPrimary,
+                    Row(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-                    )
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Icon(
+                            imageVector = FocalGlyphs.Reader,
+                            contentDescription = null,
+                            tint = colors.inkPrimary,
+                            modifier = Modifier.size(14.dp),
+                        )
+                        Text(
+                            text = "Reader",
+                            style = typography.controlPillLabel,
+                            color = colors.inkPrimary,
+                        )
+                    }
                 }
             }
         }
