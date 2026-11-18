@@ -712,6 +712,8 @@ private fun FocalRootCoordinator(
                                 PageMenuAndSiteOverridesSheet(
                                     domain = activeSessionState?.domain.orEmpty(),
                                     fullUrl = rawUrl,
+                                    favicon = activeSessionState?.favicon,
+                                    isPrivateAperture = isPrivateAperture,
                                     canGoBack = activeSessionState?.canGoBack == true,
                                     canGoForward = activeSessionState?.canGoForward == true,
                                     blockedCountInTab = sessionTelemetry?.blockedTrackersInSession ?: 0L,

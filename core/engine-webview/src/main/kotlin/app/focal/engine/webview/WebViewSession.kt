@@ -30,6 +30,7 @@ import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import app.focal.adblock.AdblockController
 import app.focal.adblock.AdblockWebResponses
+import app.focal.design.FaviconCache
 import app.focal.engine.api.ActiveMediaSessionInfo
 import app.focal.engine.api.EngineSession
 import app.focal.engine.api.EngineSessionEvent
@@ -57,7 +58,7 @@ import java.util.concurrent.atomic.AtomicLong
  * Key 120Hz & Privacy capabilities:
  * - **`shouldInterceptRequest`**: Wired directly to [AdblockController.checkNetworkRequest] on
  *   Chromium's background network I/O worker thread, returning [AdblockWebResponses]'s zero-alloc
- *   static `204` singleton `WebResourceResponse` when blocked, plus [WebViewAssetLoader] serving
+ *   static `200` singleton `WebResourceResponse` when blocked, plus [WebViewAssetLoader] serving
  *   bundled `Allo` and `Switzer` variable fonts with CORS headers.
  * - **`WebViewCompat.addDocumentStartJavaScript`**: Pre-paint cosmetic CSS injection, live
  *   per-origin overrides (`Allo + Switzer` fonts, dark surface), dirty-form tracking
@@ -71,7 +72,7 @@ import java.util.concurrent.atomic.AtomicLong
  */
 @SuppressLint("SetJavaScriptEnabled", "RequiresFeature")
 class WebViewSession internal constructor(
-    appContext: Context,
+    private val appContext: Context,
     private val pool: WarmWebViewPool,
     private val adblockController: AdblockController,
     override val isPrivate: Boolean,
@@ -259,6 +260,15 @@ class WebViewSession internal constructor(
                             if (isMainFrame) {
                                 val readerEligible = json.optBoolean("readerEligible", false)
                                 val lang = json.optString("lang").takeIf { it.isNotBlank() }
+                                val iconUrl = json.optString("iconUrl").takeIf { it.isNotBlank() }
+                                if (iconUrl != null) {
+                                    FaviconCache.prefetchExplicitIconUrl(
+                                        pageUrlOrDomain = sourceOrigin.toString(),
+                                        iconUrl = iconUrl,
+                                        appContext = appContext,
+                                        isPrivate = isPrivate,
+                                    )
+                                }
                                 _state.update {
                                     it.copy(
                                         isReaderEligible = readerEligible,
@@ -449,12 +459,13 @@ class WebViewSession internal constructor(
                 val nextCount = sessionBlockedCount.incrementAndGet()
                 _telemetry.update { it.copy(blockedTrackersInSession = nextCount) }
 
-                // Returns static singleton 204 WebResourceResponse (zero allocations per blocked tracker!)
+                // Returns static singleton 200 empty WebResourceResponse (zero allocations per blocked tracker!)
                 return AdblockWebResponses.toWebResourceResponse(decision)
             }
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 val safeUrl = url.orEmpty()
+                val nextDomain = extractHostDomain(safeUrl)
                 sessionBlockedCount.set(0L)
                 _telemetry.update {
                     it.copy(
@@ -462,10 +473,11 @@ class WebViewSession internal constructor(
                         blockedTrackersInSession = 0L,
                     )
                 }
-                _state.update {
-                    it.copy(
+                _state.update { prev ->
+                    prev.copy(
                         url = safeUrl,
-                        domain = extractHostDomain(safeUrl),
+                        domain = nextDomain,
+                        favicon = favicon ?: if (prev.domain == nextDomain) prev.favicon else null,
                         isLoading = true,
                         loadProgress = 10,
                         isHttps = safeUrl.startsWith("https://", ignoreCase = true),
@@ -563,6 +575,32 @@ class WebViewSession internal constructor(
             override fun onReceivedTitle(view: WebView?, title: String?) {
                 if (!title.isNullOrBlank()) {
                     _state.update { it.copy(title = title) }
+                }
+            }
+
+            override fun onReceivedIcon(view: WebView?, icon: Bitmap?) {
+                if (icon != null && !icon.isRecycled && icon.width > 0 && icon.height > 0) {
+                    val safeCopy = runCatching { icon.copy(Bitmap.Config.ARGB_8888, false) }.getOrNull() ?: icon
+                    _state.update { it.copy(favicon = safeCopy) }
+                    val currentUrl = view?.url ?: _state.value.url
+                    FaviconCache.onLiveIconReceived(
+                        urlOrDomain = currentUrl,
+                        bitmap = safeCopy,
+                        appContext = appContext,
+                        isPrivate = isPrivate,
+                    )
+                }
+            }
+
+            override fun onReceivedTouchIconUrl(view: WebView?, url: String?, precomposed: Boolean) {
+                if (!url.isNullOrBlank()) {
+                    val currentUrl = view?.url ?: _state.value.url
+                    FaviconCache.prefetchExplicitIconUrl(
+                        pageUrlOrDomain = currentUrl,
+                        iconUrl = url,
+                        appContext = appContext,
+                        isPrivate = isPrivate,
+                    )
                 }
             }
         }
@@ -1052,10 +1090,14 @@ private const val FOCAL_DOCUMENT_START_BOOTSTRAP_JS = """
       for (let i = 0; i < Math.min(paras.length, 25); i++) {
         chars += (paras[i].innerText || '').trim().length;
       }
+      const iconNode = document.querySelector(
+        'link[rel="apple-touch-icon"], link[rel="apple-touch-icon-precomposed"], link[rel="icon"][sizes*="192"], link[rel="icon"][sizes*="128"], link[rel="icon"][sizes*="64"], link[rel="icon"][sizes*="32"], link[rel="icon"], link[rel="shortcut icon"]'
+      );
       bridge.postMessage(JSON.stringify({
         type: 'page_meta',
         readerEligible: chars >= 480,
-        lang: document.documentElement.lang || ''
+        lang: document.documentElement.lang || '',
+        iconUrl: (iconNode && iconNode.href) ? iconNode.href : ''
       }));
 
       const classSet = new Set();

@@ -1,5 +1,6 @@
 package app.focal.engine.api
 
+import android.graphics.Bitmap
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -48,6 +49,7 @@ data class EngineSessionState(
     val url: String = "",
     val domain: String = "",
     val title: String = "",
+    val favicon: Bitmap? = null,
     val loadProgress: Int = 0,
     val isLoading: Boolean = false,
     val canGoBack: Boolean = false,

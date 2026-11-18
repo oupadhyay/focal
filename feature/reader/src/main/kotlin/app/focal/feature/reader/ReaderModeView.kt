@@ -1,5 +1,6 @@
 package app.focal.feature.reader
 
+import android.graphics.Bitmap
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -45,6 +46,7 @@ import app.focal.design.AlloCrispDisplay
 import app.focal.design.FocalTheme
 import app.focal.design.ReaderPaperPalette
 import app.focal.design.ReaderPaperThemeColors
+import app.focal.design.SiteFavicon
 import app.focal.design.SwitzerBody
 import app.focal.design.consumeClicks
 import app.focal.design.shaders.SmokedGlassBox
@@ -257,6 +259,8 @@ private fun ReaderControlChip(
 fun PageMenuAndSiteOverridesSheet(
     domain: String,
     fullUrl: String,
+    favicon: Bitmap? = null,
+    isPrivateAperture: Boolean = false,
     canGoBack: Boolean,
     canGoForward: Boolean,
     blockedCountInTab: Long,
@@ -330,16 +334,30 @@ fun PageMenuAndSiteOverridesSheet(
                         )
                     }
 
-                    Text(
-                        text = domain.ifBlank { fullUrl.ifBlank { "focal://calm" } },
-                        style = typography.urlDomainPill,
-                        color = colors.inkPrimary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                    Row(
                         modifier = Modifier
                             .weight(1f)
                             .padding(horizontal = 10.dp),
-                    )
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        if (domain.isNotBlank() || fullUrl.isNotBlank()) {
+                            SiteFavicon(
+                                urlOrDomain = fullUrl.ifBlank { domain },
+                                liveBitmap = favicon,
+                                allowNetworkFetch = !isPrivateAperture,
+                                size = 16.dp,
+                                cornerRadius = 4.dp,
+                            )
+                        }
+                        Text(
+                            text = domain.ifBlank { fullUrl.ifBlank { "focal://calm" } },
+                            style = typography.urlDomainPill,
+                            color = colors.inkPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
 
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text(

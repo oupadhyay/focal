@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -21,7 +20,6 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -62,6 +60,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.focal.design.FocalMotion
 import app.focal.design.FocalTheme
+import app.focal.design.SiteFavicon
 import app.focal.design.consumeClicks
 import app.focal.design.shaders.SmokedGlassBox
 import app.focal.sync.SyncEvent
@@ -72,14 +71,14 @@ import kotlinx.collections.immutable.toImmutableList
 @Immutable
 data class QuickSquirclePin(
     val id: String,
-    val shortCode: String,
+    val shortCode: String = "",
     val title: String,
     val url: String,
 )
 
 val DefaultSearchSquirclePins: ImmutableList<QuickSquirclePin> = persistentListOf(
     QuickSquirclePin("pin-imdb", "IM", "IMDb", "https://www.imdb.com"),
-    QuickSquirclePin("pin-wiki", "WI", "Wiki", "https://en.wikipedia.org"),
+    QuickSquirclePin("pin-wiki", "WI", "Wikipedia", "https://en.wikipedia.org"),
     QuickSquirclePin("pin-gh", "GH", "GitHub", "https://github.com"),
     QuickSquirclePin("pin-ars", "AR", "Ars", "https://arstechnica.com"),
     QuickSquirclePin("pin-rd", "RD", "Reddit", "https://www.reddit.com"),
@@ -90,7 +89,7 @@ val DefaultSearchSquirclePins: ImmutableList<QuickSquirclePin> = persistentListO
  *
  * Features:
  * - E2EE Continuity Handoff Banner at top (when a paired Desktop browser shares a tab/link).
- * - 5 Quick Squircle Pins in lower thumb reach.
+ * - 5 Quick Squircle Favicon Pins in lower thumb reach.
  * - Double-Space Site Search (`im␣␣`, `wi␣␣`, `rd␣␣`, `yt␣␣`, `gh␣␣`) with `135.dp` radial contextual
  *   glow strictly clipped inside the left side of the input pill + Backspace chip unwrap.
  * - Right-aligned `28.dp` Private Aperture `◎` circular toggle darkening sheet to `surface.glass.private`.
@@ -172,8 +171,14 @@ fun SearchSheet(
                             }
                             .padding(horizontal = 12.dp, vertical = 9.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
+                        SiteFavicon(
+                            urlOrDomain = continuityHandoff.url,
+                            allowNetworkFetch = !isPrivateAperture,
+                            size = 22.dp,
+                            cornerRadius = 6.dp,
+                        )
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = "⇄ From ${continuityHandoff.sourceDeviceName ?: "Desktop"} · E2EE",
@@ -188,7 +193,6 @@ fun SearchSheet(
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
-                        Spacer(Modifier.width(8.dp))
                         Text(
                             text = "Open ↗",
                             style = typography.controlPillLabel,
@@ -197,12 +201,17 @@ fun SearchSheet(
                     }
                 }
 
-                // 5 Squircle Pins Row
+                // 5 Squircle Favicon Pins Row
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     displayedPins.forEach { pin ->
+                        val compactLabel = if (pin.title.equals("HackerNews", ignoreCase = true)) {
+                            "HN"
+                        } else {
+                            pin.title
+                        }
                         Column(
                             modifier = Modifier
                                 .weight(1f)
@@ -210,17 +219,18 @@ fun SearchSheet(
                                 .background(colors.surfacePillSubtle)
                                 .border(1.dp, colors.borderSpecular, RoundedCornerShape(16.dp))
                                 .clickable { onNavigateToUrl(pin.url, isPrivateAperture) }
-                                .padding(vertical = 10.dp, horizontal = 4.dp),
+                                .padding(vertical = 10.dp, horizontal = 3.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(3.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
-                            Text(
-                                text = pin.shortCode,
-                                style = typography.tabBadgeNumeral,
-                                color = colors.inkPrimary,
+                            SiteFavicon(
+                                urlOrDomain = pin.url,
+                                allowNetworkFetch = !isPrivateAperture,
+                                size = 26.dp,
+                                cornerRadius = 7.dp,
                             )
                             Text(
-                                text = pin.title,
+                                text = compactLabel,
                                 style = typography.captionMetadata,
                                 color = colors.inkSecondary,
                                 maxLines = 1,
@@ -276,7 +286,7 @@ fun SearchSheet(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                // Spring-animated Site Search Chip (`[IMDb ×]`)
+                // Spring-animated Site Search Chip (`[Wikipedia ×]`) with crisp site favicon
                 AnimatedVisibility(
                     visible = activeSite != null,
                     enter = fadeIn() + scaleIn(
@@ -299,8 +309,14 @@ fun SearchSheet(
                                 }
                                 .padding(horizontal = 8.dp, vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
                         ) {
+                            SiteFavicon(
+                                urlOrDomain = site.urlTemplate,
+                                allowNetworkFetch = !isPrivateAperture,
+                                size = 15.dp,
+                                cornerRadius = 4.dp,
+                            )
                             Text(
                                 text = site.label,
                                 style = typography.controlPillLabel,

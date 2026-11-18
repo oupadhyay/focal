@@ -156,7 +156,7 @@ object FocalDatabaseDefaults {
                     spaceId = "reading",
                     isPinnedSquircle = true,
                     shortCode = "HN",
-                    title = "HackerNews",
+                    title = "HN",
                     url = "https://news.ycombinator.com",
                     sortOrder = 0,
                     createdAtEpochMs = nowEpochMs,

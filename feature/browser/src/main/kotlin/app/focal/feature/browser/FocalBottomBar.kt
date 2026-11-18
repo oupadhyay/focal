@@ -1,5 +1,6 @@
 package app.focal.feature.browser
 
+import android.graphics.Bitmap
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -45,6 +46,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.focal.design.FocalMotion
 import app.focal.design.FocalTheme
+import app.focal.design.SiteFavicon
 import app.focal.design.shaders.SmokedGlassBox
 import app.focal.engine.api.EngineTelemetryState
 import kotlinx.coroutines.flow.StateFlow
@@ -70,6 +72,8 @@ private enum class CenterPillAxisLock {
 fun FocalBottomBar(
     tabCount: Int,
     domainOrHint: String,
+    pageUrl: String = "",
+    favicon: Bitmap? = null,
     isHttps: Boolean,
     isPrivateAperture: Boolean,
     isLoading: Boolean,
@@ -282,18 +286,30 @@ fun FocalBottomBar(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Text(
-                        text = when {
-                            isPrivateAperture -> "◎"
-                            domainOrHint.isBlank() -> "⌕"
-                            isHttps -> "⌕"
-                            else -> "!"
-                        },
-                        style = typography.captionMetadata,
-                        color = colors.inkSecondary,
-                    )
+                    if (!isPrivateAperture && domainOrHint.isNotBlank()) {
+                        SiteFavicon(
+                            urlOrDomain = pageUrl.ifBlank { domainOrHint },
+                            liveBitmap = favicon,
+                            allowNetworkFetch = true,
+                            size = 16.dp,
+                            cornerRadius = 4.dp,
+                        )
+                        if (!isHttps) {
+                            Text(
+                                text = "!",
+                                style = typography.captionMetadata,
+                                color = colors.inkSecondary,
+                            )
+                        }
+                    } else {
+                        Text(
+                            text = if (isPrivateAperture) "◎" else "⌕",
+                            style = typography.captionMetadata,
+                            color = colors.inkSecondary,
+                        )
+                    }
                     Text(
                         text = domainOrHint.ifBlank { "Search or enter address" },
                         style = typography.urlDomainPill,

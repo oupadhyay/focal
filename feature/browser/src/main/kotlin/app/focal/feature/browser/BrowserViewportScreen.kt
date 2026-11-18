@@ -38,6 +38,7 @@ import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.focal.design.FocalTheme
+import app.focal.design.SiteFavicon
 import app.focal.design.shaders.LocalFocalBackdropLayer
 import app.focal.design.shaders.hourglassPinchEffect
 import app.focal.design.shaders.opticalVignetteBackground
@@ -220,6 +221,8 @@ fun BrowserViewportScreen(
                     FocalBottomBar(
                         tabCount = tabCount,
                         domainOrHint = if (hasLoadedWebUrl) sessionState.domain else "",
+                        pageUrl = if (hasLoadedWebUrl) sessionState.url else "",
+                        favicon = if (hasLoadedWebUrl) sessionState.favicon else null,
                         isHttps = sessionState.isHttps,
                         isPrivateAperture = isPrivateAperture,
                         isLoading = sessionState.isLoading,
@@ -288,6 +291,12 @@ private fun CalmOpticalLaunchCanvas(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                SiteFavicon(
+                    urlOrDomain = continuityHandoff.url,
+                    allowNetworkFetch = !isPrivateAperture,
+                    size = 16.dp,
+                    cornerRadius = 4.dp,
+                )
                 Text(
                     text = "⇄ ${continuityHandoff.sourceDeviceName ?: "Desktop"} · ${continuityHandoff.title.ifBlank { continuityHandoff.url }}",
                     style = typography.captionMetadata,

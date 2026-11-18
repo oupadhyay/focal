@@ -40,4 +40,6 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     api(libs.kotlinx.coroutines.core)
     api(libs.kotlinx.collections.immutable)
+
+    testImplementation(libs.junit)
 }

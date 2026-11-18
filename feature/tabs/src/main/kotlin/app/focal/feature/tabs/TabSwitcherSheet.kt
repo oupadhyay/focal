@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -37,6 +38,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.focal.database.TabMetadataEntity
 import app.focal.design.FocalTheme
+import app.focal.design.SiteFavicon
 import app.focal.design.shaders.SmokedGlassBox
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.persistentListOf
@@ -202,14 +204,26 @@ fun TabSwitcherSheet(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Text(
-                                    text = tab.domain.ifBlank { "New Tab" },
-                                    style = typography.urlDomainPill,
-                                    color = colors.inkSecondary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
+                                Row(
                                     modifier = Modifier.weight(1f),
-                                )
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    SiteFavicon(
+                                        urlOrDomain = tab.url.ifBlank { tab.domain },
+                                        allowNetworkFetch = !isPrivateAperture,
+                                        size = 18.dp,
+                                        cornerRadius = 5.dp,
+                                    )
+                                    Text(
+                                        text = tab.domain.ifBlank { "New Tab" },
+                                        style = typography.urlDomainPill,
+                                        color = colors.inkSecondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                Spacer(Modifier.width(8.dp))
                                 TabTtlOrDraftBadge(
                                     tab = tab,
                                     nowEpochMs = nowEpochMs,
@@ -284,9 +298,15 @@ fun TabSwitcherSheet(
                                 )
                                 .clickable { onSelectTab(tab.id) }
                                 .padding(horizontal = 14.dp, vertical = 11.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
+                            SiteFavicon(
+                                urlOrDomain = tab.url.ifBlank { tab.domain },
+                                allowNetworkFetch = !isPrivateAperture,
+                                size = 20.dp,
+                                cornerRadius = 5.dp,
+                            )
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = tab.domain.ifBlank { "New Tab" },
@@ -354,10 +374,17 @@ fun TabSwitcherSheet(
                                                     .clip(RoundedCornerShape(10.dp))
                                                     .clickable { onRestoreArchivedTab(archived.id) }
                                                     .padding(vertical = 4.dp),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
                                             ) {
+                                                SiteFavicon(
+                                                    urlOrDomain = archived.url.ifBlank { archived.domain },
+                                                    allowNetworkFetch = true,
+                                                    size = 15.dp,
+                                                    cornerRadius = 4.dp,
+                                                )
                                                 Text(
-                                                    text = "· ${archived.domain} — ${archived.title}",
+                                                    text = "${archived.domain} — ${archived.title}",
                                                     style = typography.captionMetadata,
                                                     color = colors.inkSecondary,
                                                     maxLines = 1,

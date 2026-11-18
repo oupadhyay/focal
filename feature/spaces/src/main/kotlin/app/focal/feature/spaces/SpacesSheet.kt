@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import app.focal.database.BookmarkEntity
 import app.focal.database.SpaceEntity
 import app.focal.design.FocalTheme
+import app.focal.design.SiteFavicon
 import app.focal.design.SpaceAmbientPalette
 import app.focal.design.consumeClicks
 import app.focal.design.shaders.SmokedGlassBox
@@ -249,6 +250,11 @@ fun SpacesSheet(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
                                 pinsRow.forEach { pin ->
+                                    val displayTitle = if (pin.title.equals("HackerNews", ignoreCase = true)) {
+                                        "HN"
+                                    } else {
+                                        pin.title
+                                    }
                                     Column(
                                         modifier = Modifier
                                             .weight(1f)
@@ -258,15 +264,15 @@ fun SpacesSheet(
                                             .clickable { pin.url?.let(onOpenUrl) }
                                             .padding(vertical = 11.dp, horizontal = 6.dp),
                                         horizontalAlignment = Alignment.CenterHorizontally,
-                                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp),
                                     ) {
-                                        Text(
-                                            text = pin.shortCode ?: pin.title.take(2).uppercase(),
-                                            style = typography.tabBadgeNumeral,
-                                            color = colors.inkPrimary,
+                                        SiteFavicon(
+                                            urlOrDomain = pin.url.orEmpty(),
+                                            size = 26.dp,
+                                            cornerRadius = 7.dp,
                                         )
                                         Text(
-                                            text = pin.title,
+                                            text = displayTitle,
                                             style = typography.captionMetadata,
                                             color = colors.inkSecondary,
                                             maxLines = 1,
@@ -307,13 +313,27 @@ fun SpacesSheet(
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
-                                        Text(
-                                            text = if (item.isFolder) "📁 ${item.title}" else item.title,
-                                            style = typography.urlDomainPill,
-                                            color = colors.inkPrimary,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
+                                        Row(
+                                            modifier = Modifier.weight(1f),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        ) {
+                                            if (!item.isFolder) {
+                                                SiteFavicon(
+                                                    urlOrDomain = item.url.orEmpty(),
+                                                    size = 18.dp,
+                                                    cornerRadius = 5.dp,
+                                                )
+                                            }
+                                            Text(
+                                                text = if (item.isFolder) "📁 ${item.title}" else item.title,
+                                                style = typography.urlDomainPill,
+                                                color = colors.inkPrimary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        }
+                                        Spacer(Modifier.width(8.dp))
                                         Text(
                                             text = if (item.isFolder && expandedFolderId == item.id) "⌄" else "›",
                                             style = typography.controlPillLabel,
@@ -345,10 +365,16 @@ fun SpacesSheet(
                                                         .clip(RoundedCornerShape(10.dp))
                                                         .clickable { child.url?.let(onOpenUrl) }
                                                         .padding(vertical = 6.dp, horizontal = 6.dp),
-                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                                                 ) {
+                                                    SiteFavicon(
+                                                        urlOrDomain = child.url.orEmpty(),
+                                                        size = 15.dp,
+                                                        cornerRadius = 4.dp,
+                                                    )
                                                     Text(
-                                                        text = "· ${child.title}",
+                                                        text = child.title,
                                                         style = typography.bodyCompact,
                                                         color = colors.inkPrimary,
                                                         maxLines = 1,
@@ -554,8 +580,14 @@ private fun LiveDesktopPresenceCard(
                         .clip(RoundedCornerShape(10.dp))
                         .clickable { onOpenTab(tab.url) }
                         .padding(vertical = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    SiteFavicon(
+                        urlOrDomain = tab.url,
+                        size = 15.dp,
+                        cornerRadius = 4.dp,
+                    )
                     Text(
                         text = "${peerName ?: "Desktop"} · ${tab.title.ifBlank { tab.url }}",
                         style = typography.captionMetadata,
