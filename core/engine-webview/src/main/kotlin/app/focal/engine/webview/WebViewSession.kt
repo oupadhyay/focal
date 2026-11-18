@@ -87,12 +87,10 @@ class WebViewSession internal constructor(
         const val JS_BRIDGE_NAME = "focalBridge"
         const val ASSET_LOADER_DOMAIN = "appassets.androidplatform.net"
 
-        /**
-         * `WebViewCompat.addWebMessageListener` and `addDocumentStartJavaScript` only accept `"*"`
-         * for arbitrary web hosts (`"https://*"` and `"http://*"` are rejected by Chromium's
-         * `OriginMatcher` with `IllegalArgumentException`). All bridge callbacks strictly enforce
-         * `sourceOrigin.scheme in {"https", "http"}` and a non-blank `sourceOrigin.host`.
-         */
+        // WebViewCompat.addWebMessageListener and addDocumentStartJavaScript only accept "*"
+        // for arbitrary web hosts (bare scheme wildcards without a domain are rejected by
+        // Chromium's OriginMatcher with IllegalArgumentException). All bridge callbacks strictly
+        // enforce sourceOrigin.scheme in {"https", "http"} and a non-blank sourceOrigin.host.
         val ALLOWED_BRIDGE_ORIGIN_RULES: Set<String> = setOf("*")
 
         private const val DESKTOP_USER_AGENT =
