@@ -98,7 +98,7 @@ object AdblockWebResponses {
     }
 
     /**
-     * Singleton `204 Blocked` [WebResourceResponse] initialized lazily (`PUBLICATION`) so JVM unit
+     * Singleton `200 OK` empty [WebResourceResponse] initialized lazily (`PUBLICATION`) so JVM unit
      * tests without Android framework mocks can load [AdblockWebResponses] safely while Android
      * runtime reuses one allocation-free instance for the lifetime of the process.
      */
@@ -106,8 +106,8 @@ object AdblockWebResponses {
         WebResourceResponse(
             "text/plain",
             "utf-8",
-            204,
-            "Blocked",
+            200,
+            "OK",
             CORS_BLOCKED_HEADERS,
             ZeroAllocationEmptyInputStream,
         )

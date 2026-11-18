@@ -58,4 +58,24 @@ class DoubleSpaceSiteDetectorTest {
         assertNull(slow.activeSite)
         assertEquals("im  ", slow.updatedQuery)
     }
+
+    @Test
+    fun `resolveDestinationUrl handles google_com, Gboard auto-period, and explicit URLs cleanly`() {
+        val detector = DoubleSpaceSiteDetector()
+        assertEquals("https://google.com", detector.resolveDestinationUrl("google.com", activeSite = null))
+        assertEquals("https://google.com", detector.resolveDestinationUrl("  google.com  ", activeSite = null))
+        assertEquals("http://localhost:3000", detector.resolveDestinationUrl("localhost:3000", activeSite = null))
+
+        // Gboard double-space period ("wi" -> "wi " -> "wi. ") activates Wikipedia chip
+        detector.onQueryChanged("wi", "wi ", null, 2_000L)
+        val gboard = detector.onQueryChanged("wi ", "wi. ", null, 2_180L)
+        assertTrue(gboard.chipJustActivated)
+        assertEquals("Wikipedia", gboard.activeSite?.label)
+
+        // Explicit https:// URL navigates directly even when a site chip is active
+        assertEquals(
+            "https://google.com",
+            detector.resolveDestinationUrl("https://google.com", activeSite = gboard.activeSite),
+        )
+    }
 }

@@ -199,8 +199,8 @@ class AdaptiveGlassController(
                 },
                 samplerHandler,
             )
-        } catch (_: IllegalArgumentException) {
-            // Surface may not yet be backed by hardware memory before first layout commit
+        } catch (_: RuntimeException) {
+            // Surface may not yet be backed by hardware memory or may be mid-transition
             inFlight.set(false)
         }
     }

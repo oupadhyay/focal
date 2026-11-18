@@ -116,11 +116,10 @@ fun BrowserViewportScreen(
             .fillMaxSize()
             .background(colors.canvasBackground),
     ) {
-        // Layer 1: Full-Bleed Web Surface OR Screen 01 Calm Optical Launch Canvas (recorded for SmokedGlassBox)
+        // Layer 1: Full-Bleed Web Surface (direct 1x HWUI composition) OR Screen 01 Calm Optical Launch Canvas
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .recordFocalBackdrop(backdropGraphicsLayer)
                 .pinchToSummarizeDetector(
                     enabled = hasLoadedWebUrl && !isInPictureInPictureMode,
                     isPageAtMinimumZoom = {
@@ -154,18 +153,25 @@ fun BrowserViewportScreen(
                     modifier = Modifier.fillMaxSize(),
                 )
             } else {
-                CalmOpticalLaunchCanvas(
-                    isPrivateAperture = isPrivateAperture,
-                    continuityHandoff = continuityHandoff,
-                    onOpenContinuityHandoff = onOpenContinuityHandoff,
-                    onTapStartSearch = onOpenSearchSheet,
-                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .recordFocalBackdrop(backdropGraphicsLayer),
+                ) {
+                    CalmOpticalLaunchCanvas(
+                        isPrivateAperture = isPrivateAperture,
+                        continuityHandoff = continuityHandoff,
+                        onOpenContinuityHandoff = onOpenContinuityHandoff,
+                        onTapStartSearch = onOpenSearchSheet,
+                    )
+                }
             }
         }
 
         // Layer 2: Floating Lower Dock (hidden completely in Picture-in-Picture mode)
         if (!isInPictureInPictureMode) {
-            CompositionLocalProvider(LocalFocalBackdropLayer provides backdropGraphicsLayer) {
+            val effectiveBackdropLayer = if (hasLoadedWebUrl) null else backdropGraphicsLayer
+            CompositionLocalProvider(LocalFocalBackdropLayer provides effectiveBackdropLayer) {
                 Column(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)

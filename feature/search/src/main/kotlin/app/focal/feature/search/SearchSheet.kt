@@ -415,7 +415,9 @@ fun SearchSheet(
                                     rawQuery = textFieldValue.text,
                                     activeSite = activeSite,
                                 )
-                                onNavigateToUrl(targetUrl, isPrivateAperture)
+                                if (targetUrl != "about:blank") {
+                                    onNavigateToUrl(targetUrl, isPrivateAperture)
+                                }
                             }
                             .padding(horizontal = 10.dp, vertical = 5.dp),
                         contentAlignment = Alignment.Center,

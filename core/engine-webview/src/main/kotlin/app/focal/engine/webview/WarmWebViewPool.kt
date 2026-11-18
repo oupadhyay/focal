@@ -108,7 +108,7 @@ class WarmWebViewPool(
 
                 // Privacy hardening: disable Google SafeBrowsing telemetry (replaced by local adblock-rust)
                 if (WebViewFeature.isFeatureSupported(WebViewFeature.SAFE_BROWSING_ENABLE)) {
-                    WebSettingsCompat.setSafeBrowsingEnabled(this, false)
+                    runCatching { WebSettingsCompat.setSafeBrowsingEnabled(this, false) }
                 }
             }
         }

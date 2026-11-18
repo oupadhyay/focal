@@ -85,8 +85,10 @@ fun LinkPeekSheet(
     val previewWebView = remember(cleanedResult.cleanUrl) {
         WebView(context).apply {
             if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
-                ProfileStore.getInstance().getOrCreateProfile(WebViewSession.LINK_PEEK_PROFILE_NAME)
-                WebViewCompat.setProfile(this, WebViewSession.LINK_PEEK_PROFILE_NAME)
+                runCatching {
+                    ProfileStore.getInstance().getOrCreateProfile(WebViewSession.LINK_PEEK_PROFILE_NAME)
+                    WebViewCompat.setProfile(this, WebViewSession.LINK_PEEK_PROFILE_NAME)
+                }
             }
             settings.apply {
                 javaScriptEnabled = true
@@ -102,10 +104,10 @@ fun LinkPeekSheet(
                 mediaPlaybackRequiresUserGesture = true
                 cacheMode = WebSettings.LOAD_NO_CACHE
                 if (WebViewFeature.isFeatureSupported(WebViewFeature.SAFE_BROWSING_ENABLE)) {
-                    WebSettingsCompat.setSafeBrowsingEnabled(this, false)
+                    runCatching { WebSettingsCompat.setSafeBrowsingEnabled(this, false) }
                 }
             }
-            CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
+            runCatching { CookieManager.getInstance().setAcceptThirdPartyCookies(this, false) }
 
             webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(
@@ -157,7 +159,7 @@ fun LinkPeekSheet(
                     peekProfile?.cookieManager?.removeAllCookies(null)
                     peekProfile?.webStorage?.deleteAllData()
                     store.deleteProfile(WebViewSession.LINK_PEEK_PROFILE_NAME)
-                } catch (_: IllegalStateException) {
+                } catch (_: RuntimeException) {
                     // Cookies & storage already cleared above if WebView teardown is completing
                 }
             }

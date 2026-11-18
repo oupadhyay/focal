@@ -85,7 +85,14 @@ class WebViewSession internal constructor(
         const val LINK_PEEK_PROFILE_NAME = "focal_link_peek"
         const val JS_BRIDGE_NAME = "focalBridge"
         const val ASSET_LOADER_DOMAIN = "appassets.androidplatform.net"
-        val ALLOWED_BRIDGE_ORIGIN_RULES: Set<String> = setOf("https://*", "http://*")
+
+        /**
+         * `WebViewCompat.addWebMessageListener` and `addDocumentStartJavaScript` only accept `"*"`
+         * for arbitrary web hosts (`"https://*"` and `"http://*"` are rejected by Chromium's
+         * `OriginMatcher` with `IllegalArgumentException`). All bridge callbacks strictly enforce
+         * `sourceOrigin.scheme in {"https", "http"}` and a non-blank `sourceOrigin.host`.
+         */
+        val ALLOWED_BRIDGE_ORIGIN_RULES: Set<String> = setOf("*")
 
         private const val DESKTOP_USER_AGENT =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
@@ -162,8 +169,9 @@ class WebViewSession internal constructor(
             mediaPlaybackRequiresUserGesture = true
         }
         if (isPrivate) {
-            if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
-                WebViewCompat.setProfile(view, EPHEMERAL_PROFILE_NAME)
+            val multiProfileBound = WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE) &&
+                runCatching { WebViewCompat.setProfile(view, EPHEMERAL_PROFILE_NAME) }.isSuccess
+            if (multiProfileBound) {
                 view.settings.domStorageEnabled = true
                 view.settings.databaseEnabled = true
             } else {
@@ -174,121 +182,123 @@ class WebViewSession internal constructor(
             }
             view.settings.saveFormData = false
             view.settings.cacheMode = WebSettings.LOAD_NO_CACHE
-            CookieManager.getInstance().setAcceptThirdPartyCookies(view, false)
+            runCatching { CookieManager.getInstance().setAcceptThirdPartyCookies(view, false) }
         } else {
-            CookieManager.getInstance().setAcceptThirdPartyCookies(view, false)
+            runCatching { CookieManager.getInstance().setAcceptThirdPartyCookies(view, false) }
         }
     }
 
     private fun installWebMessageBridge(view: WebView) {
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) return
 
-        WebViewCompat.addWebMessageListener(
-            view,
-            JS_BRIDGE_NAME,
-            ALLOWED_BRIDGE_ORIGIN_RULES,
-        ) { _, message: WebMessageCompat, sourceOrigin: Uri, isMainFrame: Boolean, replyProxy: JavaScriptReplyProxy ->
-            val originScheme = sourceOrigin.scheme?.lowercase()
-            val originHost = sourceOrigin.host?.lowercase()
-            if ((originScheme != "https" && originScheme != "http") || originHost.isNullOrBlank()) {
-                return@addWebMessageListener
-            }
+        runCatching {
+            WebViewCompat.addWebMessageListener(
+                view,
+                JS_BRIDGE_NAME,
+                ALLOWED_BRIDGE_ORIGIN_RULES,
+            ) { _, message: WebMessageCompat, sourceOrigin: Uri, isMainFrame: Boolean, replyProxy: JavaScriptReplyProxy ->
+                val originScheme = sourceOrigin.scheme?.lowercase()
+                val originHost = sourceOrigin.host?.lowercase()
+                if ((originScheme != "https" && originScheme != "http") || originHost.isNullOrBlank()) {
+                    return@addWebMessageListener
+                }
 
-            val raw = message.data ?: return@addWebMessageListener
-            try {
-                val json = JSONObject(raw)
-                when (json.optString("type")) {
-                    "doc_start" -> {
-                        val verifiedUrl = verifySameOriginUrl(
-                            reportedUrl = json.optString("url", ""),
-                            sourceOrigin = sourceOrigin,
-                            originScheme = originScheme,
-                            originHost = originHost,
-                        )
-                        if (currentOverrides.blockAdsAndTrackers) {
-                            val css = adblockController.cosmeticCssForUrl(verifiedUrl)
-                            if (css.isNotBlank()) {
-                                val reply = JSONObject()
-                                    .put("type", "cosmetic_css")
-                                    .put("css", css)
-                                    .toString()
-                                replyProxy.postMessage(reply)
-                            }
-                        }
-                    }
-                    "dom_classes_ids" -> {
-                        val verifiedUrl = verifySameOriginUrl(
-                            reportedUrl = json.optString("url", ""),
-                            sourceOrigin = sourceOrigin,
-                            originScheme = originScheme,
-                            originHost = originHost,
-                        )
-                        if (currentOverrides.blockAdsAndTrackers) {
-                            val classes = jsonArrayToStringList(json.optJSONArray("classes"), limit = 512)
-                            val ids = jsonArrayToStringList(json.optJSONArray("ids"), limit = 512)
-                            val dynamicCss = adblockController.cosmeticCssForClassesAndIds(
-                                url = verifiedUrl,
-                                classes = classes,
-                                ids = ids,
+                val raw = message.data ?: return@addWebMessageListener
+                try {
+                    val json = JSONObject(raw)
+                    when (json.optString("type")) {
+                        "doc_start" -> {
+                            val verifiedUrl = verifySameOriginUrl(
+                                reportedUrl = json.optString("url", ""),
+                                sourceOrigin = sourceOrigin,
+                                originScheme = originScheme,
+                                originHost = originHost,
                             )
-                            if (dynamicCss.isNotBlank()) {
-                                val reply = JSONObject()
-                                    .put("type", "cosmetic_dynamic_css")
-                                    .put("css", dynamicCss)
-                                    .toString()
-                                replyProxy.postMessage(reply)
+                            if (currentOverrides.blockAdsAndTrackers) {
+                                val css = adblockController.cosmeticCssForUrl(verifiedUrl)
+                                if (css.isNotBlank()) {
+                                    val reply = JSONObject()
+                                        .put("type", "cosmetic_css")
+                                        .put("css", css)
+                                        .toString()
+                                    replyProxy.postMessage(reply)
+                                }
                             }
                         }
-                    }
-                    "form_dirty" -> {
-                        if (isMainFrame) {
-                            val dirty = json.optBoolean("dirty", false)
-                            _state.update { it.copy(hasUnsentFormDraft = dirty) }
-                        }
-                    }
-                    "page_meta" -> {
-                        if (isMainFrame) {
-                            val readerEligible = json.optBoolean("readerEligible", false)
-                            val lang = json.optString("lang").takeIf { it.isNotBlank() }
-                            _state.update {
-                                it.copy(
-                                    isReaderEligible = readerEligible,
-                                    pageLanguageTag = lang,
+                        "dom_classes_ids" -> {
+                            val verifiedUrl = verifySameOriginUrl(
+                                reportedUrl = json.optString("url", ""),
+                                sourceOrigin = sourceOrigin,
+                                originScheme = originScheme,
+                                originHost = originHost,
+                            )
+                            if (currentOverrides.blockAdsAndTrackers) {
+                                val classes = jsonArrayToStringList(json.optJSONArray("classes"), limit = 512)
+                                val ids = jsonArrayToStringList(json.optJSONArray("ids"), limit = 512)
+                                val dynamicCss = adblockController.cosmeticCssForClassesAndIds(
+                                    url = verifiedUrl,
+                                    classes = classes,
+                                    ids = ids,
                                 )
+                                if (dynamicCss.isNotBlank()) {
+                                    val reply = JSONObject()
+                                        .put("type", "cosmetic_dynamic_css")
+                                        .put("css", dynamicCss)
+                                        .toString()
+                                    replyProxy.postMessage(reply)
+                                }
                             }
                         }
-                    }
-                    "media_state" -> {
-                        if (isMainFrame) {
-                            val playing = json.optBoolean("playing", false)
-                            val active = json.optBoolean("active", true)
-                            if (!active) {
-                                _state.update { it.copy(activeMedia = null) }
-                            } else {
-                                val mediaTitle = json.optString("title").ifBlank { _state.value.title }
-                                val rate = json.optDouble("rate", 1.0).toFloat()
-                                val hasVideo = json.optBoolean("hasVideo", false)
-                                val duration = json.optDouble("duration", 0.0).toFloat()
-                                val currentTime = json.optDouble("currentTime", 0.0).toFloat()
-                                _state.update { current ->
-                                    current.copy(
-                                        activeMedia = ActiveMediaSessionInfo(
-                                            title = mediaTitle,
-                                            domain = current.domain,
-                                            isPlaying = playing,
-                                            playbackRate = rate,
-                                            hasVideoElement = hasVideo,
-                                            durationSec = duration,
-                                            currentTimeSec = currentTime,
-                                        ),
+                        "form_dirty" -> {
+                            if (isMainFrame) {
+                                val dirty = json.optBoolean("dirty", false)
+                                _state.update { it.copy(hasUnsentFormDraft = dirty) }
+                            }
+                        }
+                        "page_meta" -> {
+                            if (isMainFrame) {
+                                val readerEligible = json.optBoolean("readerEligible", false)
+                                val lang = json.optString("lang").takeIf { it.isNotBlank() }
+                                _state.update {
+                                    it.copy(
+                                        isReaderEligible = readerEligible,
+                                        pageLanguageTag = lang,
                                     )
                                 }
                             }
                         }
+                        "media_state" -> {
+                            if (isMainFrame) {
+                                val playing = json.optBoolean("playing", false)
+                                val active = json.optBoolean("active", true)
+                                if (!active) {
+                                    _state.update { it.copy(activeMedia = null) }
+                                } else {
+                                    val mediaTitle = json.optString("title").ifBlank { _state.value.title }
+                                    val rate = json.optDouble("rate", 1.0).toFloat()
+                                    val hasVideo = json.optBoolean("hasVideo", false)
+                                    val duration = json.optDouble("duration", 0.0).toFloat()
+                                    val currentTime = json.optDouble("currentTime", 0.0).toFloat()
+                                    _state.update { current ->
+                                        current.copy(
+                                            activeMedia = ActiveMediaSessionInfo(
+                                                title = mediaTitle,
+                                                domain = current.domain,
+                                                isPlaying = playing,
+                                                playbackRate = rate,
+                                                hasVideoElement = hasVideo,
+                                                durationSec = duration,
+                                                currentTimeSec = currentTime,
+                                            ),
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
+                } catch (_: Exception) {
+                    // Ignore malformed guest-page bridge frames
                 }
-            } catch (_: Exception) {
-                // Ignore malformed guest-page bridge frames
             }
         }
     }
@@ -297,20 +307,24 @@ class WebViewSession internal constructor(
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
 
         if (isPrivate && !WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
-            documentScriptHandlers += WebViewCompat.addDocumentStartJavaScript(
-                view,
-                FOCAL_EPHEMERAL_COOKIE_SHIELD_JS,
-                ALLOWED_BRIDGE_ORIGIN_RULES,
-            )
+            runCatching {
+                documentScriptHandlers += WebViewCompat.addDocumentStartJavaScript(
+                    view,
+                    FOCAL_EPHEMERAL_COOKIE_SHIELD_JS,
+                    ALLOWED_BRIDGE_ORIGIN_RULES,
+                )
+            }
         }
 
         // Single unified document-start IIFE that captures `window.focalBridge` into a private
         // lexical closure and immediately deletes `window.focalBridge` from the global object.
-        documentScriptHandlers += WebViewCompat.addDocumentStartJavaScript(
-            view,
-            FOCAL_DOCUMENT_START_BOOTSTRAP_JS,
-            ALLOWED_BRIDGE_ORIGIN_RULES,
-        )
+        runCatching {
+            documentScriptHandlers += WebViewCompat.addDocumentStartJavaScript(
+                view,
+                FOCAL_DOCUMENT_START_BOOTSTRAP_JS,
+                ALLOWED_BRIDGE_ORIGIN_RULES,
+            )
+        }
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -563,6 +577,18 @@ class WebViewSession internal constructor(
                 url
             }
             if (!isAllowedNavigationUrl(cleaned)) return@runOnMain
+            if (!cleaned.equals("about:blank", ignoreCase = true)) {
+                _telemetry.update { it.copy(loadProgress = 8) }
+                _state.update {
+                    it.copy(
+                        url = cleaned,
+                        domain = extractHostDomain(cleaned),
+                        isLoading = true,
+                        loadProgress = 8,
+                        isHttps = cleaned.startsWith("https://", ignoreCase = true),
+                    )
+                }
+            }
             if (headers.isEmpty()) {
                 webView.loadUrl(cleaned)
             } else {
@@ -605,10 +631,12 @@ class WebViewSession internal constructor(
                 defaultMobileUserAgent
             }
             if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
-                WebSettingsCompat.setAlgorithmicDarkeningAllowed(
-                    webView.settings,
-                    overrides.forceDarkWebSurface,
-                )
+                runCatching {
+                    WebSettingsCompat.setAlgorithmicDarkeningAllowed(
+                        webView.settings,
+                        overrides.forceDarkWebSurface,
+                    )
+                }
             }
             applyLiveOverridesJs(webView)
         }
@@ -812,10 +840,10 @@ class WebViewSession internal constructor(
         if (!disposed.compareAndSet(false, true)) return
         runOnMain {
             try {
-                documentScriptHandlers.forEach { it.remove() }
+                documentScriptHandlers.forEach { handler -> runCatching { handler.remove() } }
                 documentScriptHandlers.clear()
                 if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
-                    WebViewCompat.removeWebMessageListener(webView, JS_BRIDGE_NAME)
+                    runCatching { WebViewCompat.removeWebMessageListener(webView, JS_BRIDGE_NAME) }
                 }
                 (webView.parent as? ViewGroup)?.removeView(webView)
                 (webView.context as? MutableContextWrapper)?.baseContext =
@@ -861,7 +889,7 @@ fun WebEngineSurface(
                 (view.parent as? ViewGroup)?.removeView(view)
                 val unwrappedHost = (hostContext as? MutableContextWrapper)?.baseContext ?: hostContext
                 (view.context as? MutableContextWrapper)?.let { wrapper ->
-                    if (wrapper !== unwrappedHost) {
+                    if (wrapper.baseContext !== unwrappedHost) {
                         wrapper.baseContext = unwrappedHost
                     }
                 }
@@ -874,7 +902,7 @@ fun WebEngineSurface(
             update = { view ->
                 val unwrappedHost = (hostContext as? MutableContextWrapper)?.baseContext ?: hostContext
                 (view.context as? MutableContextWrapper)?.let { wrapper ->
-                    if (wrapper !== unwrappedHost) {
+                    if (wrapper.baseContext !== unwrappedHost) {
                         wrapper.baseContext = unwrappedHost
                     }
                 }
@@ -972,6 +1000,7 @@ private fun <T> parseEvaluateJsJsonArray(
 
 private const val FOCAL_EPHEMERAL_COOKIE_SHIELD_JS = """
 (function() {
+  if (location.protocol !== 'https:' && location.protocol !== 'http:') return;
   try {
     Object.defineProperty(document, 'cookie', {
       get: function() { return ''; },
@@ -987,6 +1016,7 @@ private const val FOCAL_DOCUMENT_START_BOOTSTRAP_JS = """
   const bridge = window.focalBridge;
   if (!bridge) return;
   try { delete window.focalBridge; } catch (_) {}
+  if (location.protocol !== 'https:' && location.protocol !== 'http:') return;
 
   bridge.onmessage = function(event) {
     try {

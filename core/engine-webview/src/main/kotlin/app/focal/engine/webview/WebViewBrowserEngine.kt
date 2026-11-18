@@ -40,7 +40,9 @@ class WebViewBrowserEngine(
     override fun createSession(isPrivate: Boolean, spaceId: String?): EngineSession {
         if (isPrivate && WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
             runOnMainSyncOrPost {
-                ProfileStore.getInstance().getOrCreateProfile(WebViewSession.EPHEMERAL_PROFILE_NAME)
+                runCatching {
+                    ProfileStore.getInstance().getOrCreateProfile(WebViewSession.EPHEMERAL_PROFILE_NAME)
+                }
             }
         }
 
@@ -78,7 +80,7 @@ class WebViewBrowserEngine(
                     ephemeral?.cookieManager?.removeAllCookies(null)
                     ephemeral?.webStorage?.deleteAllData()
                     store.deleteProfile(WebViewSession.EPHEMERAL_PROFILE_NAME)
-                } catch (_: IllegalStateException) {
+                } catch (_: RuntimeException) {
                     // Profile may still have a tearing-down WebView; cookies/storage already cleared above
                 }
             }

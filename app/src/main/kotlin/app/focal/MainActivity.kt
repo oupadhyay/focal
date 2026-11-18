@@ -559,7 +559,11 @@ private fun FocalRootCoordinator(
 
             // Active Floating Sheet Layer (suppressed during PiP; coupled 1:1 with Predictive Back)
             if (!isInPictureInPictureMode) {
-                CompositionLocalProvider(LocalFocalBackdropLayer provides viewportBackdropLayer) {
+                val hasActiveWebSurface = activeSession != null &&
+                    !activeSessionState?.url.isNullOrBlank() &&
+                    activeSessionState?.url != "about:blank"
+                val sheetBackdropLayer = if (hasActiveWebSurface) null else viewportBackdropLayer
+                CompositionLocalProvider(LocalFocalBackdropLayer provides sheetBackdropLayer) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()

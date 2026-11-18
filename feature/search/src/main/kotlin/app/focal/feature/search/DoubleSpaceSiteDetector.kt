@@ -219,6 +219,14 @@ class DoubleSpaceSiteDetector(
         defaultSearchUrlTemplate: String = "https://duckduckgo.com/?q=%s",
     ): String {
         val trimmed = rawQuery.trim()
+        if (
+            trimmed.startsWith("http://", ignoreCase = true) ||
+            trimmed.startsWith("https://", ignoreCase = true) ||
+            trimmed.startsWith("focal-pair://", ignoreCase = true)
+        ) {
+            return trimmed
+        }
+
         if (activeSite != null) {
             return if (trimmed.isEmpty()) {
                 // Navigate to site root if user submits empty chip
@@ -231,11 +239,12 @@ class DoubleSpaceSiteDetector(
         }
 
         if (trimmed.isEmpty()) return "about:blank"
-        if (trimmed.startsWith("http://") || trimmed.startsWith("https://") || trimmed.startsWith("focal-pair://")) {
-            return trimmed
-        }
         if (!trimmed.contains(' ') && DOMAIN_LIKE_REGEX.matches(trimmed)) {
-            return if (trimmed.startsWith("localhost")) "http://$trimmed" else "https://$trimmed"
+            return if (trimmed.startsWith("localhost", ignoreCase = true)) {
+                "http://$trimmed"
+            } else {
+                "https://$trimmed"
+            }
         }
 
         val encoded = URLEncoder.encode(trimmed, StandardCharsets.UTF_8.name())
