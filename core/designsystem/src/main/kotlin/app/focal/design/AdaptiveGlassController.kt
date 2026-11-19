@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 @Immutable
 data class GlassLuminanceState(
@@ -27,10 +28,11 @@ data class GlassLuminanceState(
  * Off-thread `16x16` `PixelCopy` luminance sampler running on a dedicated background
  * [HandlerThread] (`Process.THREAD_PRIORITY_BACKGROUND`) for zero UI-thread stalls.
  *
- * Samples a tiny `16x16` `ARGB_8888` downsample of the bottom `64.dp` region every `250ms`
- * while scrolling (and immediately on navigation commit), computes BT.709 median luminance,
- * and applies **`0.08f` hysteresis** (`dark -> light` at `0.52f`, `light -> dark` at `0.44f`)
- * to prevent visual flicker near mid-gray web surfaces.
+ * Samples a tiny `16x16` `ARGB_8888` downsample of an unobstructed lower-viewport WebView strip
+ * strictly **above** Focal's floating bottom bar and dock (preventing any self-sampling feedback
+ * loop where light glass could lock itself light over dark web pages), computes BT.709 median
+ * luminance, and applies **`0.08f` hysteresis** (`dark -> light` at `0.52f`, `light -> dark` at
+ * `0.44f`) to prevent flicker near mid-gray web surfaces.
  */
 class AdaptiveGlassController(
     initialDarkGlass: Boolean = true,
@@ -45,6 +47,81 @@ class AdaptiveGlassController(
 
         /** Switch from Dark Smoked OLED Glass -> Light Alabaster Glass at or above `0.52f` (`0.08f` hysteresis). */
         const val DARK_TO_LIGHT_THRESHOLD: Float = 0.52f
+
+        /** Pure-JVM pixel rectangle for unit-testable sampling geometry. */
+        data class SampleStripBounds(
+            val left: Int,
+            val top: Int,
+            val right: Int,
+            val bottom: Int,
+        ) {
+            val width: Int get() = right - left
+            val height: Int get() = bottom - top
+            fun toRect(): Rect = Rect(left, top, right, bottom)
+        }
+
+        /**
+         * Pure-JVM computation of an unobstructed lower-viewport WebView sampling strip strictly
+         * above Focal's floating bottom dock (`navigationBarBottomPx + dockClearancePx`) and below
+         * the status bar, inset horizontally to skip edge scrollbars.
+         */
+        fun computeUnobstructedSampleBounds(
+            viewportWidthPx: Int,
+            viewportHeightPx: Int,
+            statusBarTopPx: Int,
+            navigationBarBottomPx: Int,
+            dockClearancePx: Int,
+            stripHeightPx: Int,
+            horizontalInsetPx: Int,
+        ): SampleStripBounds? {
+            if (viewportWidthPx <= 0 || viewportHeightPx <= 0 || stripHeightPx <= 0) return null
+            val safeInsetX = horizontalInsetPx.coerceIn(0, (viewportWidthPx - 4).coerceAtLeast(0) / 2)
+            val left = safeInsetX
+            val right = viewportWidthPx - safeInsetX
+            if (right - left < 4) return null
+
+            val minTop = (statusBarTopPx + 8).coerceIn(0, viewportHeightPx)
+            val clearedBottom = (viewportHeightPx - navigationBarBottomPx - dockClearancePx)
+                .coerceIn(minTop, viewportHeightPx)
+
+            val bottom: Int
+            val top: Int
+            if (clearedBottom - minTop >= 8) {
+                bottom = clearedBottom
+                top = (bottom - stripHeightPx).coerceAtLeast(minTop)
+            } else {
+                // Ultra-compact split-screen/PiP fallback: sample center band of available viewport
+                val centerY = viewportHeightPx / 2
+                val halfStrip = (stripHeightPx / 2).coerceAtLeast(4)
+                top = (centerY - halfStrip).coerceAtLeast(0)
+                bottom = (centerY + halfStrip).coerceAtMost(viewportHeightPx)
+            }
+
+            if (bottom - top < 4) return null
+            return SampleStripBounds(left = left, top = top, right = right, bottom = bottom)
+        }
+
+        /**
+         * Computes a clean lower-viewport sampling [Rect] strictly above Focal's floating bottom
+         * dock (`navigationBarBottomPx + dockClearancePx`) and below the status bar.
+         */
+        fun computeUnobstructedSampleRect(
+            viewportWidthPx: Int,
+            viewportHeightPx: Int,
+            statusBarTopPx: Int,
+            navigationBarBottomPx: Int,
+            dockClearancePx: Int,
+            stripHeightPx: Int,
+            horizontalInsetPx: Int,
+        ): Rect? = computeUnobstructedSampleBounds(
+            viewportWidthPx = viewportWidthPx,
+            viewportHeightPx = viewportHeightPx,
+            statusBarTopPx = statusBarTopPx,
+            navigationBarBottomPx = navigationBarBottomPx,
+            dockClearancePx = dockClearancePx,
+            stripHeightPx = stripHeightPx,
+            horizontalInsetPx = horizontalInsetPx,
+        )?.toRect()
 
         /**
          * Pure hysteresis transition function (`0.08f` deadband between `0.44f` and `0.52f`).
@@ -91,6 +168,11 @@ class AdaptiveGlassController(
         }
     }
 
+    private data class PendingSampleRequest(
+        val window: Window,
+        val rect: Rect,
+    )
+
     private val _state = MutableStateFlow(
         GlassLuminanceState(
             isDarkGlass = initialDarkGlass,
@@ -117,6 +199,7 @@ class AdaptiveGlassController(
     private val lumaScratch = FloatArray(SAMPLE_GRID_SIZE * SAMPLE_GRID_SIZE)
     private val inFlight = AtomicBoolean(false)
     private val closed = AtomicBoolean(false)
+    private val pendingPrioritySample = AtomicReference<PendingSampleRequest?>(null)
 
     @Volatile
     private var lastSampleElapsedMs: Long = 0L
@@ -126,21 +209,46 @@ class AdaptiveGlassController(
      */
     fun onViewportScrolled(
         window: Window?,
-        bottomSampleRectPx: Rect,
+        unobstructedSampleRectPx: Rect,
     ) {
         val now = SystemClock.elapsedRealtime()
         if (now - lastSampleElapsedMs < SAMPLE_THROTTLE_MS) return
-        requestSampleInternal(window, bottomSampleRectPx, now)
+        requestSampleInternal(
+            window = window,
+            sampleRect = unobstructedSampleRectPx,
+            timestampMs = now,
+            queueIfBusy = false,
+        )
     }
 
     /**
-     * Immediate sample trigger invoked on page navigation commit or theme toggle.
+     * Priority sample trigger invoked on page navigation commit, `onPageFinished` settle,
+     * tab switch, theme override change, or modal overlay dismissal. If a previous `PixelCopy`
+     * is still in flight, queues the latest request so it executes immediately upon completion.
      */
     fun onNavigationCommitted(
         window: Window?,
-        bottomSampleRectPx: Rect,
+        unobstructedSampleRectPx: Rect,
     ) {
-        requestSampleInternal(window, bottomSampleRectPx, SystemClock.elapsedRealtime())
+        requestSampleInternal(
+            window = window,
+            sampleRect = unobstructedSampleRectPx,
+            timestampMs = SystemClock.elapsedRealtime(),
+            queueIfBusy = true,
+        )
+    }
+
+    /**
+     * Immediately resets the glass theme to Dark Smoked OLED (used on the Calm Launch Canvas
+     * where no web page is loaded).
+     */
+    fun resetToDarkOled() {
+        pendingPrioritySample.set(null)
+        _state.value = GlassLuminanceState(
+            isDarkGlass = true,
+            medianLuminance = 0.08f,
+            lightStatusBarIcons = true,
+        )
     }
 
     /**
@@ -160,14 +268,20 @@ class AdaptiveGlassController(
         window: Window?,
         sampleRect: Rect,
         timestampMs: Long,
+        queueIfBusy: Boolean,
     ) {
         if (closed.get() || window == null) return
         if (sampleRect.width() <= 0 || sampleRect.height() <= 0) return
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        if (!inFlight.compareAndSet(false, true)) return
+        val rectCopy = Rect(sampleRect)
+        if (!inFlight.compareAndSet(false, true)) {
+            if (queueIfBusy) {
+                pendingPrioritySample.set(PendingSampleRequest(window, rectCopy))
+            }
+            return
+        }
 
         lastSampleElapsedMs = timestampMs
-        val rectCopy = Rect(sampleRect)
 
         try {
             PixelCopy.request(
@@ -195,6 +309,15 @@ class AdaptiveGlassController(
                         }
                     } finally {
                         inFlight.set(false)
+                        val queued = pendingPrioritySample.getAndSet(null)
+                        if (queued != null && !closed.get()) {
+                            requestSampleInternal(
+                                window = queued.window,
+                                sampleRect = queued.rect,
+                                timestampMs = SystemClock.elapsedRealtime(),
+                                queueIfBusy = false,
+                            )
+                        }
                     }
                 },
                 samplerHandler,
@@ -207,6 +330,7 @@ class AdaptiveGlassController(
 
     override fun close() {
         if (closed.compareAndSet(false, true)) {
+            pendingPrioritySample.set(null)
             samplerHandler.post {
                 if (!sampleBitmap.isRecycled) {
                     sampleBitmap.recycle()

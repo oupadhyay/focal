@@ -104,6 +104,10 @@ sealed interface EngineSessionEvent {
         val isMainFrame: Boolean,
     ) : EngineSessionEvent
 
+    data class PageLoaded(
+        val url: String,
+    ) : EngineSessionEvent
+
     data class DownloadRequested(
         val url: String,
         val mimeType: String?,

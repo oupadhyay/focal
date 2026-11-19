@@ -59,7 +59,9 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.focal.adblock.AdblockController
 import app.focal.ai.GroundedPageSummary
@@ -99,6 +101,8 @@ import app.focal.sync.SyncRelaySessionManager
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Locale
 import java.util.UUID
@@ -338,10 +342,69 @@ private fun FocalRootCoordinator(
         }
     }
 
-    // Sync active EngineSession UI events (Link Peek, Scroll Luminance, Navigation, Downloads)
+    val hasLoadedWebUrl = activeSession != null &&
+        !activeSessionState?.url.isNullOrBlank() &&
+        activeSessionState?.url != "about:blank"
+    val latestOverlaySheet by rememberUpdatedState(overlaySheet)
+    val latestIsInPip by rememberUpdatedState(isInPictureInPictureMode)
+    val latestHasLoadedWebUrl by rememberUpdatedState(hasLoadedWebUrl)
+
+    val computeCleanWebSampleRect: () -> Rect? = {
+        val rootInsets = ViewCompat.getRootWindowInsets(view)
+        val statusTopPx = rootInsets?.getInsets(WindowInsetsCompat.Type.statusBars())?.top ?: 0
+        val navBottomPx = rootInsets?.getInsets(WindowInsetsCompat.Type.navigationBars())?.bottom ?: 0
+        val dockClearancePx = with(density) { 140.dp.roundToPx() }
+        val stripHeightPx = with(density) { 48.dp.roundToPx() }
+        val horizontalInsetPx = with(density) { 16.dp.roundToPx() }
+        AdaptiveGlassController.computeUnobstructedSampleRect(
+            viewportWidthPx = view.width,
+            viewportHeightPx = view.height,
+            statusBarTopPx = statusTopPx,
+            navigationBarBottomPx = navBottomPx,
+            dockClearancePx = dockClearancePx,
+            stripHeightPx = stripHeightPx,
+            horizontalInsetPx = horizontalInsetPx,
+        )
+    }
+
+    var settleSampleJob by remember { mutableStateOf<Job?>(null) }
+    val scheduleSettledGlassSamples: (LongArray) -> Unit = { delaysMs ->
+        settleSampleJob?.cancel()
+        settleSampleJob = scope.launch {
+            for (waitMs in delaysMs) {
+                if (waitMs > 0L) delay(waitMs)
+                if (!latestHasLoadedWebUrl) {
+                    adaptiveGlass.resetToDarkOled()
+                    return@launch
+                }
+                if (latestOverlaySheet == ActiveOverlaySheet.None && !latestIsInPip) {
+                    computeCleanWebSampleRect()?.let { rect ->
+                        adaptiveGlass.onNavigationCommitted(activity.window, rect)
+                    }
+                }
+            }
+        }
+    }
+
+    // Re-sample when switching tabs, closing modal scrim overlays, toggling dark web pages,
+    // or returning to the pure-dark Calm Launch Canvas.
+    LaunchedEffect(
+        selectedTabId,
+        hasLoadedWebUrl,
+        overlaySheet == ActiveOverlaySheet.None,
+        effectiveOverrides.forceDarkWebSurface,
+    ) {
+        if (!hasLoadedWebUrl) {
+            settleSampleJob?.cancel()
+            adaptiveGlass.resetToDarkOled()
+        } else if (overlaySheet == ActiveOverlaySheet.None && !isInPictureInPictureMode) {
+            scheduleSettledGlassSamples(longArrayOf(220L, 550L))
+        }
+    }
+
+    // Sync active EngineSession UI events (Link Peek, Scroll Luminance, Navigation, PageLoaded, Downloads)
     LaunchedEffect(activeSession) {
         val session = activeSession ?: return@LaunchedEffect
-        val bottomSampleHeightPx = with(density) { 64.dp.roundToPx() }
         val hideDeltaPx = with(density) { 18.dp.roundToPx() }
         val showDeltaPx = -with(density) { 8.dp.roundToPx() }
 
@@ -356,17 +419,24 @@ private fun FocalRootCoordinator(
                     } else if (event.deltaY < showDeltaPx || event.scrollY <= 0) {
                         bottomBarHiddenTarget = false
                     }
-                    if (view.width > 0 && view.height > bottomSampleHeightPx) {
-                        val rect = Rect(0, view.height - bottomSampleHeightPx, view.width, view.height)
-                        adaptiveGlass.onViewportScrolled(activity.window, rect)
+                    if (
+                        latestOverlaySheet == ActiveOverlaySheet.None &&
+                        !latestIsInPip &&
+                        latestHasLoadedWebUrl
+                    ) {
+                        computeCleanWebSampleRect()?.let { rect ->
+                            adaptiveGlass.onViewportScrolled(activity.window, rect)
+                        }
                     }
                 }
                 is EngineSessionEvent.NavigationCommitted -> {
                     bottomBarHiddenTarget = false
-                    if (view.width > 0 && view.height > bottomSampleHeightPx) {
-                        val rect = Rect(0, view.height - bottomSampleHeightPx, view.width, view.height)
-                        adaptiveGlass.onNavigationCommitted(activity.window, rect)
-                    }
+                    // Delay past WebView's transient white blank-canvas flash before first read
+                    scheduleSettledGlassSamples(longArrayOf(180L, 550L))
+                }
+                is EngineSessionEvent.PageLoaded -> {
+                    // Re-sample after DOM/CSS load and late SPA hydration (e.g., Next.js/Tailwind themes)
+                    scheduleSettledGlassSamples(longArrayOf(80L, 420L, 1_000L))
                 }
                 is EngineSessionEvent.DownloadRequested -> {
                     enqueueSafeBrowserDownload(

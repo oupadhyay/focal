@@ -567,6 +567,7 @@ class WebViewSession internal constructor(
                         canGoForward = view?.canGoForward() == true,
                     )
                 }
+                _events.tryEmit(EngineSessionEvent.PageLoaded(url = safeUrl))
             }
 
             override fun onScaleChanged(view: WebView?, oldScale: Float, newScale: Float) {
