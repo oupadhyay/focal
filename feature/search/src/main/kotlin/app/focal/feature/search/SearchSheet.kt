@@ -2,10 +2,12 @@ package app.focal.feature.search
 
 import android.os.SystemClock
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -50,7 +52,9 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -70,6 +74,7 @@ import app.focal.sync.SyncEvent
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toImmutableList
+import kotlinx.coroutines.delay
 
 @Immutable
 data class QuickSquirclePin(
@@ -109,6 +114,7 @@ fun SearchSheet(
     val colors = FocalTheme.colors
     val typography = FocalTheme.typography
     val haptics = LocalHapticFeedback.current
+    val clipboard = LocalClipboardManager.current
     val detector = remember(pins) {
         DoubleSpaceSiteDetector().apply {
             for (pinEngine in DoubleSpaceSiteDetector.enginesFromPins(pins)) {
@@ -127,6 +133,17 @@ fun SearchSheet(
                 selection = TextRange(0, initialQuery.length),
             ),
         )
+    }
+
+    val inlineAnswer = remember(textFieldValue.text, activeSite) {
+        if (activeSite != null) null else InlineFieldEvaluator.evaluate(textFieldValue.text)
+    }
+    var copiedAnswerText by remember(inlineAnswer?.copyValue) { mutableStateOf<String?>(null) }
+    LaunchedEffect(copiedAnswerText) {
+        if (copiedAnswerText != null) {
+            delay(1_500L)
+            copiedAnswerText = null
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -225,6 +242,101 @@ fun SearchSheet(
                                 onClick = { onNavigateToUrl(pin.url, isPrivateAperture) },
                                 modifier = Modifier.weight(1f),
                             )
+                        }
+                    }
+                }
+
+                // Zero-Network Inline Answer Row (Calculator · Units · World Clock)
+                AnimatedVisibility(
+                    visible = inlineAnswer != null,
+                    enter = fadeIn() + expandVertically(expandFrom = Alignment.Bottom),
+                    exit = fadeOut() + shrinkVertically(shrinkTowards = Alignment.Bottom),
+                ) {
+                    val answer = inlineAnswer
+                    if (answer != null) {
+                        val isCopied = copiedAnswerText == answer.copyValue
+                        val kindIcon = when (answer.kind) {
+                            InlineFieldAnswer.Kind.MATH -> FocalGlyphs.Equals
+                            InlineFieldAnswer.Kind.UNIT -> FocalGlyphs.Convert
+                            InlineFieldAnswer.Kind.TIMEZONE -> FocalGlyphs.Clock
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(FocalGeometry.TileShape)
+                                .background(colors.surfacePillSubtle)
+                                .clickable {
+                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    clipboard.setText(AnnotatedString(answer.copyValue))
+                                    copiedAnswerText = answer.copyValue
+                                }
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .clip(CircleShape)
+                                    .background(colors.inkPrimary.copy(alpha = 0.08f)),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    imageVector = kindIcon,
+                                    contentDescription = null,
+                                    tint = colors.inkPrimary.copy(alpha = 0.88f),
+                                    modifier = Modifier.size(15.dp),
+                                )
+                            }
+
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(1.dp),
+                            ) {
+                                Text(
+                                    text = answer.headlineAnswer,
+                                    style = typography.sheetTitle,
+                                    color = colors.inkPrimary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    text = answer.subtitle,
+                                    style = typography.captionMetadata,
+                                    color = colors.inkSecondary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (isCopied) {
+                                            colors.surfacePillActive
+                                        } else {
+                                            colors.inkPrimary.copy(alpha = 0.08f)
+                                        },
+                                    )
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            ) {
+                                if (!isCopied) {
+                                    Icon(
+                                        imageVector = FocalGlyphs.Copy,
+                                        contentDescription = "Copy answer",
+                                        tint = colors.inkSecondary,
+                                        modifier = Modifier.size(13.dp),
+                                    )
+                                }
+                                Text(
+                                    text = if (isCopied) "Copied" else "Copy",
+                                    style = typography.controlPillLabel,
+                                    color = if (isCopied) colors.inkOnPillActive else colors.inkPrimary,
+                                )
+                            }
                         }
                     }
                 }

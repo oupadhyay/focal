@@ -106,12 +106,23 @@ class FocalComposeUiHarnessTest {
         val chipSnap = composeRule.captureSnapshotPng("01b_search_sheet_github_chip.png")
         assertTrue(chipSnap.length() > 1_000L)
 
-        // Dismiss chip and verify typing "google.com" + Go resolves cleanly to https://google.com
+        // Dismiss chip and verify offline inline unit conversion card renders cleanly with tap-to-copy
         composeRule.onNodeWithContentDescription("Remove GitHub filter").performClick()
         composeRule.waitForIdle()
         composeRule.onNode(hasSetTextAction()).performTextClearance()
+        composeRule.onNode(hasSetTextAction()).performTextInput("180 lbs in kg")
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("81.65 kg").assertIsDisplayed()
+        composeRule.onNodeWithText("180 lb → kg").assertIsDisplayed()
+
+        val inlineAnswerSnap = composeRule.captureSnapshotPng("01c_search_sheet_inline_answer.png")
+        assertTrue(inlineAnswerSnap.length() > 1_000L)
+
+        // Verify typing "google.com" clears inline answer and Go resolves cleanly to https://google.com
+        composeRule.onNode(hasSetTextAction()).performTextClearance()
         composeRule.onNode(hasSetTextAction()).performTextInput("google.com")
         composeRule.waitForIdle()
+        composeRule.onNodeWithText("81.65 kg").assertDoesNotExist()
         composeRule.onNodeWithText("Go").performClick()
         assertEquals("https://google.com", navigatedUrl)
         assertEquals(false, navigatedPrivate)

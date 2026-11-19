@@ -443,4 +443,30 @@ object FocalGlyphs {
             close()
         }
     }
+
+    val Equals: ImageVector by lazy {
+        strokeIcon("FocalEquals", strokeWidth = 1.9f) {
+            moveTo(6.2f, 9.5f)
+            lineTo(17.8f, 9.5f)
+            moveTo(6.2f, 14.5f)
+            lineTo(17.8f, 14.5f)
+        }
+    }
+
+    val Convert: ImageVector by lazy {
+        strokeIcon("FocalConvert", strokeWidth = 1.85f) {
+            // Top arrow right
+            moveTo(5.8f, 8.8f)
+            lineTo(18.2f, 8.8f)
+            moveTo(14.8f, 5.6f)
+            lineTo(18.2f, 8.8f)
+            lineTo(14.8f, 12f)
+            // Bottom arrow left
+            moveTo(18.2f, 15.2f)
+            lineTo(5.8f, 15.2f)
+            moveTo(9.2f, 12f)
+            lineTo(5.8f, 15.2f)
+            lineTo(9.2f, 18.4f)
+        }
+    }
 }
