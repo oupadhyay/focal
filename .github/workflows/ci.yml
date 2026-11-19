@@ -114,6 +114,43 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           ls -la /dev/kvm
 
+      - name: Prepare emulator verification script
+        run: |
+          cat << 'EOF' > run-emulator-tests.sh
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          adb logcat -c
+          adb install -r apks/focal-debug.apk
+          adb install -r apks/app-debug-androidTest.apk
+
+          mkdir -p emulator-screenshots
+          set +e
+          timeout 240 adb shell am instrument -w \
+            -e class app.focal.FocalEmulatorVerificationTest \
+            app.focal.test/androidx.test.runner.AndroidJUnitRunner | tee emulator-screenshots/instrument.log
+          INST_EXIT=${PIPESTATUS[0]}
+          set -e
+
+          adb shell ls -la /sdcard/Android/data/app.focal/files/emulator-shots/ || true
+          adb pull /sdcard/Android/data/app.focal/files/emulator-shots/. emulator-screenshots/ || true
+          adb logcat -d -s AndroidRuntime:E > emulator-screenshots/android_runtime_errors.log || true
+          adb logcat -d | grep -iE "app\.focal|adblock|FocalApplication|FATAL|chromium" | tail -n 150 > emulator-screenshots/focal_logcat.log || true
+          ls -lh emulator-screenshots/
+
+          if [ "$INST_EXIT" -ne 0 ] || grep -q "FAILURES!!!" emulator-screenshots/instrument.log || ! grep -q "OK (" emulator-screenshots/instrument.log; then
+            echo "Instrumentation verification failed (exit=$INST_EXIT)!"
+            cat emulator-screenshots/android_runtime_errors.log || true
+            exit 1
+          fi
+          if grep -q "Process: app.focal" emulator-screenshots/android_runtime_errors.log; then
+            echo "Detected fatal AndroidRuntime exception in app.focal!"
+            cat emulator-screenshots/android_runtime_errors.log
+            exit 1
+          fi
+          EOF
+          chmod +x run-emulator-tests.sh
+
       - name: Run FocalEmulatorVerificationTest on headless KVM API 34 emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -128,34 +165,7 @@ jobs:
           enable-hw-keyboard: false
           emulator-boot-timeout: 300
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -camera-back none -camera-front none
-          script: |
-            set -euo pipefail
-            adb logcat -c
-            adb install -r apks/focal-debug.apk
-            adb install -r apks/app-debug-androidTest.apk
-
-            mkdir -p emulator-screenshots
-            set +e
-            timeout 240 adb shell am instrument -w \
-              -e class app.focal.FocalEmulatorVerificationTest \
-              app.focal.test/androidx.test.runner.AndroidJUnitRunner | tee emulator-screenshots/instrument.log
-            INST_EXIT=${PIPESTATUS[0]}
-            set -e
-
-            adb pull /sdcard/Android/data/app.focal/files/emulator-shots/. emulator-screenshots/ || true
-            adb logcat -d -s AndroidRuntime:E > emulator-screenshots/android_runtime_errors.log || true
-            ls -lh emulator-screenshots/
-
-            if [ "$INST_EXIT" -ne 0 ] || grep -q "FAILURES!!!" emulator-screenshots/instrument.log || ! grep -q "OK (" emulator-screenshots/instrument.log; then
-              echo "Instrumentation verification failed (exit=$INST_EXIT)!"
-              cat emulator-screenshots/android_runtime_errors.log || true
-              exit 1
-            fi
-            if grep -q "Process: app.focal" emulator-screenshots/android_runtime_errors.log; then
-              echo "Detected fatal AndroidRuntime exception in app.focal!"
-              cat emulator-screenshots/android_runtime_errors.log
-              exit 1
-            fi
+          script: bash ./run-emulator-tests.sh
 
       - name: Upload real Android Emulator screenshots and logs
         if: always()
