@@ -58,6 +58,9 @@ import app.focal.design.FocalGeometry
 import app.focal.design.FocalGlyphs
 import app.focal.design.FocalSheetGrabber
 import app.focal.design.FocalTheme
+import app.focal.design.GestureLeaseOwner
+import app.focal.design.GestureLeaseToken
+import app.focal.design.LocalGestureLeaseController
 import app.focal.design.consumeClicks
 import app.focal.design.shaders.SmokedGlassBox
 import app.focal.engine.webview.WebViewSession
@@ -86,6 +89,7 @@ fun LinkPeekSheet(
     val colors = FocalTheme.colors
     val typography = FocalTheme.typography
     val context = LocalContext.current
+    val gestureLease = LocalGestureLeaseController.current
     val sheetTint = rememberUpdatedState(colors.effectiveSheetGlass)
     val barTint = rememberUpdatedState(colors.effectiveBarGlass)
 
@@ -295,27 +299,47 @@ fun LinkPeekSheet(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .pointerInput(cleanedResult.cleanUrl) {
-                                detectVerticalDragGestures(
-                                    onDragEnd = {
-                                        when {
-                                            verticalDragPx > 110.dp.toPx() -> {
-                                                verticalDragPx = 0f
-                                                onDismiss()
+                            .pointerInput(cleanedResult.cleanUrl, gestureLease) {
+                                var dragLeaseToken: GestureLeaseToken? = null
+                                try {
+                                    detectVerticalDragGestures(
+                                        onDragStart = {
+                                            dragLeaseToken = gestureLease?.tryAcquire(GestureLeaseOwner.SHEET_DRAG)
+                                        },
+                                        onDragEnd = {
+                                            val stillValid = gestureLease == null || gestureLease.isValid(dragLeaseToken)
+                                            gestureLease?.release(dragLeaseToken)
+                                            dragLeaseToken = null
+                                            when {
+                                                !stillValid -> verticalDragPx = 0f
+                                                verticalDragPx > 110.dp.toPx() -> {
+                                                    verticalDragPx = 0f
+                                                    onDismiss()
+                                                }
+                                                verticalDragPx < -110.dp.toPx() -> {
+                                                    verticalDragPx = 0f
+                                                    onExpandFullTab(cleanedResult.cleanUrl)
+                                                }
+                                                else -> verticalDragPx = 0f
                                             }
-                                            verticalDragPx < -110.dp.toPx() -> {
+                                        },
+                                        onDragCancel = {
+                                            gestureLease?.release(dragLeaseToken)
+                                            dragLeaseToken = null
+                                            verticalDragPx = 0f
+                                        },
+                                        onVerticalDrag = { change, dragAmount ->
+                                            if (gestureLease != null && !gestureLease.isValid(dragLeaseToken)) {
                                                 verticalDragPx = 0f
-                                                onExpandFullTab(cleanedResult.cleanUrl)
+                                                return@detectVerticalDragGestures
                                             }
-                                            else -> verticalDragPx = 0f
-                                        }
-                                    },
-                                    onDragCancel = { verticalDragPx = 0f },
-                                    onVerticalDrag = { change, dragAmount ->
-                                        change.consume()
-                                        verticalDragPx += dragAmount
-                                    },
-                                )
+                                            change.consume()
+                                            verticalDragPx += dragAmount
+                                        },
+                                    )
+                                } finally {
+                                    gestureLease?.release(dragLeaseToken)
+                                }
                             }
                             .padding(horizontal = 14.dp, vertical = 10.dp),
                     ) {

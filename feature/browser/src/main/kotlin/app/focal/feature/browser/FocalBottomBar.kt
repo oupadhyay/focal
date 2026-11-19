@@ -50,6 +50,9 @@ import androidx.compose.ui.unit.dp
 import app.focal.design.FocalGlyphs
 import app.focal.design.FocalMotion
 import app.focal.design.FocalTheme
+import app.focal.design.GestureLeaseOwner
+import app.focal.design.GestureLeaseToken
+import app.focal.design.LocalGestureLeaseController
 import app.focal.design.SiteFavicon
 import app.focal.design.shaders.SmokedGlassBox
 import app.focal.engine.api.EngineTelemetryState
@@ -100,6 +103,7 @@ fun FocalBottomBar(
     val typography = FocalTheme.typography
     val haptics = LocalHapticFeedback.current
     val density = LocalDensity.current
+    val gestureLease = LocalGestureLeaseController.current
     val barTintState = rememberUpdatedState(colors.effectiveBarGlass)
 
     val latestOnTapSearch = rememberUpdatedState(onTapCenterSearch)
@@ -215,82 +219,108 @@ fun FocalBottomBar(
                     ambientColor = Color.Black.copy(alpha = 0.35f),
                     spotColor = Color.Black.copy(alpha = 0.45f),
                 )
-                .pointerInput(slopPx, tabCrossingStepPx, revealTravelPx, commitSwipePx) {
+                .pointerInput(slopPx, tabCrossingStepPx, revealTravelPx, commitSwipePx, gestureLease) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         var totalDx = 0f
                         var totalDy = 0f
                         var axisLock = CenterPillAxisLock.UNDECIDED
+                        var activeLeaseToken: GestureLeaseToken? = null
+                        var preempted = false
                         var emittedSteps = 0
                         var spacesSwipeOpened = false
                         var commitHapticSent = false
 
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull { it.id == down.id }
-                                ?: event.changes.firstOrNull()
-                                ?: break
+                        try {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == down.id }
+                                    ?: event.changes.firstOrNull()
+                                    ?: break
 
-                            if (!change.pressed) {
-                                break
-                            }
-
-                            val delta = change.positionChange()
-                            totalDx += delta.x
-                            totalDy += delta.y
-
-                            if (axisLock == CenterPillAxisLock.UNDECIDED) {
-                                val absDx = abs(totalDx)
-                                val absDy = abs(totalDy)
-                                if (absDx > slopPx && absDx > absDy * 1.35f) {
-                                    axisLock = CenterPillAxisLock.HORIZONTAL_TAB_SCRUB
-                                    change.consume()
-                                } else if (totalDy < -slopPx && absDy >= absDx) {
-                                    axisLock = CenterPillAxisLock.VERTICAL_SPACES_SWIPE
-                                    spacesSwipeOpened = true
-                                    spacesDragOffsetPxState?.floatValue =
-                                        (revealTravelPx + totalDy).coerceIn(0f, revealTravelPx)
-                                    latestOnOpenSpaces.value()
-                                    change.consume()
+                                if (!change.pressed) {
+                                    break
                                 }
-                            } else {
-                                change.consume()
-                            }
 
-                            when (axisLock) {
-                                CenterPillAxisLock.HORIZONTAL_TAB_SCRUB -> {
-                                    scrubOffsetPxState.floatValue = totalDx * 0.42f
-                                    val targetSteps = (totalDx / tabCrossingStepPx).toInt()
-                                    if (targetSteps != emittedSteps) {
-                                        val stepDir = if (targetSteps > emittedSteps) -1 else 1
-                                        emittedSteps = targetSteps
-                                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                        latestOnStepTab.value(stepDir)
+                                if (
+                                    axisLock != CenterPillAxisLock.UNDECIDED &&
+                                    gestureLease != null &&
+                                    !gestureLease.isValid(activeLeaseToken)
+                                ) {
+                                    preempted = true
+                                    break
+                                }
+
+                                val delta = change.positionChange()
+                                totalDx += delta.x
+                                totalDy += delta.y
+
+                                if (axisLock == CenterPillAxisLock.UNDECIDED) {
+                                    val absDx = abs(totalDx)
+                                    val absDy = abs(totalDy)
+                                    if (absDx > slopPx && absDx > absDy * 1.35f) {
+                                        val token = gestureLease?.tryAcquire(GestureLeaseOwner.HORIZONTAL_TAB_SCRUB)
+                                        if (gestureLease == null || token != null) {
+                                            activeLeaseToken = token
+                                            axisLock = CenterPillAxisLock.HORIZONTAL_TAB_SCRUB
+                                            change.consume()
+                                        }
+                                    } else if (totalDy < -slopPx && absDy >= absDx) {
+                                        val token = gestureLease?.tryAcquire(GestureLeaseOwner.SPACES_SWIPE_UP)
+                                        if (gestureLease == null || token != null) {
+                                            activeLeaseToken = token
+                                            axisLock = CenterPillAxisLock.VERTICAL_SPACES_SWIPE
+                                            spacesSwipeOpened = true
+                                            spacesDragOffsetPxState?.floatValue =
+                                                (revealTravelPx + totalDy).coerceIn(0f, revealTravelPx)
+                                            latestOnOpenSpaces.value()
+                                            change.consume()
+                                        }
                                     }
+                                } else {
+                                    change.consume()
                                 }
-                                CenterPillAxisLock.VERTICAL_SPACES_SWIPE -> {
-                                    spacesDragOffsetPxState?.floatValue =
-                                        (revealTravelPx + totalDy).coerceIn(0f, revealTravelPx)
-                                    if (!commitHapticSent && -totalDy >= commitSwipePx) {
-                                        commitHapticSent = true
-                                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                    } else if (commitHapticSent && -totalDy < commitSwipePx) {
-                                        commitHapticSent = false
-                                    }
-                                }
-                                CenterPillAxisLock.UNDECIDED -> Unit
-                            }
-                        }
 
-                        scrubOffsetPxState.floatValue = 0f
-                        if (spacesSwipeOpened) {
-                            latestOnSettleSpaces.value(-totalDy >= commitSwipePx)
-                        } else if (
-                            axisLock == CenterPillAxisLock.UNDECIDED &&
-                            abs(totalDx) <= slopPx &&
-                            abs(totalDy) <= slopPx
-                        ) {
-                            latestOnTapSearch.value()
+                                when (axisLock) {
+                                    CenterPillAxisLock.HORIZONTAL_TAB_SCRUB -> {
+                                        scrubOffsetPxState.floatValue = totalDx * 0.42f
+                                        val targetSteps = (totalDx / tabCrossingStepPx).toInt()
+                                        if (targetSteps != emittedSteps) {
+                                            val stepDir = if (targetSteps > emittedSteps) -1 else 1
+                                            emittedSteps = targetSteps
+                                            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                            latestOnStepTab.value(stepDir)
+                                        }
+                                    }
+                                    CenterPillAxisLock.VERTICAL_SPACES_SWIPE -> {
+                                        spacesDragOffsetPxState?.floatValue =
+                                            (revealTravelPx + totalDy).coerceIn(0f, revealTravelPx)
+                                        if (!commitHapticSent && -totalDy >= commitSwipePx) {
+                                            commitHapticSent = true
+                                            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        } else if (commitHapticSent && -totalDy < commitSwipePx) {
+                                            commitHapticSent = false
+                                        }
+                                    }
+                                    CenterPillAxisLock.UNDECIDED -> Unit
+                                }
+                            }
+
+                            scrubOffsetPxState.floatValue = 0f
+                            if (spacesSwipeOpened) {
+                                latestOnSettleSpaces.value(!preempted && -totalDy >= commitSwipePx)
+                            } else if (
+                                !preempted &&
+                                axisLock == CenterPillAxisLock.UNDECIDED &&
+                                abs(totalDx) <= slopPx &&
+                                abs(totalDy) <= slopPx &&
+                                gestureLease?.activeOwner == null
+                            ) {
+                                latestOnTapSearch.value()
+                            }
+                        } finally {
+                            scrubOffsetPxState.floatValue = 0f
+                            gestureLease?.release(activeLeaseToken)
                         }
                     }
                 },

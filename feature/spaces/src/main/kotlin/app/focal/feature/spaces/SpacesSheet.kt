@@ -61,6 +61,9 @@ import app.focal.design.FocalGroupedCard
 import app.focal.design.FocalHairlineDivider
 import app.focal.design.FocalSheetGrabber
 import app.focal.design.FocalTheme
+import app.focal.design.GestureLeaseOwner
+import app.focal.design.GestureLeaseToken
+import app.focal.design.LocalGestureLeaseController
 import app.focal.design.SiteFavicon
 import app.focal.design.SpaceAmbientPalette
 import app.focal.design.consumeClicks
@@ -102,6 +105,7 @@ fun SpacesSheet(
     val colors = FocalTheme.colors
     val typography = FocalTheme.typography
     val clipboard = LocalClipboardManager.current
+    val gestureLease = LocalGestureLeaseController.current
 
     val activeSpace = uiState.spaces.firstOrNull { it.id == uiState.activeSpaceId }
         ?: uiState.spaces.firstOrNull()
@@ -161,22 +165,41 @@ fun SpacesSheet(
                     val ext = externalDragOffsetPx?.floatValue ?: 0f
                     translationY = (internalDismissDragPx + ext).coerceAtLeast(0f)
                 }
-                .pointerInput(Unit) {
-                    detectVerticalDragGestures(
-                        onDragEnd = {
-                            if (internalDismissDragPx > 120.dp.toPx()) {
+                .pointerInput(gestureLease) {
+                    var dragLeaseToken: GestureLeaseToken? = null
+                    try {
+                        detectVerticalDragGestures(
+                            onDragStart = {
+                                dragLeaseToken = gestureLease?.tryAcquire(GestureLeaseOwner.SHEET_DRAG)
+                            },
+                            onDragEnd = {
+                                val stillValid = gestureLease == null || gestureLease.isValid(dragLeaseToken)
+                                gestureLease?.release(dragLeaseToken)
+                                dragLeaseToken = null
+                                if (stillValid && internalDismissDragPx > 120.dp.toPx()) {
+                                    internalDismissDragPx = 0f
+                                    onDismiss()
+                                } else {
+                                    internalDismissDragPx = 0f
+                                }
+                            },
+                            onDragCancel = {
+                                gestureLease?.release(dragLeaseToken)
+                                dragLeaseToken = null
                                 internalDismissDragPx = 0f
-                                onDismiss()
-                            } else {
-                                internalDismissDragPx = 0f
-                            }
-                        },
-                        onDragCancel = { internalDismissDragPx = 0f },
-                        onVerticalDrag = { change, dragAmount ->
-                            change.consume()
-                            internalDismissDragPx = (internalDismissDragPx + dragAmount).coerceAtLeast(0f)
-                        },
-                    )
+                            },
+                            onVerticalDrag = { change, dragAmount ->
+                                if (gestureLease != null && !gestureLease.isValid(dragLeaseToken)) {
+                                    internalDismissDragPx = 0f
+                                    return@detectVerticalDragGestures
+                                }
+                                change.consume()
+                                internalDismissDragPx = (internalDismissDragPx + dragAmount).coerceAtLeast(0f)
+                            },
+                        )
+                    } finally {
+                        gestureLease?.release(dragLeaseToken)
+                    }
                 }
                 .consumeClicks(),
         ) {

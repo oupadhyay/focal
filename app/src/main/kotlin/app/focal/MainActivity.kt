@@ -72,6 +72,9 @@ import app.focal.database.TabMetadataEntity
 import app.focal.design.AdaptiveGlassController
 import app.focal.design.FocalMotion
 import app.focal.design.FocalTheme
+import app.focal.design.GestureLeaseController
+import app.focal.design.GestureLeaseOwner
+import app.focal.design.LocalGestureLeaseController
 import app.focal.design.consumeClicks
 import app.focal.design.shaders.LocalFocalBackdropLayer
 import app.focal.design.shaders.SmokedGlassBox
@@ -387,11 +390,15 @@ private fun FocalRootCoordinator(
         }
     }
 
+    // Lease-based exclusivity across tab scrub, Spaces swipe-up, Pinch-to-Summarize, sheet drags, and Predictive Back
+    val gestureLeaseController = remember { GestureLeaseController() }
+
     // Android 14–16 Predictive Back Handler: shrinks & translates active sheet or web page 1:1 with finger (P1-5)
     val canInterceptBack = pendingPairingRequest != null ||
         overlaySheet != ActiveOverlaySheet.None ||
         (activeSessionState?.canGoBack == true)
     PredictiveBackHandler(enabled = canInterceptBack) { backFlow ->
+        val backToken = gestureLeaseController.preemptForSystem(GestureLeaseOwner.PREDICTIVE_BACK)
         try {
             backFlow.collect { backEvent ->
                 predictiveBackSwipeEdgeState.intValue = backEvent.swipeEdge
@@ -411,6 +418,8 @@ private fun FocalRootCoordinator(
             }
         } catch (_: CancellationException) {
             predictiveBackProgressState.floatValue = 0f
+        } finally {
+            gestureLeaseController.release(backToken)
         }
     }
 
@@ -444,7 +453,8 @@ private fun FocalRootCoordinator(
         darkGlass = glassState.isDarkGlass,
         isPrivateAperture = isPrivateAperture,
     ) {
-        Box(modifier = Modifier.fillMaxSize()) {
+        CompositionLocalProvider(LocalGestureLeaseController provides gestureLeaseController) {
+            Box(modifier = Modifier.fillMaxSize()) {
             BrowserViewportScreen(
                 activeSession = activeSession,
                 tabCount = displayedTabCount,
@@ -901,6 +911,7 @@ private fun FocalRootCoordinator(
                     }
                 }
             }
+        }
         }
     }
 }

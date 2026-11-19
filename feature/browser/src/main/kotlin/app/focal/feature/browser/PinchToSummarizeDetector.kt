@@ -41,6 +41,9 @@ import app.focal.design.FocalGeometry
 import app.focal.design.FocalGlyphs
 import app.focal.design.FocalSheetGrabber
 import app.focal.design.FocalTheme
+import app.focal.design.GestureLeaseOwner
+import app.focal.design.GestureLeaseToken
+import app.focal.design.LocalGestureLeaseController
 import app.focal.design.consumeClicks
 import app.focal.design.shaders.SmokedGlassBox
 
@@ -53,7 +56,8 @@ const val PINCH_SUMMARIZE_SNAP_THRESHOLD: Float = 0.68f
  * edges on gesture start so Android 14–16 `PredictiveBackHandler` stays 100% unobstructed.
  *
  * When webpage scale is at minimum (`<= 1.04f`) and two fingers pinch inward (`cumulativeZoom < 0.96f`),
- * continuously drives [pinchProgressState] (`0f..1f`) and [pinchCenterYState] (`0f..1f`) at 120Hz.
+ * acquires an exclusive [GestureLeaseOwner.PINCH_SUMMARIZE] token and continuously drives
+ * [pinchProgressState] (`0f..1f`) and [pinchCenterYState] (`0f..1f`) at 120Hz.
  */
 @Composable
 fun Modifier.pinchToSummarizeDetector(
@@ -65,70 +69,86 @@ fun Modifier.pinchToSummarizeDetector(
     onSnapCancelled: () -> Unit,
 ): Modifier {
     val haptics = LocalHapticFeedback.current
+    val gestureLease = LocalGestureLeaseController.current
     val latestIsAtMinZoom = rememberUpdatedState(isPageAtMinimumZoom)
     val latestOnCommitted = rememberUpdatedState(onSnapSummarizeCommitted)
     val latestOnCancelled = rememberUpdatedState(onSnapCancelled)
 
     if (!enabled) return this
 
-    return this.pointerInput(Unit) {
+    return this.pointerInput(gestureLease) {
         val edgeGuardPx = 24.dp.toPx()
 
         awaitEachGesture {
             var cumulativeZoom = 1f
             var activeInwardPinch = false
+            var activeLeaseToken: GestureLeaseToken? = null
+            var preemptedByOtherGesture = false
             var crossedThresholdHapticSent = false
 
-            do {
-                val event = awaitPointerEvent(pass = PointerEventPass.Initial)
-                val pressedPointers = event.changes.filter { it.pressed }
+            try {
+                do {
+                    val event = awaitPointerEvent(pass = PointerEventPass.Initial)
+                    val pressedPointers = event.changes.filter { it.pressed }
 
-                if (pressedPointers.size >= 2 && (activeInwardPinch || latestIsAtMinZoom.value())) {
-                    // Only reject gestures starting inside Android's 24.dp Predictive Back edge zones
-                    // BEFORE activeInwardPinch latches so mid-pinch finger drift never freezes progress.
-                    val blockedByBackEdge = !activeInwardPinch && pressedPointers.any { change ->
-                        change.position.x < edgeGuardPx || change.position.x > (size.width - edgeGuardPx)
+                    if (activeInwardPinch && gestureLease != null && !gestureLease.isValid(activeLeaseToken)) {
+                        preemptedByOtherGesture = true
+                        break
                     }
-                    if (!blockedByBackEdge) {
-                        val stepZoom = event.calculateZoom()
-                        if (stepZoom > 0f) {
-                            cumulativeZoom *= stepZoom
-                        }
 
-                        if (!activeInwardPinch && cumulativeZoom < 0.96f) {
-                            activeInwardPinch = true
+                    if (pressedPointers.size >= 2 && (activeInwardPinch || latestIsAtMinZoom.value())) {
+                        // Only reject gestures starting inside Android's 24.dp Predictive Back edge zones
+                        // BEFORE activeInwardPinch latches so mid-pinch finger drift never freezes progress.
+                        val blockedByBackEdge = !activeInwardPinch && pressedPointers.any { change ->
+                            change.position.x < edgeGuardPx || change.position.x > (size.width - edgeGuardPx)
                         }
-
-                        if (activeInwardPinch) {
-                            val centroid = event.calculateCentroid(useCurrent = true)
-                            if (centroid != Offset.Unspecified && size.height > 0) {
-                                pinchCenterYState.floatValue =
-                                    (centroid.y / size.height.toFloat()).coerceIn(0.2f, 0.8f)
+                        if (!blockedByBackEdge) {
+                            val stepZoom = event.calculateZoom()
+                            if (stepZoom > 0f) {
+                                cumulativeZoom *= stepZoom
                             }
 
-                            // Map zoom [0.96 -> 0.52] smoothly onto pinchProgress [0.0 -> 1.0]
-                            val progress = ((0.96f - cumulativeZoom) / 0.44f).coerceIn(0f, 1f)
-                            pinchProgressState.floatValue = progress
-
-                            if (progress >= PINCH_SUMMARIZE_SNAP_THRESHOLD && !crossedThresholdHapticSent) {
-                                crossedThresholdHapticSent = true
-                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                            } else if (progress < PINCH_SUMMARIZE_SNAP_THRESHOLD) {
-                                crossedThresholdHapticSent = false
+                            if (!activeInwardPinch && cumulativeZoom < 0.96f) {
+                                val acquired = gestureLease?.tryAcquire(GestureLeaseOwner.PINCH_SUMMARIZE)
+                                if (gestureLease == null || acquired != null) {
+                                    activeLeaseToken = acquired
+                                    activeInwardPinch = true
+                                }
                             }
 
-                            event.changes.forEach { it.consume() }
+                            if (activeInwardPinch) {
+                                val centroid = event.calculateCentroid(useCurrent = true)
+                                if (centroid != Offset.Unspecified && size.height > 0) {
+                                    pinchCenterYState.floatValue =
+                                        (centroid.y / size.height.toFloat()).coerceIn(0.2f, 0.8f)
+                                }
+
+                                // Map zoom [0.96 -> 0.52] smoothly onto pinchProgress [0.0 -> 1.0]
+                                val progress = ((0.96f - cumulativeZoom) / 0.44f).coerceIn(0f, 1f)
+                                pinchProgressState.floatValue = progress
+
+                                if (progress >= PINCH_SUMMARIZE_SNAP_THRESHOLD && !crossedThresholdHapticSent) {
+                                    crossedThresholdHapticSent = true
+                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                } else if (progress < PINCH_SUMMARIZE_SNAP_THRESHOLD) {
+                                    crossedThresholdHapticSent = false
+                                }
+
+                                event.changes.forEach { it.consume() }
+                            }
                         }
                     }
-                }
-            } while (event.changes.any { it.pressed })
+                } while (event.changes.any { it.pressed })
 
-            if (activeInwardPinch) {
-                if (pinchProgressState.floatValue >= PINCH_SUMMARIZE_SNAP_THRESHOLD) {
-                    latestOnCommitted.value()
-                } else {
-                    latestOnCancelled.value()
+                if (activeInwardPinch) {
+                    if (!preemptedByOtherGesture && pinchProgressState.floatValue >= PINCH_SUMMARIZE_SNAP_THRESHOLD) {
+                        latestOnCommitted.value()
+                    } else {
+                        latestOnCancelled.value()
+                    }
                 }
+            } finally {
+                gestureLease?.release(activeLeaseToken)
             }
         }
     }
