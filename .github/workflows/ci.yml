@@ -65,8 +65,8 @@ jobs:
         with:
           gradle-version: "8.11.1"
 
-      - name: Assemble Focal Debug APK & run JVM unit tests
-        run: gradle :app:assembleDebug testDebugUnitTest --continue --no-daemon --stacktrace
+      - name: Assemble Focal Debug APK, AndroidTest APK & run JVM unit tests
+        run: gradle :app:assembleDebug :app:assembleDebugAndroidTest testDebugUnitTest --continue --no-daemon --stacktrace
 
       - name: Verify deterministic APK signature & monotonic versionCode
         run: |
@@ -86,6 +86,111 @@ jobs:
           name: focal-android-debug-apk
           path: app/build/outputs/apk/debug/focal-debug.apk
           if-no-files-found: error
+
+      - name: Upload Focal AndroidTest APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: focal-android-test-apk
+          path: app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          if-no-files-found: error
+
+  android-emulator-smoke:
+    name: Android API 34 Emulator End-to-End Verification
+    needs: android-and-rust
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Download built Focal APKs
+        uses: actions/download-artifact@v8
+        with:
+          pattern: focal-android-*-apk
+          path: apks
+          merge-multiple: true
+
+      - name: Enable KVM and install API 34 Google APIs x86_64 image
+        run: |
+          ls -la /dev/kvm
+          sudo chmod 666 /dev/kvm
+          SDKMANAGER=$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -n 1)
+          AVDMANAGER=$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/avdmanager | sort -V | tail -n 1)
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" --install "platform-tools" "emulator" "system-images;android-34;google_apis;x86_64"
+          echo "no" | "$AVDMANAGER" create avd --force \
+            --name focal_api34 \
+            --package "system-images;android-34;google_apis;x86_64" \
+            --device "pixel_6"
+
+      - name: Boot headless KVM emulator and run FocalEmulatorVerificationTest
+        run: |
+          export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
+          "$ANDROID_HOME/emulator/emulator" -avd focal_api34 \
+            -no-window \
+            -gpu swiftshader_indirect \
+            -no-audio \
+            -no-boot-anim \
+            -no-snapshot \
+            -camera-back none \
+            -camera-front none \
+            -memory 3072 \
+            -cores 2 \
+            > emulator.log 2>&1 &
+          EMU_PID=$!
+
+          adb wait-for-device
+          for i in $(seq 1 90); do
+            BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            if [ "$BOOT" = "1" ]; then
+              echo "Emulator booted in $((i * 2))s"
+              break
+            fi
+            sleep 2
+          done
+          [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]
+
+          sleep 3
+          adb shell settings put global window_animation_scale 0
+          adb shell settings put global transition_animation_scale 0
+          adb shell settings put global animator_duration_scale 0
+          adb shell settings put secure show_ime_with_hard_keyboard 1
+          adb shell wm dismiss-keyguard || true
+          adb shell input keyevent 82 || true
+
+          adb logcat -c
+          adb install -r apks/focal-debug.apk
+          adb install -r apks/app-debug-androidTest.apk
+
+          set +e
+          adb shell am instrument -w -e class app.focal.FocalEmulatorVerificationTest \
+            app.focal.test/androidx.test.runner.AndroidJUnitRunner | tee instrument.log
+          INST_EXIT=${PIPESTATUS[0]}
+          set -e
+
+          mkdir -p emulator-screenshots
+          adb pull /sdcard/Android/data/app.focal/files/emulator-shots/. emulator-screenshots/ || true
+          adb logcat -d -s AndroidRuntime:E > emulator-screenshots/android_runtime_errors.log || true
+          cp instrument.log emulator-screenshots/instrument.log || true
+          ls -lh emulator-screenshots/
+
+          adb emu kill || kill "$EMU_PID" || true
+
+          if [ "$INST_EXIT" -ne 0 ] || grep -q "FAILURES!!!" instrument.log || ! grep -q "OK (" instrument.log; then
+            echo "Instrumentation verification failed!"
+            cat emulator-screenshots/android_runtime_errors.log || true
+            exit 1
+          fi
+          if grep -q "Process: app.focal" emulator-screenshots/android_runtime_errors.log; then
+            echo "Detected fatal AndroidRuntime exception in app.focal!"
+            cat emulator-screenshots/android_runtime_errors.log
+            exit 1
+          fi
+
+      - name: Upload real Android Emulator screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: focal-emulator-screenshots
+          path: emulator-screenshots
+          if-no-files-found: warn
 
   desktop-extension-and-relay:
     name: Focal Bridge MV3 Extension & E2EE Relay
