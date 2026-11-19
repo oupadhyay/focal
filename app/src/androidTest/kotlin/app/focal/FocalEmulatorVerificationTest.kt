@@ -15,6 +15,7 @@ import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import app.focal.adblock.NativeAdblockController
+import app.focal.feature.search.LaunchKeyboardStore
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -27,13 +28,15 @@ import java.io.FileOutputStream
  * End-to-end Android Emulator verification suite running on a real KVM-accelerated API 34 device.
  *
  * Verifies:
- * 1. Cold launch + Calm Optical Canvas + native Rust `libfocal_adblock.so` JNI adblock engine.
- * 2. Search sheet opening + double-space `git  ` -> `[GitHub x]` chip activation.
- * 3. Zero-network offline inline unit conversion (`180 lbs in kg` -> `81.65 kg`) + clipboard copy
- *    and inline calculator (`48 * 1.0825` -> `51.96`).
- * 4. Real Chromium `WebView` navigation (`example.com`) with zero crashes.
- * 5. Page Menu (`Translate Page` + `Reader Mode`) & `Site Settings` toggles.
- * 6. Re-opening Search Sheet with persisted URL & zero-jump IME padding.
+ * 1. Search-First cold launch + real soft IME + `LaunchKeyboardStore` persisted height + native
+ *    Rust `libfocal_adblock.so` JNI adblock engine blocking `doubleclick.net`.
+ * 2. Dismissing Search Sheet reveals Calm Optical Launch Canvas & 3-part Smoked Glass bottom bar,
+ *    and tapping the bottom bar pill re-opens Search Sheet cleanly.
+ * 3. Double-space `git  ` activates `[GitHub x]` chip (with zero permanent hint banner).
+ * 4. Zero-network offline inline unit conversion (`180 lbs in kg` -> `81.65 kg`) + real Android
+ *    `ClipboardManager` copy and inline calculator (`48 * 1.0825` -> `51.96`).
+ * 5. Real Chromium `WebView` navigation (`example.com`) with zero crashes.
+ * 6. Page Menu (`Translate Page` + `Reader Mode`) & `Site Settings` toggles + Back dismissal.
  *
  * Captures full-window SurfaceFlinger screenshots (including live WebView and soft IME) to
  * `/sdcard/Android/data/app.focal/files/emulator-shots/` for visual inspection.
@@ -48,13 +51,14 @@ class FocalEmulatorVerificationTest {
     fun endToEnd_coldLaunch_rustAdblock_searchInlineAnswers_liveWebView_andPageMenu() {
         val app = composeRule.activity.application as FocalApplication
 
-        // 1. Cold launch renders Calm Optical Launch Canvas & 3-part Smoked Glass bottom bar
+        // 1. Cold launch opens Search-First Sheet immediately with real favicons & no hint banner
         composeRule.waitUntil(timeoutMillis = 15_000L) {
-            composeRule.onAllNodesWithText("Focal").fetchSemanticsNodes().isNotEmpty() &&
+            composeRule.onAllNodesWithText("GitHub").fetchSemanticsNodes().isNotEmpty() &&
                 composeRule.onAllNodesWithText("Search or enter address").fetchSemanticsNodes().isNotEmpty()
         }
-        composeRule.onNodeWithText("Focal").assertIsDisplayed()
-        composeRule.onNodeWithText("Search or enter address").assertIsDisplayed()
+        composeRule.onNodeWithText("GitHub").assertIsDisplayed()
+        composeRule.onNodeWithText("Wikipedia").assertIsDisplayed()
+        composeRule.onNodeWithText("for site search", substring = true).assertDoesNotExist()
 
         // Verify native Rust adblock-rs engine (libfocal_adblock.so) initialized on Android x86_64
         val nativeAdblock = app.adblockController as? NativeAdblockController
@@ -73,16 +77,41 @@ class FocalEmulatorVerificationTest {
         )
         assertTrue("Expected native adblock-rs to block doubleclick.net", adDecision.matched)
 
-        captureEmulatorScreenshot("01_emulator_calm_launch.png")
+        // Wait for first-boot Gboard IME animation + LaunchKeyboardStore 180ms stabilize debounce
+        val keyboardStore = LaunchKeyboardStore(composeRule.activity)
+        val imeDeadline = SystemClock.uptimeMillis() + 6_000L
+        var persistedImePx = keyboardStore.readHeightPx(isLandscape = false)
+        while (persistedImePx <= 0 && SystemClock.uptimeMillis() < imeDeadline) {
+            SystemClock.sleep(150L)
+            persistedImePx = keyboardStore.readHeightPx(isLandscape = false)
+        }
+        composeRule.waitForIdle()
+        captureEmulatorScreenshot("01_emulator_cold_launch_search.png")
+        assertTrue(
+            "Expected LaunchKeyboardStore to persist real soft keyboard height (>0px), got $persistedImePx",
+            persistedImePx > 0,
+        )
 
-        // 2. Open Search Sheet & verify double-space "git  " activates [GitHub x] chip
+        // 2. Dismiss Search Sheet via Back to verify Calm Optical Launch Canvas & 3-part bottom bar
+        composeRule.runOnIdle {
+            composeRule.activity.onBackPressedDispatcher.onBackPressed()
+        }
+        composeRule.waitUntil(timeoutMillis = 10_000L) {
+            composeRule.onAllNodesWithText("GitHub").fetchSemanticsNodes().isEmpty() &&
+                composeRule.onAllNodesWithText("Focal").fetchSemanticsNodes().isNotEmpty()
+        }
+        SystemClock.sleep(450L)
+        composeRule.onNodeWithText("Focal").assertIsDisplayed()
+        composeRule.onNodeWithText("Search or enter address").assertIsDisplayed()
+        captureEmulatorScreenshot("02_emulator_calm_canvas.png")
+
+        // Re-open Search Sheet from bottom bar pill (exercises zero-jump persisted IME height)
         composeRule.onNodeWithText("Search or enter address").performClick()
         composeRule.waitUntil(timeoutMillis = 10_000L) {
             composeRule.onAllNodesWithText("GitHub").fetchSemanticsNodes().isNotEmpty()
         }
-        composeRule.onNodeWithText("GitHub").assertIsDisplayed()
-        composeRule.onNodeWithText("for site search", substring = true).assertDoesNotExist()
 
+        // 3. Verify double-space "git  " activates [GitHub x] chip
         composeRule.onNode(hasSetTextAction()).performTextInput("git  ")
         composeRule.waitUntil(timeoutMillis = 8_000L) {
             runCatching {
@@ -91,9 +120,9 @@ class FocalEmulatorVerificationTest {
             }.getOrDefault(false)
         }
         SystemClock.sleep(350L)
-        captureEmulatorScreenshot("02_emulator_github_chip.png")
+        captureEmulatorScreenshot("03_emulator_github_chip.png")
 
-        // 3. Dismiss chip, verify offline inline unit conversion + real Android clipboard copy + math
+        // 4. Dismiss chip, verify offline inline unit conversion + real Android clipboard copy + math
         composeRule.onNodeWithContentDescription("Remove GitHub filter").performClick()
         composeRule.waitForIdle()
         composeRule.onNode(hasSetTextAction()).performTextClearance()
@@ -103,7 +132,7 @@ class FocalEmulatorVerificationTest {
         }
         composeRule.onNodeWithText("81.65 kg").assertIsDisplayed()
         SystemClock.sleep(300L)
-        captureEmulatorScreenshot("03_emulator_inline_answer.png")
+        captureEmulatorScreenshot("04_emulator_inline_answer.png")
 
         // Tap inline answer card to copy directly to real Android ClipboardManager
         composeRule.onNodeWithText("81.65 kg").performClick()
@@ -123,7 +152,7 @@ class FocalEmulatorVerificationTest {
         }
         composeRule.onNodeWithText("51.96").assertIsDisplayed()
 
-        // 4. Navigate to real https://example.com in Chromium WebView (verifies zero WebView crash)
+        // 5. Navigate to real https://example.com in Chromium WebView (verifies zero WebView crash)
         composeRule.onNode(hasSetTextAction()).performTextClearance()
         composeRule.onNode(hasSetTextAction()).performTextInput("example.com")
         composeRule.waitForIdle()
@@ -136,9 +165,9 @@ class FocalEmulatorVerificationTest {
         SystemClock.sleep(3_000L)
         composeRule.waitForIdle()
         composeRule.onNodeWithText("example.com").assertIsDisplayed()
-        captureEmulatorScreenshot("04_emulator_live_webview.png")
+        captureEmulatorScreenshot("05_emulator_live_webview.png")
 
-        // 5. Open Page Menu (Actions + on-device Translate Page row + Site Settings subtab)
+        // 6. Open Page Menu (Actions + on-device Translate Page row + Site Settings subtab)
         composeRule.onNodeWithContentDescription("Page Menu").performClick()
         composeRule.waitUntil(timeoutMillis = 8_000L) {
             composeRule.onAllNodesWithText("Translate Page").fetchSemanticsNodes().isNotEmpty()
@@ -146,7 +175,7 @@ class FocalEmulatorVerificationTest {
         composeRule.onNodeWithText("Reader Mode").assertIsDisplayed()
         composeRule.onNodeWithText("Translate Page").assertIsDisplayed()
         SystemClock.sleep(300L)
-        captureEmulatorScreenshot("05_emulator_page_menu_actions.png")
+        captureEmulatorScreenshot("06_emulator_page_menu.png")
 
         composeRule.onAllNodesWithText("Site Settings")[0].performClick()
         composeRule.waitUntil(timeoutMillis = 8_000L) {
@@ -155,9 +184,9 @@ class FocalEmulatorVerificationTest {
         composeRule.onNodeWithText("Dark Web Pages").assertIsDisplayed()
         composeRule.onNodeWithText("Editorial Fonts").assertIsDisplayed()
         SystemClock.sleep(300L)
-        captureEmulatorScreenshot("06_emulator_site_settings.png")
+        captureEmulatorScreenshot("07_emulator_site_settings.png")
 
-        // 6. Dismiss Page Menu via Android Back dispatcher and verify clean return to WebView
+        // Dismiss Page Menu via Android Back dispatcher and verify clean return to WebView
         composeRule.runOnIdle {
             composeRule.activity.onBackPressedDispatcher.onBackPressed()
         }
