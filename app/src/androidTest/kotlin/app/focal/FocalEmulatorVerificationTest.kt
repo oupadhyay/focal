@@ -78,19 +78,18 @@ class FocalEmulatorVerificationTest {
         assertTrue("Expected native adblock-rs to block doubleclick.net", adDecision.matched)
 
         // Wait for first-boot Gboard IME animation + LaunchKeyboardStore 180ms stabilize debounce
+        // (uses composeRule.waitUntil so Compose's test clock advances LaunchedEffect delays)
         val keyboardStore = LaunchKeyboardStore(composeRule.activity)
-        val imeDeadline = SystemClock.uptimeMillis() + 6_000L
-        var persistedImePx = keyboardStore.readHeightPx(isLandscape = false)
-        while (persistedImePx <= 0 && SystemClock.uptimeMillis() < imeDeadline) {
-            SystemClock.sleep(150L)
-            persistedImePx = keyboardStore.readHeightPx(isLandscape = false)
+        composeRule.waitUntil(timeoutMillis = 12_000L) {
+            keyboardStore.readHeightPx(isLandscape = false) > 0
         }
-        composeRule.waitForIdle()
-        captureEmulatorScreenshot("01_emulator_cold_launch_search.png")
+        val persistedImePx = keyboardStore.readHeightPx(isLandscape = false)
         assertTrue(
             "Expected LaunchKeyboardStore to persist real soft keyboard height (>0px), got $persistedImePx",
             persistedImePx > 0,
         )
+        SystemClock.sleep(250L)
+        captureEmulatorScreenshot("01_emulator_cold_launch_search.png")
 
         // 2. Dismiss Search Sheet via Back to verify Calm Optical Launch Canvas & 3-part bottom bar
         composeRule.runOnIdle {
