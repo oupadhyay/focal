@@ -38,7 +38,15 @@ import app.focal.engine.api.EngineSessionState
 import app.focal.engine.api.EngineTelemetryState
 import app.focal.engine.api.IndexedDomParagraph
 import app.focal.engine.api.OriginOverrides
+import app.focal.engine.api.PageTranslationPhase
+import app.focal.engine.api.PageTranslationStatus
 import app.focal.engine.api.ReadableDocument
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -46,11 +54,15 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.resume
 
 /**
  * System `WebView` (`androidx.webkit:webkit:1.13+`) implementation of [EngineSession].
@@ -112,6 +124,10 @@ class WebViewSession internal constructor(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val disposed = AtomicBoolean(false)
     private val sessionBlockedCount = AtomicLong(0L)
+    private val sessionScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val translationGeneration = AtomicLong(0L)
+    private var activeTranslationJob: Job? = null
+    private val translationEngine: OnDeviceTranslationEngine by lazy { MlKitTranslationEngine() }
     private val documentScriptHandlers = mutableListOf<ScriptHandler>()
     private val assetLoader: WebViewAssetLoader = WebViewAssetLoader.Builder()
         .setDomain(ASSET_LOADER_DOMAIN)
@@ -466,6 +482,7 @@ class WebViewSession internal constructor(
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 val safeUrl = url.orEmpty()
                 val nextDomain = extractHostDomain(safeUrl)
+                cancelAndResetTranslation(resetState = false)
                 sessionBlockedCount.set(0L)
                 _telemetry.update {
                     it.copy(
@@ -484,6 +501,8 @@ class WebViewSession internal constructor(
                         blockedTrackersInSession = 0L,
                         hasUnsentFormDraft = false,
                         isReaderEligible = false,
+                        pageLanguageTag = null,
+                        translationStatus = PageTranslationStatus(),
                         activeMedia = null,
                         canGoBack = view?.canGoBack() == true,
                         canGoForward = view?.canGoForward() == true,
@@ -616,6 +635,7 @@ class WebViewSession internal constructor(
             }
             if (!isAllowedNavigationUrl(cleaned)) return@runOnMain
             if (!cleaned.equals("about:blank", ignoreCase = true)) {
+                cancelAndResetTranslation(resetState = false)
                 _telemetry.update { it.copy(loadProgress = 8) }
                 _state.update {
                     it.copy(
@@ -624,6 +644,8 @@ class WebViewSession internal constructor(
                         isLoading = true,
                         loadProgress = 8,
                         isHttps = cleaned.startsWith("https://", ignoreCase = true),
+                        pageLanguageTag = null,
+                        translationStatus = PageTranslationStatus(),
                     )
                 }
             }
@@ -635,7 +657,10 @@ class WebViewSession internal constructor(
         }
     }
 
-    override fun reload() = runOnMain { webView.reload() }
+    override fun reload() = runOnMain {
+        cancelAndResetTranslation(resetState = true)
+        webView.reload()
+    }
 
     override fun stopLoading() = runOnMain { webView.stopLoading() }
 
@@ -818,6 +843,208 @@ class WebViewSession internal constructor(
         }
     }
 
+    override fun translatePageInPlace(targetLanguageCode: String?) {
+        if (disposed.get()) return
+        val currentUrl = _state.value.url
+        if (currentUrl.isBlank() || currentUrl.equals("about:blank", ignoreCase = true)) return
+        val targetLang = DomTranslationBatcher.normalizeLanguageCode(
+            targetLanguageCode ?: Locale.getDefault().language,
+        ) ?: "en"
+
+        runOnMain {
+            if (disposed.get()) return@runOnMain
+            val gen = translationGeneration.incrementAndGet()
+            activeTranslationJob?.cancel()
+            _state.update {
+                it.copy(
+                    translationStatus = PageTranslationStatus(
+                        phase = PageTranslationPhase.TRANSLATING,
+                        targetLanguageCode = targetLang,
+                    ),
+                )
+            }
+
+            activeTranslationJob = sessionScope.launch {
+                try {
+                    val rawCollected = evaluateJsSuspend(
+                        InPlaceDomTranslationScripts.buildCollectScript(gen),
+                    )
+                    if (translationGeneration.get() != gen || disposed.get()) return@launch
+
+                    val parsed = JSONObject(unwrapEvaluateJavascriptString(rawCollected))
+                    val htmlLang = parsed.optString("htmlLang", "")
+                    val rawSegments = parsed.optJSONArray("segments") ?: JSONArray()
+                    val segments = buildList(rawSegments.length()) {
+                        for (i in 0 until rawSegments.length()) {
+                            val obj = rawSegments.optJSONObject(i) ?: continue
+                            val text = obj.optString("text", "")
+                            if (text.isNotEmpty()) {
+                                add(DomTextSegment(id = obj.optInt("id", i), text = text))
+                            }
+                        }
+                    }
+
+                    if (segments.isEmpty()) {
+                        _state.update {
+                            it.copy(
+                                translationStatus = PageTranslationStatus(
+                                    phase = PageTranslationPhase.ORIGINAL,
+                                    targetLanguageCode = targetLang,
+                                ),
+                            )
+                        }
+                        return@launch
+                    }
+
+                    val sampleBuilder = StringBuilder(1_600)
+                    for (seg in segments) {
+                        if (sampleBuilder.length >= 1_500) break
+                        if (sampleBuilder.isNotEmpty()) sampleBuilder.append('\n')
+                        sampleBuilder.append(seg.text.trim())
+                    }
+                    val sample = sampleBuilder.toString().take(1_500)
+
+                    val detectedLang = runCatching { translationEngine.identifyLanguage(sample) }.getOrNull()
+                        ?: DomTranslationBatcher.normalizeLanguageCode(htmlLang)
+
+                    if (translationGeneration.get() != gen || disposed.get()) return@launch
+
+                    if (detectedLang == null) {
+                        _state.update {
+                            it.copy(
+                                translationStatus = PageTranslationStatus(
+                                    phase = PageTranslationPhase.FAILED,
+                                    targetLanguageCode = targetLang,
+                                    errorMessage = "Unsupported language",
+                                ),
+                            )
+                        }
+                        return@launch
+                    }
+
+                    if (detectedLang == targetLang) {
+                        _state.update {
+                            it.copy(
+                                translationStatus = PageTranslationStatus(
+                                    phase = PageTranslationPhase.ORIGINAL,
+                                    sourceLanguageCode = detectedLang,
+                                    targetLanguageCode = targetLang,
+                                ),
+                            )
+                        }
+                        return@launch
+                    }
+
+                    val pieces = DomTranslationBatcher.splitSurrogateSafe(segments)
+                    val pieceBatches = DomTranslationBatcher.groupIntoBatches(pieces)
+                    val textBatches = pieceBatches.map { batch -> batch.map { it.coreText } }
+                    val assembler = DomTranslationBatcher.ProgressiveAssembler(pieces)
+
+                    translationEngine.translateBatches(
+                        sourceLanguage = detectedLang,
+                        targetLanguage = targetLang,
+                        batches = textBatches,
+                        onDownloadingModel = {
+                            if (translationGeneration.get() == gen && !disposed.get()) {
+                                _state.update {
+                                    it.copy(
+                                        translationStatus = PageTranslationStatus(
+                                            phase = PageTranslationPhase.DOWNLOADING_MODEL,
+                                            sourceLanguageCode = detectedLang,
+                                            targetLanguageCode = targetLang,
+                                        ),
+                                    )
+                                }
+                            }
+                        },
+                        onTranslating = {
+                            if (translationGeneration.get() == gen && !disposed.get()) {
+                                _state.update {
+                                    it.copy(
+                                        translationStatus = PageTranslationStatus(
+                                            phase = PageTranslationPhase.TRANSLATING,
+                                            sourceLanguageCode = detectedLang,
+                                            targetLanguageCode = targetLang,
+                                        ),
+                                    )
+                                }
+                            }
+                        },
+                        onBatchTranslated = { batchIndex, translatedTexts ->
+                            if (translationGeneration.get() != gen || disposed.get()) return@translateBatches
+                            val readySegments = assembler.acceptBatch(pieceBatches[batchIndex], translatedTexts)
+                            if (readySegments.isNotEmpty()) {
+                                val applyScript = InPlaceDomTranslationScripts.buildApplyScript(gen, readySegments)
+                                runOnMain {
+                                    if (translationGeneration.get() == gen && !disposed.get()) {
+                                        webView.evaluateJavascript(applyScript, null)
+                                    }
+                                }
+                            }
+                        },
+                    )
+
+                    if (translationGeneration.get() == gen && !disposed.get()) {
+                        _state.update {
+                            it.copy(
+                                translationStatus = PageTranslationStatus(
+                                    phase = PageTranslationPhase.TRANSLATED,
+                                    sourceLanguageCode = detectedLang,
+                                    targetLanguageCode = targetLang,
+                                ),
+                            )
+                        }
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (t: Throwable) {
+                    if (translationGeneration.get() == gen && !disposed.get()) {
+                        _state.update {
+                            it.copy(
+                                translationStatus = PageTranslationStatus(
+                                    phase = PageTranslationPhase.FAILED,
+                                    targetLanguageCode = targetLang,
+                                    errorMessage = t.message ?: "Translation failed",
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    override fun restoreOriginalPageLanguage() {
+        runOnMain {
+            cancelAndResetTranslation(resetState = true)
+            if (!disposed.get()) {
+                webView.evaluateJavascript(InPlaceDomTranslationScripts.RESTORE_ORIGINAL_SCRIPT, null)
+            }
+        }
+    }
+
+    private fun cancelAndResetTranslation(resetState: Boolean) {
+        translationGeneration.incrementAndGet()
+        activeTranslationJob?.cancel()
+        activeTranslationJob = null
+        if (resetState) {
+            _state.update { it.copy(translationStatus = PageTranslationStatus()) }
+        }
+    }
+
+    private suspend fun evaluateJsSuspend(script: String): String? =
+        suspendCancellableCoroutine { cont ->
+            runOnMain {
+                if (disposed.get() || !cont.isActive) {
+                    if (cont.isActive) cont.resume(null)
+                    return@runOnMain
+                }
+                webView.evaluateJavascript(script) { result ->
+                    if (cont.isActive) cont.resume(result)
+                }
+            }
+        }
+
     override fun setPlaybackRate(rate: Float) {
         val clamped = rate.coerceIn(0.5f, 3.0f)
         runOnMain {
@@ -876,8 +1103,12 @@ class WebViewSession internal constructor(
 
     override fun dispose() {
         if (!disposed.compareAndSet(false, true)) return
+        translationGeneration.incrementAndGet()
+        sessionScope.cancel()
         runOnMain {
             try {
+                activeTranslationJob?.cancel()
+                activeTranslationJob = null
                 documentScriptHandlers.forEach { handler -> runCatching { handler.remove() } }
                 documentScriptHandlers.clear()
                 if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {

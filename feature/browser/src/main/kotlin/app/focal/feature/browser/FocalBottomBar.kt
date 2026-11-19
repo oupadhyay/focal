@@ -56,6 +56,7 @@ import app.focal.design.LocalGestureLeaseController
 import app.focal.design.SiteFavicon
 import app.focal.design.shaders.SmokedGlassBox
 import app.focal.engine.api.EngineTelemetryState
+import app.focal.engine.api.PageTranslationPhase
 import kotlinx.coroutines.flow.StateFlow
 import kotlin.math.abs
 
@@ -431,6 +432,7 @@ fun SmartContextualPillsRow(
     visible: Boolean,
     showReaderPill: Boolean,
     showTranslatePill: Boolean,
+    translationPhase: PageTranslationPhase = PageTranslationPhase.ORIGINAL,
     onOpenReader: () -> Unit,
     onTriggerTranslate: () -> Unit,
     modifier: Modifier = Modifier,
@@ -438,6 +440,13 @@ fun SmartContextualPillsRow(
     val colors = FocalTheme.colors
     val typography = FocalTheme.typography
     val barTint = rememberUpdatedState(colors.effectiveBarGlass)
+    val translateLabel = when (translationPhase) {
+        PageTranslationPhase.ORIGINAL -> "Translate"
+        PageTranslationPhase.DOWNLOADING_MODEL -> "Downloading…"
+        PageTranslationPhase.TRANSLATING -> "Translating…"
+        PageTranslationPhase.TRANSLATED -> "Original"
+        PageTranslationPhase.FAILED -> "Retry Translate"
+    }
 
     AnimatedVisibility(
         visible = visible && (showReaderPill || showTranslatePill),
@@ -471,7 +480,7 @@ fun SmartContextualPillsRow(
                             modifier = Modifier.size(14.dp),
                         )
                         Text(
-                            text = "Translate",
+                            text = translateLabel,
                             style = typography.controlPillLabel,
                             color = colors.inkPrimary,
                         )

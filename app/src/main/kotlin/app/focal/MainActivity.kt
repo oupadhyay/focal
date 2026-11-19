@@ -81,6 +81,8 @@ import app.focal.design.shaders.SmokedGlassBox
 import app.focal.engine.api.EngineSession
 import app.focal.engine.api.EngineSessionEvent
 import app.focal.engine.api.OriginOverrides
+import app.focal.engine.api.PageTranslationPhase
+import app.focal.engine.api.PageTranslationStatus
 import app.focal.feature.browser.BrowserViewportScreen
 import app.focal.feature.browser.LinkPeekSheet
 import app.focal.feature.browser.PinchSummarySheet
@@ -302,34 +304,21 @@ private fun FocalRootCoordinator(
     var isSummarizing by remember { mutableStateOf(false) }
     var activeGroundedSummary by remember { mutableStateOf<GroundedPageSummary?>(null) }
 
-    // Translate active page cleanly (or unwrap back to original URL if already translated) (P2-6)
+    // Translate active page in place using 100% on-device ML Kit (zero external proxy tabs)
     val translateActivePage: () -> Unit = {
+        val session = activeSession
         val rawUrl = activeSessionState?.url.orEmpty()
-        if (rawUrl.isNotBlank() && rawUrl != "about:blank") {
-            val parsed = runCatching { Uri.parse(rawUrl) }.getOrNull()
-            val host = parsed?.host?.lowercase().orEmpty()
-            val originalParam = if (host == "translate.google.com" || host.endsWith(".translate.goog")) {
-                parsed?.getQueryParameter("u")?.takeIf {
-                    it.startsWith("https://", ignoreCase = true) ||
-                        it.startsWith("http://", ignoreCase = true)
-                }
-            } else {
-                null
-            }
+        if (session != null && rawUrl.isNotBlank() && rawUrl != "about:blank") {
+            when (activeSessionState?.translationStatus?.phase ?: PageTranslationPhase.ORIGINAL) {
+                PageTranslationPhase.ORIGINAL,
+                PageTranslationPhase.FAILED,
+                -> session.translatePageInPlace(targetLanguageCode = Locale.getDefault().language)
 
-            val destination = if (originalParam != null) {
-                originalParam
-            } else {
-                val cleaned = adblockController.cleanTrackingUrl(rawUrl).cleanUrl
-                val targetLang = Locale.getDefault().language.ifBlank { "en" }
-                "https://translate.google.com/translate?sl=auto&tl=${Uri.encode(targetLang)}&u=${Uri.encode(cleaned)}"
+                PageTranslationPhase.DOWNLOADING_MODEL,
+                PageTranslationPhase.TRANSLATING,
+                PageTranslationPhase.TRANSLATED,
+                -> session.restoreOriginalPageLanguage()
             }
-            sessionVm.openUrlInTab(
-                url = destination,
-                privateMode = isPrivateAperture,
-                openInBackground = false,
-                forceNewTab = false,
-            )
         }
     }
 
@@ -732,6 +721,7 @@ private fun FocalRootCoordinator(
                                     canGoForward = activeSessionState?.canGoForward == true,
                                     blockedCountInTab = sessionTelemetry?.blockedTrackersInSession ?: 0L,
                                     overrides = effectiveOverrides,
+                                    translationStatus = activeSessionState?.translationStatus ?: PageTranslationStatus(),
                                     onGoBack = {
                                         activeSession?.goBack()
                                         sessionVm.setOverlaySheet(ActiveOverlaySheet.None)

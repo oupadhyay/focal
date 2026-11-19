@@ -42,6 +42,21 @@ data class ActiveMediaSessionInfo(
     val currentTimeSec: Float = 0f,
 )
 
+enum class PageTranslationPhase {
+    ORIGINAL,
+    DOWNLOADING_MODEL,
+    TRANSLATING,
+    TRANSLATED,
+    FAILED,
+}
+
+data class PageTranslationStatus(
+    val phase: PageTranslationPhase = PageTranslationPhase.ORIGINAL,
+    val sourceLanguageCode: String? = null,
+    val targetLanguageCode: String? = null,
+    val errorMessage: String? = null,
+)
+
 data class EngineSessionState(
     val sessionId: String,
     val isPrivate: Boolean = false,
@@ -57,6 +72,7 @@ data class EngineSessionState(
     val isHttps: Boolean = true,
     val isReaderEligible: Boolean = false,
     val pageLanguageTag: String? = null,
+    val translationStatus: PageTranslationStatus = PageTranslationStatus(),
     val blockedTrackersInSession: Long = 0L,
     val hasUnsentFormDraft: Boolean = false,
     val currentScaleFactor: Float = 1.0f,
@@ -133,6 +149,9 @@ interface EngineSession {
     fun indexDomParagraphs(onResult: (List<IndexedDomParagraph>) -> Unit)
     fun scrollToGroundedParagraph(paraId: Int)
     fun checkHasUnsentFormInput(onResult: (Boolean) -> Unit)
+
+    fun translatePageInPlace(targetLanguageCode: String? = null) {}
+    fun restoreOriginalPageLanguage() {}
 
     fun setPlaybackRate(rate: Float)
     fun setMediaPlaying(playing: Boolean)

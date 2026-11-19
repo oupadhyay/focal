@@ -60,6 +60,8 @@ import app.focal.design.SwitzerBody
 import app.focal.design.consumeClicks
 import app.focal.design.shaders.SmokedGlassBox
 import app.focal.engine.api.OriginOverrides
+import app.focal.engine.api.PageTranslationPhase
+import app.focal.engine.api.PageTranslationStatus
 import app.focal.engine.api.ReadableDocument
 
 enum class PageMenuTab {
@@ -283,6 +285,7 @@ fun PageMenuAndSiteOverridesSheet(
     canGoForward: Boolean,
     blockedCountInTab: Long,
     overrides: OriginOverrides,
+    translationStatus: PageTranslationStatus = PageTranslationStatus(),
     initialTab: PageMenuTab = PageMenuTab.MENU,
     onGoBack: () -> Unit,
     onGoForward: () -> Unit,
@@ -489,11 +492,26 @@ fun PageMenuAndSiteOverridesSheet(
                                     onClick = onOpenReaderMode,
                                 )
                                 FocalHairlineDivider()
+                                val translateRowTitle = when (translationStatus.phase) {
+                                    PageTranslationPhase.ORIGINAL -> "Translate Page"
+                                    PageTranslationPhase.DOWNLOADING_MODEL -> "Downloading Language…"
+                                    PageTranslationPhase.TRANSLATING -> "Translating Page…"
+                                    PageTranslationPhase.TRANSLATED -> "Show Original"
+                                    PageTranslationPhase.FAILED -> "Translate Page"
+                                }
+                                val translateTrailing = when (translationStatus.phase) {
+                                    PageTranslationPhase.ORIGINAL -> null
+                                    PageTranslationPhase.DOWNLOADING_MODEL -> "Cancel"
+                                    PageTranslationPhase.TRANSLATING -> "Cancel"
+                                    PageTranslationPhase.TRANSLATED -> "Translated"
+                                    PageTranslationPhase.FAILED -> "Retry"
+                                }
                                 FocalMenuRow(
-                                    title = "Translate Page",
+                                    title = translateRowTitle,
                                     icon = FocalGlyphs.Translate,
+                                    trailingLabel = translateTrailing,
                                     enabled = hasActivePage,
-                                    showChevron = true,
+                                    showChevron = translationStatus.phase == PageTranslationPhase.ORIGINAL,
                                     onClick = onTranslatePage,
                                 )
                                 FocalHairlineDivider()

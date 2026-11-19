@@ -48,6 +48,7 @@ import app.focal.design.shaders.recordFocalBackdrop
 import app.focal.engine.api.ActiveMediaSessionInfo
 import app.focal.engine.api.EngineSession
 import app.focal.engine.api.EngineSessionState
+import app.focal.engine.api.PageTranslationPhase
 import app.focal.engine.webview.WebEngineSurface
 import app.focal.feature.media.MediaMiniPlayerDock
 import app.focal.sync.SyncEvent
@@ -114,8 +115,10 @@ fun BrowserViewportScreen(
     val deviceLang = remember { Locale.getDefault().language.lowercase() }
     val foreignLanguageDetected = remember(sessionState.pageLanguageTag, deviceLang) {
         val tag = sessionState.pageLanguageTag?.substringBefore('-')?.lowercase()
-        !tag.isNullOrBlank() && tag != deviceLang
+        !tag.isNullOrBlank() && tag != "und" && tag != deviceLang
     }
+    val translationPhase = sessionState.translationStatus.phase
+    val showTranslatePill = foreignLanguageDetected || translationPhase != PageTranslationPhase.ORIGINAL
 
     val pillsVisible by remember(bottomBarScrollHideFraction, isOverlaySheetOpen) {
         derivedStateOf { !isOverlaySheetOpen && bottomBarScrollHideFraction.floatValue < 0.5f }
@@ -201,7 +204,7 @@ fun BrowserViewportScreen(
                     // Dock Row `8.dp` above the 3-Part Bar: Media Mini-Player (left) + Smart Pills (right)
                     val activeMedia = mediaMiniPlayerInfo ?: sessionState.activeMedia
 
-                    if (activeMedia != null || (hasLoadedWebUrl && (sessionState.isReaderEligible || foreignLanguageDetected))) {
+                    if (activeMedia != null || (hasLoadedWebUrl && (sessionState.isReaderEligible || showTranslatePill))) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -224,7 +227,8 @@ fun BrowserViewportScreen(
                             SmartContextualPillsRow(
                                 visible = pillsVisible && hasLoadedWebUrl,
                                 showReaderPill = sessionState.isReaderEligible,
-                                showTranslatePill = foreignLanguageDetected,
+                                showTranslatePill = showTranslatePill,
+                                translationPhase = translationPhase,
                                 onOpenReader = onOpenReaderMode,
                                 onTriggerTranslate = onTranslatePage,
                             )
