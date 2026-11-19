@@ -52,8 +52,11 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
@@ -146,8 +149,13 @@ fun SearchSheet(
         }
     }
 
-    LaunchedEffect(Unit) {
-        focusRequester.requestFocus()
+    val windowInfo = LocalWindowInfo.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    LaunchedEffect(windowInfo.isWindowFocused) {
+        if (windowInfo.isWindowFocused) {
+            focusRequester.requestFocus()
+            keyboardController?.show()
+        }
     }
 
     val effectiveSheetTint = rememberUpdatedState(
@@ -158,7 +166,11 @@ fun SearchSheet(
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black.copy(alpha = 0.52f))
-            .clickable(onClick = onDismiss),
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onDismiss,
+            ),
         contentAlignment = Alignment.BottomCenter,
     ) {
         SmokedGlassBox(

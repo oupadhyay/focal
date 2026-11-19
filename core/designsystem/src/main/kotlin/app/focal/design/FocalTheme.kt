@@ -5,8 +5,9 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.SpringSpec
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -14,25 +15,27 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.IntOffset
 
 val LocalFocalColors = staticCompositionLocalOf { FocalPalettes.DarkSmokedOled }
 val LocalFocalTypography = staticCompositionLocalOf { DefaultFocalTypeScale }
 
 /**
- * Consumes pointer clicks inside modal Smoked Glass sheets without ripple indication so
- * taps inside a sheet never leak through to the underlying scrim dismiss handler.
+ * Consumes unconsumed tap-up pointer events inside modal Smoked Glass sheets without adding a
+ * semantics-merging `clickable` wrapper, so taps on empty glass never leak through to the
+ * underlying scrim dismiss handler while descendant buttons, text fields, and sheet drags keep
+ * their own pointer handling and exact accessibility bounds.
  */
-@Composable
-fun Modifier.consumeClicks(): Modifier = this.clickable(
-    interactionSource = remember { MutableInteractionSource() },
-    indication = null,
-    onClick = {},
-)
+fun Modifier.consumeClicks(): Modifier = this.pointerInput(Unit) {
+    awaitEachGesture {
+        awaitFirstDown(requireUnconsumed = false)
+        waitForUpOrCancellation()?.consume()
+    }
+}
 
 /**
  * Locked 120Hz Spring Physics specifications from Focal's Master Motion Table.
