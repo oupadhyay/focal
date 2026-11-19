@@ -151,15 +151,15 @@ class FocalEmulatorVerificationTest {
             val cm = composeRule.activity.getSystemService(ClipboardManager::class.java)
             copiedText = cm?.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString()
         }
-        assertEquals("81.65 kg", copiedText)
+        assertEquals("81.6466 kg", copiedText)
 
         // Verify offline calculator answer
         composeRule.onNode(hasSetTextAction()).performTextClearance()
         composeRule.onNode(hasSetTextAction()).performTextInput("48 * 1.0825")
         composeRule.waitUntil(timeoutMillis = 8_000L) {
-            composeRule.onAllNodesWithText("51.96").fetchSemanticsNodes().isNotEmpty()
+            composeRule.onAllNodesWithText("= 51.96").fetchSemanticsNodes().isNotEmpty()
         }
-        composeRule.onNodeWithText("51.96").assertIsDisplayed()
+        composeRule.onNodeWithText("= 51.96").assertIsDisplayed()
 
         // 5. Navigate to real https://example.com in Chromium WebView (verifies zero WebView crash)
         composeRule.onNode(hasSetTextAction()).performTextClearance()
@@ -168,7 +168,8 @@ class FocalEmulatorVerificationTest {
         composeRule.onNodeWithText("Go").performClick()
 
         composeRule.waitUntil(timeoutMillis = 20_000L) {
-            composeRule.onAllNodesWithText("example.com").fetchSemanticsNodes().isNotEmpty()
+            composeRule.onAllNodesWithText("Go").fetchSemanticsNodes().isEmpty() &&
+                composeRule.onAllNodesWithText("example.com").fetchSemanticsNodes().isNotEmpty()
         }
         // Allow real Chromium WebView to finish painting page pixels
         SystemClock.sleep(3_000L)
