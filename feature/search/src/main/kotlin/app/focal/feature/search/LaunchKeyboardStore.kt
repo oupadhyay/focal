@@ -2,7 +2,9 @@ package app.focal.feature.search
 
 import android.content.Context
 import android.content.res.Configuration
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateIntAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
@@ -19,7 +21,6 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
-import app.focal.design.FocalMotion
 import kotlinx.coroutines.delay
 
 /**
@@ -185,14 +186,18 @@ fun Modifier.zeroJumpImePadding(): Modifier = composed {
 
     val animatedFallbackBottomPx by animateIntAsState(
         targetValue = targetBottomPx,
-        animationSpec = FocalMotion.smartPillSpring(),
+        animationSpec = spring(
+            stiffness = Spring.StiffnessMediumLow,
+            dampingRatio = Spring.DampingRatioNoBouncy,
+        ),
         label = "FocalZeroJumpImeFallback",
     )
 
     // Use direct 1:1 tracking whenever live IME is moving or frame-0 cached height is held;
     // only spring-settle smoothly if the cached hold window expires with liveIme == 0.
     val expiredWithoutSoftIme = !imeHasStabilized && !holdCachedWindowActive && cachedHeightPx > 0 && liveImeAboveNavPx == 0
-    val resolvedBottomPx = if (expiredWithoutSoftIme) animatedFallbackBottomPx else targetBottomPx
+    val resolvedBottomPx = (if (expiredWithoutSoftIme) animatedFallbackBottomPx else targetBottomPx)
+        .coerceAtLeast(0)
 
     this.padding(bottom = with(density) { resolvedBottomPx.toDp() })
 }
