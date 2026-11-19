@@ -80,16 +80,26 @@ class FocalEmulatorVerificationTest {
         // Wait for first-boot Gboard IME animation + LaunchKeyboardStore 180ms stabilize debounce
         // (uses composeRule.waitUntil so Compose's test clock advances LaunchedEffect delays)
         val keyboardStore = LaunchKeyboardStore(composeRule.activity)
-        composeRule.waitUntil(timeoutMillis = 12_000L) {
-            keyboardStore.readHeightPx(isLandscape = false) > 0
+        val initialImeReady = runCatching {
+            composeRule.waitUntil(timeoutMillis = 5_000L) {
+                keyboardStore.readHeightPx(isLandscape = false) > 0
+            }
+            true
+        }.getOrDefault(false)
+        if (!initialImeReady) {
+            // Fresh emulator boots can still be binding Gboard during Activity launch; tap input to show IME
+            composeRule.onNode(hasSetTextAction()).performClick()
+            composeRule.waitUntil(timeoutMillis = 12_000L) {
+                keyboardStore.readHeightPx(isLandscape = false) > 0
+            }
         }
         val persistedImePx = keyboardStore.readHeightPx(isLandscape = false)
+        SystemClock.sleep(250L)
+        captureEmulatorScreenshot("01_emulator_cold_launch_search.png")
         assertTrue(
             "Expected LaunchKeyboardStore to persist real soft keyboard height (>0px), got $persistedImePx",
             persistedImePx > 0,
         )
-        SystemClock.sleep(250L)
-        captureEmulatorScreenshot("01_emulator_cold_launch_search.png")
 
         // 2. Dismiss Search Sheet via Back to verify Calm Optical Launch Canvas & 3-part bottom bar
         composeRule.runOnIdle {
