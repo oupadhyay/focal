@@ -118,6 +118,11 @@ fun FocalTheme(
     }
 
     // Smooth 180ms glass luminance transition matching AdaptiveGlassController spec
+    val canvasBackground by animateColorAsState(
+        targetValue = targetTokens.canvasBackground,
+        animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+        label = "FocalCanvasBackground",
+    )
     val glassBar by animateColorAsState(
         targetValue = targetTokens.surfaceGlassBar,
         animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
@@ -135,6 +140,7 @@ fun FocalTheme(
     )
 
     val animatedTokens = targetTokens.copy(
+        canvasBackground = canvasBackground,
         surfaceGlassBar = glassBar,
         surfaceGlassSheet = glassSheet,
         inkPrimary = inkPrimary,
