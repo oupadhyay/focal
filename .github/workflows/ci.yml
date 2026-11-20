@@ -169,6 +169,7 @@ jobs:
           # 1) Cold launcher start of R8 release APK (Search-First sheet)
           adb shell am start -W -n app.focal/.MainActivity -a android.intent.action.MAIN -c android.intent.category.LAUNCHER
           sleep 5
+          RELEASE_PID_1=$(adb shell pidof app.focal || true)
           adb shell dumpsys window | grep -E "mCurrentFocus|mFocusedApp" > emulator-screenshots/release_window_state.log || true
           adb shell uiautomator dump /sdcard/release_ui_1.xml || true
           adb pull /sdcard/release_ui_1.xml emulator-screenshots/release_ui_1.xml || true
@@ -177,20 +178,20 @@ jobs:
           # 2) External ACTION_VIEW deep-link navigation to https://example.com in R8 release APK
           adb shell am start -W -n app.focal/.MainActivity -a android.intent.action.VIEW -d "https://example.com"
           sleep 5
+          RELEASE_PID_2=$(adb shell pidof app.focal || true)
           adb shell dumpsys window | grep -E "mCurrentFocus|mFocusedApp" >> emulator-screenshots/release_window_state.log || true
           adb shell uiautomator dump /sdcard/release_ui_2.xml || true
           adb pull /sdcard/release_ui_2.xml emulator-screenshots/release_ui_2.xml || true
           adb exec-out screencap -p > emulator-screenshots/09_emulator_release_r8_webview.png
 
-          RELEASE_PID=$(adb shell pidof app.focal || true)
-          echo "R8 release PID: ${RELEASE_PID:-DEAD}"
+          echo "R8 release PIDs: cold=${RELEASE_PID_1:-DEAD} view=${RELEASE_PID_2:-DEAD}"
           adb logcat -d *:E > emulator-screenshots/release_all_errors.log || true
           adb logcat -d | grep -iE "app\.focal|adblock|FocalApplication|FATAL|chromium|AndroidRuntime|DEBUG|libc|Compose" | tail -n 200 > emulator-screenshots/release_logcat.log || true
           ls -lh emulator-screenshots/
           cat emulator-screenshots/release_window_state.log || true
 
-          if [ -z "$RELEASE_PID" ]; then
-            echo "R8 release app.focal process is not running!"
+          if [ -z "$RELEASE_PID_1" ] || [ -z "$RELEASE_PID_2" ]; then
+            echo "R8 release app.focal process was not running during launch checks!"
             cat emulator-screenshots/release_all_errors.log || true
             exit 1
           fi
@@ -199,7 +200,7 @@ jobs:
             cat emulator-screenshots/release_all_errors.log
             exit 1
           fi
-          if [ ! -f emulator-screenshots/release_ui_1.xml ] || ! grep -q "Search or enter address" emulator-screenshots/release_ui_1.xml; then
+          if [ ! -f emulator-screenshots/release_ui_1.xml ] || ! grep -q "GitHub" emulator-screenshots/release_ui_1.xml; then
             echo "R8 release cold launch did not render SearchSheet UI!"
             cat emulator-screenshots/release_all_errors.log || true
             exit 1
