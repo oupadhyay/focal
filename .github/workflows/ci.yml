@@ -159,18 +159,54 @@ jobs:
             exit 1
           fi
 
-          # Verify seamless in-place upgrade from debug -> R8-minified release APK & crash-free launch
+          # Verify seamless in-place upgrade from debug -> R8-minified release APK & live UI rendering
           echo "=== Verifying in-place upgrade to R8 release APK ==="
           adb logcat -c
           adb install -r apks/app-x86_64-release.apk
+          adb shell input keyevent 224 || true
+          adb shell wm dismiss-keyguard || true
+
+          # 1) Cold launcher start of R8 release APK (Search-First sheet)
+          adb shell am start -W -n app.focal/.MainActivity -a android.intent.action.MAIN -c android.intent.category.LAUNCHER
+          sleep 5
+          adb shell dumpsys window | grep -E "mCurrentFocus|mFocusedApp" > emulator-screenshots/release_window_state.log || true
+          adb shell uiautomator dump /sdcard/release_ui_1.xml || true
+          adb pull /sdcard/release_ui_1.xml emulator-screenshots/release_ui_1.xml || true
+          adb exec-out screencap -p > emulator-screenshots/08_emulator_release_r8_cold_launch.png
+
+          # 2) External ACTION_VIEW deep-link navigation to https://example.com in R8 release APK
           adb shell am start -W -n app.focal/.MainActivity -a android.intent.action.VIEW -d "https://example.com"
-          sleep 4
-          adb exec-out screencap -p > emulator-screenshots/08_emulator_release_r8_launch.png
-          adb logcat -d -s AndroidRuntime:E > emulator-screenshots/release_runtime_errors.log || true
+          sleep 5
+          adb shell dumpsys window | grep -E "mCurrentFocus|mFocusedApp" >> emulator-screenshots/release_window_state.log || true
+          adb shell uiautomator dump /sdcard/release_ui_2.xml || true
+          adb pull /sdcard/release_ui_2.xml emulator-screenshots/release_ui_2.xml || true
+          adb exec-out screencap -p > emulator-screenshots/09_emulator_release_r8_webview.png
+
+          RELEASE_PID=$(adb shell pidof app.focal || true)
+          echo "R8 release PID: ${RELEASE_PID:-DEAD}"
+          adb logcat -d *:E > emulator-screenshots/release_all_errors.log || true
+          adb logcat -d | grep -iE "app\.focal|adblock|FocalApplication|FATAL|chromium|AndroidRuntime|DEBUG|libc|Compose" | tail -n 200 > emulator-screenshots/release_logcat.log || true
           ls -lh emulator-screenshots/
-          if grep -q "Process: app.focal" emulator-screenshots/release_runtime_errors.log; then
-            echo "Detected fatal AndroidRuntime exception in R8 release APK!"
-            cat emulator-screenshots/release_runtime_errors.log
+          cat emulator-screenshots/release_window_state.log || true
+
+          if [ -z "$RELEASE_PID" ]; then
+            echo "R8 release app.focal process is not running!"
+            cat emulator-screenshots/release_all_errors.log || true
+            exit 1
+          fi
+          if grep -qE "Process: app\.focal|Fatal signal.*app\.focal" emulator-screenshots/release_all_errors.log; then
+            echo "Detected fatal crash in R8 release APK!"
+            cat emulator-screenshots/release_all_errors.log
+            exit 1
+          fi
+          if [ ! -f emulator-screenshots/release_ui_1.xml ] || ! grep -q "Search or enter address" emulator-screenshots/release_ui_1.xml; then
+            echo "R8 release cold launch did not render SearchSheet UI!"
+            cat emulator-screenshots/release_all_errors.log || true
+            exit 1
+          fi
+          if [ ! -f emulator-screenshots/release_ui_2.xml ] || ! grep -q "example.com" emulator-screenshots/release_ui_2.xml; then
+            echo "R8 release ACTION_VIEW did not render example.com WebView bar!"
+            cat emulator-screenshots/release_all_errors.log || true
             exit 1
           fi
           EOF
