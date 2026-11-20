@@ -65,33 +65,45 @@ jobs:
         with:
           gradle-version: "8.11.1"
 
-      - name: Assemble Focal Debug APK, AndroidTest APK & run JVM unit tests
-        run: gradle :app:assembleDebug :app:assembleDebugAndroidTest testDebugUnitTest --continue --no-daemon --stacktrace
+      - name: Assemble Focal Release (R8) + Debug + AndroidTest APKs & run JVM unit tests
+        run: gradle :app:assembleRelease :app:assembleDebug :app:assembleDebugAndroidTest testDebugUnitTest --continue --no-daemon --stacktrace
 
-      - name: Verify deterministic APK signature & monotonic versionCode
+      - name: Verify deterministic APK signature, monotonic versionCode & APK sizes
         run: |
           APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n 1)
           AAPT2=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -n 1)
-          CERT_OUT=$("$APKSIGNER" verify --verbose --print-certs app/build/outputs/apk/debug/app-debug.apk)
-          echo "$CERT_OUT"
-          echo "$CERT_OUT" | grep -q "1376db20cd4ca10c52d0a50dd6e078fc1b8c30f6145f82ed3ef40c3e03203b1f"
-          "$AAPT2" dump badging app/build/outputs/apk/debug/app-debug.apk | head -n 3
+          ls -lh app/build/outputs/apk/release/*.apk app/build/outputs/apk/debug/*.apk
+          for APK in \
+            app/build/outputs/apk/release/app-arm64-v8a-release.apk \
+            app/build/outputs/apk/release/app-x86_64-release.apk \
+            app/build/outputs/apk/debug/app-x86_64-debug.apk; do
+            echo "=== Checking $APK ==="
+            CERT_OUT=$("$APKSIGNER" verify --verbose --print-certs "$APK")
+            echo "$CERT_OUT" | grep -q "1376db20cd4ca10c52d0a50dd6e078fc1b8c30f6145f82ed3ef40c3e03203b1f"
+            "$AAPT2" dump badging "$APK" | head -n 3
+          done
 
-      - name: Rename APK for easy install
-        run: cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/focal-debug.apk
+      - name: Stage phone APK and emulator APKs
+        run: |
+          mkdir -p dist-phone dist-emulator
+          cp app/build/outputs/apk/release/app-arm64-v8a-release.apk dist-phone/focal-arm64-v8a.apk
+          cp app/build/outputs/apk/debug/app-x86_64-debug.apk dist-emulator/app-x86_64-debug.apk
+          cp app/build/outputs/apk/release/app-x86_64-release.apk dist-emulator/app-x86_64-release.apk
+          cp app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk dist-emulator/app-debug-androidTest.apk
+          ls -lh dist-phone dist-emulator
 
-      - name: Upload installable Focal Android APK
+      - name: Upload installable Focal Android APK (arm64-v8a R8 Release)
         uses: actions/upload-artifact@v7
         with:
-          name: focal-android-debug-apk
-          path: app/build/outputs/apk/debug/focal-debug.apk
+          name: focal-android-apk
+          path: dist-phone/focal-arm64-v8a.apk
           if-no-files-found: error
 
-      - name: Upload Focal AndroidTest APK
+      - name: Upload x86_64 Emulator APKs (Debug + R8 Release + AndroidTest)
         uses: actions/upload-artifact@v7
         with:
-          name: focal-android-test-apk
-          path: app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          name: focal-emulator-apks
+          path: dist-emulator/
           if-no-files-found: error
 
   android-emulator-smoke:
@@ -100,12 +112,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - name: Download built Focal APKs
+      - name: Download built x86_64 Emulator APKs
         uses: actions/download-artifact@v8
         with:
-          pattern: focal-android-*-apk
+          name: focal-emulator-apks
           path: apks
-          merge-multiple: true
 
       - name: Enable KVM device permissions
         run: |
@@ -121,7 +132,7 @@ jobs:
           set -euo pipefail
 
           adb logcat -c
-          adb install -r apks/focal-debug.apk
+          adb install -r apks/app-x86_64-debug.apk
           adb install -r apks/app-debug-androidTest.apk
 
           mkdir -p emulator-screenshots
@@ -136,7 +147,6 @@ jobs:
           adb pull /sdcard/Android/data/app.focal/files/emulator-shots/. emulator-screenshots/ || true
           adb logcat -d -s AndroidRuntime:E > emulator-screenshots/android_runtime_errors.log || true
           adb logcat -d | grep -iE "app\.focal|adblock|FocalApplication|FATAL|chromium" | tail -n 150 > emulator-screenshots/focal_logcat.log || true
-          ls -lh emulator-screenshots/
 
           if [ "$INST_EXIT" -ne 0 ] || grep -q "FAILURES!!!" emulator-screenshots/instrument.log || ! grep -q "OK (" emulator-screenshots/instrument.log; then
             echo "Instrumentation verification failed (exit=$INST_EXIT)!"
@@ -144,8 +154,23 @@ jobs:
             exit 1
           fi
           if grep -q "Process: app.focal" emulator-screenshots/android_runtime_errors.log; then
-            echo "Detected fatal AndroidRuntime exception in app.focal!"
+            echo "Detected fatal AndroidRuntime exception in app.focal during instrumentation!"
             cat emulator-screenshots/android_runtime_errors.log
+            exit 1
+          fi
+
+          # Verify seamless in-place upgrade from debug -> R8-minified release APK & crash-free launch
+          echo "=== Verifying in-place upgrade to R8 release APK ==="
+          adb logcat -c
+          adb install -r apks/app-x86_64-release.apk
+          adb shell am start -W -n app.focal/.MainActivity -a android.intent.action.VIEW -d "https://example.com"
+          sleep 4
+          adb exec-out screencap -p > emulator-screenshots/08_emulator_release_r8_launch.png
+          adb logcat -d -s AndroidRuntime:E > emulator-screenshots/release_runtime_errors.log || true
+          ls -lh emulator-screenshots/
+          if grep -q "Process: app.focal" emulator-screenshots/release_runtime_errors.log; then
+            echo "Detected fatal AndroidRuntime exception in R8 release APK!"
+            cat emulator-screenshots/release_runtime_errors.log
             exit 1
           fi
           EOF

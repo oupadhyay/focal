@@ -19,16 +19,21 @@ android {
         versionCode = 100 + gitCommitCount
         versionName = "0.1.$gitCommitCount"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
 
-        ndk {
-            abiFilters += listOf("arm64-v8a", "x86_64")
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "x86_64")
+            isUniversalApk = false
         }
     }
 
     signingConfigs {
         getByName("debug") {
-            // Deterministic open-source dev/CI keystore so debug APKs from GitHub Actions
-            // and local machines share an identical certificate for seamless in-place updates.
+            // Deterministic open-source dev/CI keystore so both debug and R8-minified release
+            // APKs share an identical certificate for seamless in-place updates on Android.
             storeFile = file("focal-dev.keystore")
             storePassword = "android"
             keyAlias = "androiddebugkey"
@@ -44,11 +49,23 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
         release {
+            signingConfig = signingConfigs.getByName("debug")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
+            )
+        }
+    }
+
+    packaging {
+        resources {
+            excludes += setOf(
+                "DebugProbesKt.bin",
+                "META-INF/AL2.0",
+                "META-INF/LGPL2.1",
+                "META-INF/*.version",
             )
         }
     }
