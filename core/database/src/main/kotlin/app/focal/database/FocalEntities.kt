@@ -88,5 +88,11 @@ data class OriginOverrideEntity(
     val pageZoomPercent: Int = 100,
     val javascriptEnabled: Boolean = true,
     val desktopSite: Boolean = false,
+    @androidx.room.ColumnInfo(defaultValue = "0")
+    val autoReaderMode: Boolean = false,
+    val readerThemeId: String? = null,
+    val readerUseSerif: Boolean? = null,
+    val readerFontSizeSp: Int? = null,
+    val readerLineHeight: Float? = null,
     val updatedAtEpochMs: Long,
 )

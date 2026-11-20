@@ -12,6 +12,11 @@ data class OriginOverrides(
     val pageZoomPercent: Int = 100,
     val javascriptEnabled: Boolean = true,
     val desktopSite: Boolean = false,
+    val autoReaderMode: Boolean = false,
+    val readerThemeId: String? = null,
+    val readerUseSerif: Boolean? = null,
+    val readerFontSizeSp: Int? = null,
+    val readerLineHeight: Float? = null,
 )
 
 data class ReadableDocument(

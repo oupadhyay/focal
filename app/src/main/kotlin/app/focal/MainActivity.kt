@@ -77,6 +77,7 @@ import app.focal.design.FocalTheme
 import app.focal.design.GestureLeaseController
 import app.focal.design.GestureLeaseOwner
 import app.focal.design.LocalGestureLeaseController
+import app.focal.design.ReaderPaperPalette
 import app.focal.design.consumeClicks
 import app.focal.design.shaders.LocalFocalBackdropLayer
 import app.focal.design.shaders.SmokedGlassBox
@@ -90,7 +91,9 @@ import app.focal.feature.browser.LinkPeekSheet
 import app.focal.feature.browser.PinchSummarySheet
 import app.focal.feature.media.FocalMediaBridge
 import app.focal.feature.reader.PageMenuAndSiteOverridesSheet
+import app.focal.feature.reader.ReaderDefaultsStore
 import app.focal.feature.reader.ReaderModeView
+import app.focal.feature.reader.ReaderSitePreferencesResolver
 import app.focal.feature.search.DefaultSearchSquirclePins
 import app.focal.feature.search.QuickSquirclePin
 import app.focal.feature.search.SearchSheet
@@ -204,13 +207,6 @@ private fun FocalRootCoordinator(
         onDispose { adaptiveGlass.close() }
     }
 
-    // Keep system status bar icons contrasted against sampled page luminance
-    LaunchedEffect(glassState.lightStatusBarIcons) {
-        val insetsController = WindowCompat.getInsetsController(activity.window, view)
-        insetsController.isAppearanceLightStatusBars = !glassState.lightStatusBarIcons
-        insetsController.isAppearanceLightNavigationBars = !glassState.lightStatusBarIcons
-    }
-
     // Configuration-surviving session state from BrowserSessionViewModel (P0-3)
     val liveSessions by sessionVm.liveSessions.collectAsState()
     val privateTabs by sessionVm.privateTabs.collectAsState()
@@ -261,7 +257,7 @@ private fun FocalRootCoordinator(
     val activeSession: EngineSession? = selectedTabId?.let { liveSessions[it] }
     val activeSessionState = activeSession?.state?.collectAsState()?.value
 
-    // Observe per-origin overrides for current domain
+    // Observe per-origin overrides (including sticky Reader Mode settings) for current domain
     val currentOrigin = activeSessionState?.domain.orEmpty()
     val savedOverrideEntity by remember(currentOrigin) {
         database.originOverrideDao().observeOverrideForOrigin(currentOrigin)
@@ -269,6 +265,83 @@ private fun FocalRootCoordinator(
 
     val effectiveOverrides = remember(currentOrigin, savedOverrideEntity) {
         savedOverrideEntity?.toEngineOverrides() ?: OriginOverrides(origin = currentOrigin)
+    }
+
+    val readerDefaultsStore = remember(context) { ReaderDefaultsStore(context) }
+    var globalReaderDefaults by remember(readerDefaultsStore) {
+        mutableStateOf(readerDefaultsStore.read())
+    }
+    var privateReaderPrefsOverride by remember(isPrivateAperture) {
+        mutableStateOf<app.focal.feature.reader.ReaderPreferences?>(null)
+    }
+    val effectiveReaderPrefs = remember(
+        effectiveOverrides,
+        globalReaderDefaults,
+        isPrivateAperture,
+        privateReaderPrefsOverride,
+    ) {
+        if (isPrivateAperture && privateReaderPrefsOverride != null) {
+            privateReaderPrefsOverride!!
+        } else {
+            ReaderSitePreferencesResolver.resolve(effectiveOverrides, globalReaderDefaults)
+        }
+    }
+
+    val persistSiteOverrides: (OriginOverrides) -> Unit = { updated ->
+        activeSession?.setSiteOverrides(updated)
+        // Never write visited domain names to SQLite during Private Aperture ◎ sessions
+        if (!isPrivateAperture && updated.origin.isNotBlank()) {
+            scope.launch(Dispatchers.IO) {
+                database.originOverrideDao().upsertOverride(
+                    updated.toEntity(updatedAtEpochMs = System.currentTimeMillis()),
+                )
+            }
+        }
+    }
+
+    // Keep system status bar & nav bar icons contrasted against active Reader paper OR sampled page luminance
+    val effectiveLightStatusBarIcons = if (overlaySheet is ActiveOverlaySheet.Reader) {
+        effectiveReaderPrefs.theme.id == ReaderPaperPalette.Obsidian.id
+    } else {
+        glassState.lightStatusBarIcons
+    }
+    LaunchedEffect(effectiveLightStatusBarIcons) {
+        val insetsController = WindowCompat.getInsetsController(activity.window, view)
+        insetsController.isAppearanceLightStatusBars = !effectiveLightStatusBarIcons
+        insetsController.isAppearanceLightNavigationBars = !effectiveLightStatusBarIcons
+    }
+
+    // Sticky per-domain Auto-Reader Mode: auto-opens Reader when an eligible article finishes loading
+    var dismissedAutoReaderUrls by remember { mutableStateOf<Set<String>>(emptySet()) }
+    LaunchedEffect(
+        activeSession,
+        activeSessionState?.url,
+        activeSessionState?.isLoading,
+        activeSessionState?.isReaderEligible,
+        effectiveOverrides.autoReaderMode,
+        overlaySheet == ActiveOverlaySheet.None,
+    ) {
+        val session = activeSession ?: return@LaunchedEffect
+        val pageUrl = activeSessionState?.url.orEmpty()
+        if (
+            ReaderSitePreferencesResolver.shouldAutoOpenReader(
+                autoReaderEnabled = effectiveOverrides.autoReaderMode,
+                isReaderEligible = activeSessionState?.isReaderEligible == true,
+                isPageLoading = activeSessionState?.isLoading != false,
+                currentUrl = pageUrl,
+                dismissedUrlsInSession = dismissedAutoReaderUrls,
+                isOverlayCurrentlyOpen = overlaySheet != ActiveOverlaySheet.None,
+            )
+        ) {
+            delay(180L)
+            session.extractReadableArticle { doc ->
+                if (doc.isSubstantive) {
+                    sessionVm.setOverlaySheet(ActiveOverlaySheet.Reader(doc))
+                } else {
+                    dismissedAutoReaderUrls = dismissedAutoReaderUrls + pageUrl
+                }
+            }
+        }
     }
 
     LaunchedEffect(activeSession, effectiveOverrides) {
@@ -469,6 +542,11 @@ private fun FocalRootCoordinator(
                 overlaySheet != ActiveOverlaySheet.None -> {
                     if (overlaySheet == ActiveOverlaySheet.PinchSummary) {
                         pinchProgressState.floatValue = 0f
+                    }
+                    if (overlaySheet is ActiveOverlaySheet.Reader) {
+                        activeSessionState?.url?.takeIf { it.isNotBlank() }?.let { url ->
+                            dismissedAutoReaderUrls = dismissedAutoReaderUrls + url
+                        }
                     }
                     spacesDragOffsetPxState.floatValue = 0f
                     sessionVm.setOverlaySheet(ActiveOverlaySheet.None)
@@ -869,23 +947,10 @@ private fun FocalRootCoordinator(
                                         translateActivePage()
                                     },
                                     onUpdateSiteOverrides = { updated ->
-                                        activeSession?.setSiteOverrides(updated)
-                                        if (updated.origin.isNotBlank()) {
-                                            scope.launch(Dispatchers.IO) {
-                                                database.originOverrideDao().upsertOverride(
-                                                    OriginOverrideEntity(
-                                                        origin = updated.origin,
-                                                        blockAdsAndTrackers = updated.blockAdsAndTrackers,
-                                                        forceDarkWebSurface = updated.forceDarkWebSurface,
-                                                        overridePublisherFonts = updated.overridePublisherFonts,
-                                                        pageZoomPercent = updated.pageZoomPercent,
-                                                        javascriptEnabled = updated.javascriptEnabled,
-                                                        desktopSite = updated.desktopSite,
-                                                        updatedAtEpochMs = System.currentTimeMillis(),
-                                                    ),
-                                                )
-                                            }
+                                        if (updated.autoReaderMode && rawUrl.isNotBlank()) {
+                                            dismissedAutoReaderUrls = dismissedAutoReaderUrls - rawUrl
                                         }
+                                        persistSiteOverrides(updated)
                                     },
                                     onDismiss = {
                                         sessionVm.setOverlaySheet(ActiveOverlaySheet.None)
@@ -894,9 +959,39 @@ private fun FocalRootCoordinator(
                             }
 
                             is ActiveOverlaySheet.Reader -> {
+                                val readerPageUrl = activeSessionState?.url.orEmpty()
                                 ReaderModeView(
                                     document = currentOverlay.document,
+                                    siteDomain = currentOrigin,
+                                    initialPreferences = effectiveReaderPrefs,
+                                    autoReaderEnabled = effectiveOverrides.autoReaderMode,
+                                    canPersistForDomain = !isPrivateAperture && currentOrigin.isNotBlank(),
+                                    onPreferencesChanged = { updatedPrefs ->
+                                        if (isPrivateAperture) {
+                                            privateReaderPrefsOverride = updatedPrefs
+                                        } else {
+                                            globalReaderDefaults = updatedPrefs
+                                            readerDefaultsStore.write(updatedPrefs)
+                                            persistSiteOverrides(
+                                                ReaderSitePreferencesResolver.applyToOverrides(
+                                                    baseOverrides = effectiveOverrides,
+                                                    preferences = updatedPrefs,
+                                                ),
+                                            )
+                                        }
+                                    },
+                                    onToggleAutoReader = { enabled ->
+                                        if (enabled && readerPageUrl.isNotBlank()) {
+                                            dismissedAutoReaderUrls = dismissedAutoReaderUrls - readerPageUrl
+                                        }
+                                        persistSiteOverrides(
+                                            effectiveOverrides.copy(autoReaderMode = enabled),
+                                        )
+                                    },
                                     onCloseReader = {
+                                        if (readerPageUrl.isNotBlank()) {
+                                            dismissedAutoReaderUrls = dismissedAutoReaderUrls + readerPageUrl
+                                        }
                                         sessionVm.setOverlaySheet(ActiveOverlaySheet.None)
                                     },
                                 )
@@ -1188,4 +1283,25 @@ private fun OriginOverrideEntity.toEngineOverrides(): OriginOverrides = OriginOv
     pageZoomPercent = pageZoomPercent,
     javascriptEnabled = javascriptEnabled,
     desktopSite = desktopSite,
+    autoReaderMode = autoReaderMode,
+    readerThemeId = readerThemeId,
+    readerUseSerif = readerUseSerif,
+    readerFontSizeSp = readerFontSizeSp,
+    readerLineHeight = readerLineHeight,
+)
+
+private fun OriginOverrides.toEntity(updatedAtEpochMs: Long): OriginOverrideEntity = OriginOverrideEntity(
+    origin = origin,
+    blockAdsAndTrackers = blockAdsAndTrackers,
+    forceDarkWebSurface = forceDarkWebSurface,
+    overridePublisherFonts = overridePublisherFonts,
+    pageZoomPercent = pageZoomPercent,
+    javascriptEnabled = javascriptEnabled,
+    desktopSite = desktopSite,
+    autoReaderMode = autoReaderMode,
+    readerThemeId = readerThemeId,
+    readerUseSerif = readerUseSerif,
+    readerFontSizeSp = readerFontSizeSp,
+    readerLineHeight = readerLineHeight,
+    updatedAtEpochMs = updatedAtEpochMs,
 )

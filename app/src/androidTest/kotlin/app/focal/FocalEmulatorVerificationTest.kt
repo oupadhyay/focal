@@ -193,6 +193,7 @@ class FocalEmulatorVerificationTest {
         }
         composeRule.onNodeWithText("Dark Web Pages").assertIsDisplayed()
         composeRule.onNodeWithText("Editorial Fonts").assertIsDisplayed()
+        composeRule.onNodeWithText("Auto Reader Mode").assertIsDisplayed()
         SystemClock.sleep(300L)
         captureEmulatorScreenshot("07_emulator_site_settings.png")
 

@@ -10,14 +10,18 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -78,30 +82,62 @@ data class ReaderPreferences(
 )
 
 /**
- * Full-screen Distraction-Free 5-Theme Reader View (`Obsidian`, `Paper`, `Sepia`, `Alabaster`, `Sage`).
+ * Full-screen Distraction-Free 5-Theme Reader View (`Obsidian`, `Paper`, `Sepia`, `Alabaster`, `Sage`)
+ * with sticky per-domain typography/theme persistence and one-tap Auto-Reader toggle.
  */
 @Composable
 fun ReaderModeView(
     document: ReadableDocument,
-    initialThemeId: String = "sepia",
+    siteDomain: String = "",
+    initialPreferences: ReaderPreferences = ReaderPreferences(),
+    autoReaderEnabled: Boolean = false,
+    canPersistForDomain: Boolean = true,
+    onPreferencesChanged: (ReaderPreferences) -> Unit = {},
+    onToggleAutoReader: (Boolean) -> Unit = {},
     onCloseReader: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val typography = FocalTheme.typography
-    var selectedTheme by remember(initialThemeId) {
-        mutableStateOf(
-            ReaderPaperPalette.All.firstOrNull { it.id == initialThemeId } ?: ReaderPaperPalette.Sepia,
+    var selectedTheme by remember(siteDomain, initialPreferences.theme.id) {
+        mutableStateOf(initialPreferences.theme)
+    }
+    var useSerif by remember(siteDomain, initialPreferences.useEditorialSerif) {
+        mutableStateOf(initialPreferences.useEditorialSerif)
+    }
+    var fontSizeSp by remember(siteDomain, initialPreferences.fontSizeSp) {
+        mutableIntStateOf(ReaderSitePreferencesResolver.clampFontSizeSp(initialPreferences.fontSizeSp))
+    }
+    var lineHeightRatio by remember(siteDomain, initialPreferences.lineHeightMultiplier) {
+        mutableFloatStateOf(
+            ReaderSitePreferencesResolver.clampLineHeight(initialPreferences.lineHeightMultiplier),
         )
     }
-    var useSerif by remember { mutableStateOf(false) }
-    var fontSizeSp by remember { mutableIntStateOf(17) }
-    var lineHeightRatio by remember { mutableFloatStateOf(1.60f) }
+
+    val emitUpdatedPreferences: (
+        theme: ReaderPaperThemeColors,
+        serif: Boolean,
+        sizeSp: Int,
+        lineHeight: Float,
+    ) -> Unit = { theme, serif, sizeSp, lineHeight ->
+        selectedTheme = theme
+        useSerif = serif
+        fontSizeSp = sizeSp
+        lineHeightRatio = lineHeight
+        onPreferencesChanged(
+            ReaderPreferences(
+                theme = theme,
+                useEditorialSerif = serif,
+                fontSizeSp = sizeSp,
+                lineHeightMultiplier = lineHeight,
+            ),
+        )
+    }
 
     Column(
         modifier = modifier
             .fillMaxSize()
             .background(selectedTheme.background)
-            .statusBarsPadding()
+            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
             .navigationBarsPadding(),
     ) {
         // Top Reader Appearance Bar
@@ -117,24 +153,63 @@ fun ReaderModeView(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = "${document.siteName ?: "Reader"} · ${document.estimatedReadMinutes} min read",
+                    text = "${siteDomain.ifBlank { document.siteName ?: "Reader" }} · ${document.estimatedReadMinutes} min",
                     style = typography.captionMetadata,
                     color = selectedTheme.secondaryInk,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
                 )
+                Spacer(Modifier.width(8.dp))
                 Row(
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .background(selectedTheme.primaryInk.copy(alpha = 0.08f))
-                        .clickable(onClick = onCloseReader)
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp),
                 ) {
-                    Text(
-                        text = "Done",
-                        style = typography.controlPillLabel,
-                        color = selectedTheme.primaryInk,
-                    )
+                    if (canPersistForDomain && siteDomain.isNotBlank()) {
+                        Row(
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .background(
+                                    if (autoReaderEnabled) {
+                                        selectedTheme.primaryInk
+                                    } else {
+                                        selectedTheme.primaryInk.copy(alpha = 0.08f)
+                                    },
+                                )
+                                .clickable { onToggleAutoReader(!autoReaderEnabled) }
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Icon(
+                                imageVector = FocalGlyphs.Reader,
+                                contentDescription = "Always use Reader on $siteDomain",
+                                tint = if (autoReaderEnabled) selectedTheme.background else selectedTheme.primaryInk,
+                                modifier = Modifier.size(13.dp),
+                            )
+                            Text(
+                                text = if (autoReaderEnabled) "Always On" else "Always",
+                                style = typography.controlPillLabel,
+                                color = if (autoReaderEnabled) selectedTheme.background else selectedTheme.primaryInk,
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(selectedTheme.primaryInk.copy(alpha = 0.08f))
+                            .clickable(onClick = onCloseReader)
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        Text(
+                            text = "Done",
+                            style = typography.controlPillLabel,
+                            color = selectedTheme.primaryInk,
+                        )
+                    }
                 }
             }
 
@@ -157,7 +232,9 @@ fun ReaderModeView(
                                     color = if (active) selectedTheme.primaryInk else selectedTheme.divider,
                                     shape = CircleShape,
                                 )
-                                .clickable { selectedTheme = swatch },
+                                .clickable {
+                                    emitUpdatedPreferences(swatch, useSerif, fontSizeSp, lineHeightRatio)
+                                },
                         )
                     }
                 }
@@ -169,27 +246,36 @@ fun ReaderModeView(
                     ReaderControlChip(
                         label = if (useSerif) "Serif" else "Sans",
                         theme = selectedTheme,
-                        onClick = { useSerif = !useSerif },
+                        onClick = {
+                            emitUpdatedPreferences(selectedTheme, !useSerif, fontSizeSp, lineHeightRatio)
+                        },
                     )
                     ReaderControlChip(
                         label = "A−",
                         theme = selectedTheme,
-                        onClick = { fontSizeSp = (fontSizeSp - 1).coerceIn(15, 22) },
+                        onClick = {
+                            val nextSize = ReaderSitePreferencesResolver.clampFontSizeSp(fontSizeSp - 1)
+                            emitUpdatedPreferences(selectedTheme, useSerif, nextSize, lineHeightRatio)
+                        },
                     )
                     ReaderControlChip(
                         label = "A+",
                         theme = selectedTheme,
-                        onClick = { fontSizeSp = (fontSizeSp + 1).coerceIn(15, 22) },
+                        onClick = {
+                            val nextSize = ReaderSitePreferencesResolver.clampFontSizeSp(fontSizeSp + 1)
+                            emitUpdatedPreferences(selectedTheme, useSerif, nextSize, lineHeightRatio)
+                        },
                     )
                     ReaderControlChip(
                         label = String.format("%.2f×", lineHeightRatio),
                         theme = selectedTheme,
                         onClick = {
-                            lineHeightRatio = when {
+                            val nextRatio = when {
                                 lineHeightRatio < 1.50f -> 1.60f
                                 lineHeightRatio < 1.70f -> 1.75f
                                 else -> 1.45f
                             }
+                            emitUpdatedPreferences(selectedTheme, useSerif, fontSizeSp, nextRatio)
                         },
                     )
                 }
@@ -603,6 +689,24 @@ fun PageMenuAndSiteOverridesSheet(
                                         checked = overrides.overridePublisherFonts,
                                         onCheckedChange = {
                                             onUpdateSiteOverrides(overrides.copy(overridePublisherFonts = it))
+                                        },
+                                    )
+                                },
+                            )
+                            FocalHairlineDivider()
+                            FocalMenuRow(
+                                title = "Auto Reader Mode",
+                                icon = FocalGlyphs.Reader,
+                                onClick = {
+                                    onUpdateSiteOverrides(
+                                        overrides.copy(autoReaderMode = !overrides.autoReaderMode),
+                                    )
+                                },
+                                trailingContent = {
+                                    FocalSwitch(
+                                        checked = overrides.autoReaderMode,
+                                        onCheckedChange = {
+                                            onUpdateSiteOverrides(overrides.copy(autoReaderMode = it))
                                         },
                                     )
                                 },
