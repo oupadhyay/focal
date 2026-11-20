@@ -132,6 +132,9 @@ jobs:
           set -euo pipefail
 
           adb logcat -c
+          adb shell input keyevent 224 || true
+          adb shell wm dismiss-keyguard || true
+          adb shell settings put secure show_ime_with_hard_keyboard 1 || true
           adb install -r apks/app-x86_64-debug.apk
           adb install -r apks/app-debug-androidTest.apk
 

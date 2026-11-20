@@ -87,9 +87,15 @@ class FocalEmulatorVerificationTest {
             true
         }.getOrDefault(false)
         if (!initialImeReady) {
-            // Fresh emulator boots can still be binding Gboard during Activity launch; tap input to show IME
+            // Fresh emulator boots can still be binding Gboard during Activity launch; explicitly request IME
             composeRule.onNode(hasSetTextAction()).performClick()
-            composeRule.waitUntil(timeoutMillis = 12_000L) {
+            composeRule.runOnUiThread {
+                androidx.core.view.WindowCompat.getInsetsController(
+                    composeRule.activity.window,
+                    composeRule.activity.window.decorView,
+                ).show(androidx.core.view.WindowInsetsCompat.Type.ime())
+            }
+            composeRule.waitUntil(timeoutMillis = 15_000L) {
                 keyboardStore.readHeightPx(isLandscape = false) > 0
             }
         }
