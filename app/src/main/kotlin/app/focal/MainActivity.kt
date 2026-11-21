@@ -262,6 +262,7 @@ private fun FocalRootCoordinator(
 
     val syncUiState by syncManager.state.collectAsState()
     val mediaBridgeState by FocalMediaBridge.activeMedia.collectAsState()
+    val dockMediaState by FocalMediaBridge.dockMedia.collectAsState()
     val hasActiveMedia = mediaBridgeState != null
 
     // Connect MediaSessionService lazily once background/foreground tab audio or video activates (P1-11)
@@ -643,7 +644,9 @@ private fun FocalRootCoordinator(
                 isInPictureInPictureMode = isInPictureInPictureMode,
                 backdropGraphicsLayer = viewportBackdropLayer,
                 continuityHandoff = syncUiState.incomingHandoff,
-                mediaMiniPlayerInfo = mediaBridgeState?.media,
+                mediaMiniPlayerInfo = dockMediaState?.media,
+                isMediaMiniPlayerSuppressed = mediaBridgeState != null && dockMediaState == null,
+                isMediaFromBackgroundTab = dockMediaState != null && dockMediaState?.sessionTabId != selectedTabId,
                 pinchProgressState = pinchProgressState,
                 pinchCenterYState = pinchCenterYState,
                 predictiveBackProgressState = predictiveBackProgressState,
@@ -728,6 +731,14 @@ private fun FocalRootCoordinator(
                 onEnterPictureInPicture = {
                     FocalMediaBridge.dispatchRequestPip()
                     onEnterSystemPip()
+                },
+                onFocusMediaTab = dockMediaState?.sessionTabId
+                    ?.takeIf { it != selectedTabId }
+                    ?.let { playingTabId ->
+                        { sessionVm.selectTab(playingTabId, allActiveTabs) }
+                    },
+                onDismissMediaMiniPlayer = {
+                    FocalMediaBridge.dismissMiniPlayer()
                 },
             )
 

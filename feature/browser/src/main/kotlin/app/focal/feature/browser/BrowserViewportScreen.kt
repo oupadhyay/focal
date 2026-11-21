@@ -80,6 +80,8 @@ fun BrowserViewportScreen(
     backdropGraphicsLayer: GraphicsLayer = rememberGraphicsLayer(),
     continuityHandoff: SyncEvent.TabHandoffEvent?,
     mediaMiniPlayerInfo: ActiveMediaSessionInfo?,
+    isMediaMiniPlayerSuppressed: Boolean = false,
+    isMediaFromBackgroundTab: Boolean = false,
     pinchProgressState: MutableFloatState,
     pinchCenterYState: MutableFloatState,
     predictiveBackProgressState: FloatState,
@@ -98,6 +100,8 @@ fun BrowserViewportScreen(
     onToggleMediaPlayPause: (Boolean) -> Unit,
     onCycleMediaPlaybackRate: (Float) -> Unit,
     onEnterPictureInPicture: () -> Unit,
+    onFocusMediaTab: (() -> Unit)? = null,
+    onDismissMediaMiniPlayer: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val colors = FocalTheme.colors
@@ -218,7 +222,11 @@ fun BrowserViewportScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         // Dock Row `8.dp` above the 3-Part Bar: Media Mini-Player (left) + Smart Pills (right)
-                        val activeMedia = mediaMiniPlayerInfo ?: sessionState.activeMedia
+                        val activeMedia = if (isMediaMiniPlayerSuppressed) {
+                            null
+                        } else {
+                            mediaMiniPlayerInfo ?: sessionState.activeMedia
+                        }
 
                         if (activeMedia != null || (hasLoadedWebUrl && (sessionState.isReaderEligible || showTranslatePill))) {
                             Row(
@@ -234,6 +242,9 @@ fun BrowserViewportScreen(
                                         onTogglePlayPause = onToggleMediaPlayPause,
                                         onCyclePlaybackRate = onCycleMediaPlaybackRate,
                                         onEnterPictureInPicture = onEnterPictureInPicture,
+                                        isFromBackgroundTab = isMediaFromBackgroundTab,
+                                        onFocusMediaTab = onFocusMediaTab,
+                                        onDismiss = onDismissMediaMiniPlayer,
                                         modifier = Modifier.weight(1f, fill = false),
                                     )
                                 } else {

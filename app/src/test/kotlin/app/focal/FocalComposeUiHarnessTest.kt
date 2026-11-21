@@ -7,6 +7,7 @@ import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -25,6 +26,8 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeLeft
+import androidx.compose.ui.test.swipeRight
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.focal.database.BookmarkEntity
@@ -32,12 +35,14 @@ import app.focal.database.SpaceEntity
 import app.focal.database.TabMetadataEntity
 import app.focal.design.AppChromeTheme
 import app.focal.design.FocalTheme
+import app.focal.engine.api.ActiveMediaSessionInfo
 import app.focal.engine.api.EngineSession
 import app.focal.engine.api.EngineSessionEvent
 import app.focal.engine.api.EngineSessionState
 import app.focal.engine.api.IndexedDomParagraph
 import app.focal.engine.api.OriginOverrides
 import app.focal.engine.api.ReadableDocument
+import app.focal.feature.media.FocalMediaBridge
 import app.focal.feature.reader.PageMenuAndSiteOverridesSheet
 import app.focal.feature.search.SearchSheet
 import app.focal.feature.spaces.BookmarksSheet
@@ -632,6 +637,132 @@ class FocalComposeUiHarnessTest {
 
         val viewportSnap = composeRule.captureSnapshotPng("06_calm_viewport_and_bottom_bar.png")
         assertTrue(viewportSnap.length() > 1_000L)
+    }
+
+    @Test
+    fun browserViewport_backgroundMediaMiniPlayer_supportsControlsJumpAndSwipeDismiss() {
+        FocalMediaBridge.clearAll()
+        try {
+            val activeArticleTabId = "tab-article"
+            val backgroundAudioTabId = "tab-audio"
+            val loadedArticleSession = FakeLoadedEngineSession(
+                url = "https://stratechery.com",
+                domain = "stratechery.com",
+                title = "Stratechery",
+            )
+            FocalMediaBridge.onSelectedTabChanged(activeArticleTabId)
+            FocalMediaBridge.updateActiveMedia(
+                backgroundAudioTabId,
+                ActiveMediaSessionInfo(
+                    title = "Acquired — TSMC Part II",
+                    domain = "youtube.com",
+                    isPlaying = true,
+                    playbackRate = 1.0f,
+                    hasVideoElement = true,
+                ),
+            )
+
+            var toggledPlayValue: Boolean? = null
+            var cycledRateValue: Float? = null
+            var jumpedToTabId: String? = null
+
+            composeRule.setContent {
+                val pinchProgress = remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
+                val pinchCenterY = remember { androidx.compose.runtime.mutableFloatStateOf(0.5f) }
+                val backProgress = remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
+                val scrollHide = remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
+                val activeBridge by FocalMediaBridge.activeMedia.collectAsState()
+                val dockBridge by FocalMediaBridge.dockMedia.collectAsState()
+
+                FocalTheme(darkGlass = true) {
+                    app.focal.feature.browser.BrowserViewportScreen(
+                        activeSession = loadedArticleSession,
+                        tabCount = 2,
+                        isPrivateAperture = false,
+                        adaptiveBottomBarDarkGlass = true,
+                        isOverlaySheetOpen = false,
+                        continuityHandoff = null,
+                        mediaMiniPlayerInfo = dockBridge?.media,
+                        isMediaMiniPlayerSuppressed = activeBridge != null && dockBridge == null,
+                        isMediaFromBackgroundTab = dockBridge != null && dockBridge?.sessionTabId != activeArticleTabId,
+                        pinchProgressState = pinchProgress,
+                        pinchCenterYState = pinchCenterY,
+                        predictiveBackProgressState = backProgress,
+                        bottomBarScrollHideFraction = scrollHide,
+                        onOpenSearchSheet = {},
+                        onOpenTabSwitcher = {},
+                        onCloseCurrentTab = {},
+                        onOpenNewPrivateTab = {},
+                        onStepToAdjacentTab = {},
+                        onOpenPageMenu = {},
+                        onOpenReaderMode = {},
+                        onPinchSnapSummarize = {},
+                        onPinchSnapCancelled = {},
+                        onOpenContinuityHandoff = {},
+                        onToggleMediaPlayPause = { toggledPlayValue = it },
+                        onCycleMediaPlaybackRate = { cycledRateValue = it },
+                        onEnterPictureInPicture = {},
+                        onFocusMediaTab = dockBridge?.sessionTabId
+                            ?.takeIf { it != activeArticleTabId }
+                            ?.let { target -> { jumpedToTabId = target } },
+                        onDismissMediaMiniPlayer = { FocalMediaBridge.dismissMiniPlayer() },
+                    )
+                }
+            }
+
+            composeRule.waitForIdle()
+            composeRule.onNodeWithTag("media_mini_player_dock").assertIsDisplayed()
+            composeRule.onNodeWithText("Acquired — TSMC Part II").assertIsDisplayed()
+            composeRule.onNodeWithText("Other tab · youtube.com").assertIsDisplayed()
+
+            val miniPlayerSnap = composeRule.captureSnapshotPng("08_media_mini_player_background_tab.png")
+            assertTrue(miniPlayerSnap.length() > 1_000L)
+
+            // Tapping Play/Pause, speed pill, and background-tab title still works cleanly
+            composeRule.onNodeWithContentDescription("Pause").performClick()
+            composeRule.onNodeWithText("1.0×").performClick()
+            composeRule.onNodeWithContentDescription("Switch to playing tab").performClick()
+            composeRule.waitForIdle()
+            assertEquals(false, toggledPlayValue)
+            assertEquals(1.25f, cycledRateValue)
+            assertEquals(backgroundAudioTabId, jumpedToTabId)
+
+            // Swipe left dismisses the floating mini-player cleanly without killing system Media3 state
+            composeRule.onNodeWithTag("media_mini_player_dock").performTouchInput {
+                swipeLeft(startX = right - 12f, endX = left - 120f, durationMillis = 120L)
+            }
+            composeRule.mainClock.advanceTimeBy(400L)
+            composeRule.waitForIdle()
+
+            composeRule.onNodeWithTag("media_mini_player_dock").assertDoesNotExist()
+            assertEquals(null, FocalMediaBridge.dockMedia.value)
+            assertEquals(backgroundAudioTabId, FocalMediaBridge.activeMedia.value?.sessionTabId)
+
+            // New track starts -> mini-player returns, and swipe right also dismisses cleanly
+            FocalMediaBridge.updateActiveMedia(
+                backgroundAudioTabId,
+                ActiveMediaSessionInfo(
+                    title = "Next Episode — NVIDIA",
+                    domain = "youtube.com",
+                    isPlaying = true,
+                    playbackRate = 1.25f,
+                    hasVideoElement = true,
+                ),
+            )
+            composeRule.waitForIdle()
+            composeRule.onNodeWithTag("media_mini_player_dock").assertIsDisplayed()
+            composeRule.onNodeWithTag("media_mini_player_dock").performTouchInput {
+                swipeRight(startX = left + 12f, endX = right + 120f, durationMillis = 120L)
+            }
+            composeRule.mainClock.advanceTimeBy(400L)
+            composeRule.waitForIdle()
+
+            composeRule.onNodeWithTag("media_mini_player_dock").assertDoesNotExist()
+            assertEquals(null, FocalMediaBridge.dockMedia.value)
+            assertEquals(backgroundAudioTabId, FocalMediaBridge.activeMedia.value?.sessionTabId)
+        } finally {
+            FocalMediaBridge.clearAll()
+        }
     }
 
     @Test
