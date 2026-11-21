@@ -132,8 +132,11 @@ jobs:
           set -euo pipefail
 
           adb logcat -c
+          adb shell settings put global hide_error_dialogs 1 || true
+          adb shell settings put secure anr_show_background 0 || true
           adb shell input keyevent 224 || true
           adb shell wm dismiss-keyguard || true
+          adb shell am broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS || true
           adb shell settings put secure show_ime_with_hard_keyboard 1 || true
           adb shell ime list -s || true
           for _ in $(seq 1 10); do
@@ -142,7 +145,8 @@ jobs:
             fi
             sleep 1
           done
-          sleep 3
+          sleep 2
+          adb shell am broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS || true
           adb install -r apks/app-x86_64-debug.apk
           adb install -r apks/app-debug-androidTest.apk
 
@@ -177,6 +181,7 @@ jobs:
           adb install -r apks/app-x86_64-release.apk
           adb shell input keyevent 224 || true
           adb shell wm dismiss-keyguard || true
+          adb shell am broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS || true
 
           # 1) Cold launcher start of R8 release APK (Search-First sheet)
           adb shell am start -W -n app.focal/.MainActivity -a android.intent.action.MAIN -c android.intent.category.LAUNCHER
@@ -232,8 +237,8 @@ jobs:
           target: google_apis
           arch: x86_64
           profile: pixel_6
-          ram-size: 3072M
-          cores: 2
+          ram-size: 4096M
+          cores: 4
           disable-animations: true
           disable-spellchecker: true
           enable-hw-keyboard: false
