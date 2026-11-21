@@ -87,16 +87,29 @@ class FocalEmulatorVerificationTest {
             true
         }.getOrDefault(false)
         if (!initialImeReady) {
-            // Fresh emulator boots can still be binding Gboard during Activity launch; explicitly request IME
-            composeRule.onNode(hasSetTextAction()).performClick()
-            composeRule.runOnUiThread {
-                androidx.core.view.WindowCompat.getInsetsController(
-                    composeRule.activity.window,
-                    composeRule.activity.window.decorView,
-                ).show(androidx.core.view.WindowInsetsCompat.Type.ime())
-            }
-            composeRule.waitUntil(timeoutMillis = 15_000L) {
-                keyboardStore.readHeightPx(isLandscape = false) > 0
+            // Fresh emulator boots can still be starting Gboard on first run; retry focus + IME show
+            for (attempt in 1..3) {
+                composeRule.onNode(hasSetTextAction()).performClick()
+                composeRule.runOnUiThread {
+                    val imm = composeRule.activity.getSystemService(
+                        android.view.inputmethod.InputMethodManager::class.java,
+                    )
+                    val targetView = composeRule.activity.currentFocus
+                        ?: composeRule.activity.window.decorView
+                    imm?.showSoftInput(targetView, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+                    androidx.core.view.WindowCompat.getInsetsController(
+                        composeRule.activity.window,
+                        composeRule.activity.window.decorView,
+                    ).show(androidx.core.view.WindowInsetsCompat.Type.ime())
+                }
+                val becameReady = runCatching {
+                    composeRule.waitUntil(timeoutMillis = 7_000L) {
+                        keyboardStore.readHeightPx(isLandscape = false) > 0
+                    }
+                    true
+                }.getOrDefault(false)
+                if (becameReady) break
+                if (attempt < 3) SystemClock.sleep(1_000L)
             }
         }
         val persistedImePx = keyboardStore.readHeightPx(isLandscape = false)

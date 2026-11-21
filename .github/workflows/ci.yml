@@ -135,6 +135,14 @@ jobs:
           adb shell input keyevent 224 || true
           adb shell wm dismiss-keyguard || true
           adb shell settings put secure show_ime_with_hard_keyboard 1 || true
+          adb shell ime list -s || true
+          for _ in $(seq 1 10); do
+            if adb shell dumpsys input_method | grep -q "mCurMethodId="; then
+              break
+            fi
+            sleep 1
+          done
+          sleep 3
           adb install -r apks/app-x86_64-debug.apk
           adb install -r apks/app-debug-androidTest.apk
 
@@ -149,10 +157,11 @@ jobs:
           adb shell ls -la /sdcard/Android/data/app.focal/files/emulator-shots/ || true
           adb pull /sdcard/Android/data/app.focal/files/emulator-shots/. emulator-screenshots/ || true
           adb logcat -d -s AndroidRuntime:E > emulator-screenshots/android_runtime_errors.log || true
-          adb logcat -d | grep -iE "app\.focal|adblock|FocalApplication|FATAL|chromium" | tail -n 150 > emulator-screenshots/focal_logcat.log || true
+          adb logcat -d | grep -iE "app\.focal|adblock|FocalApplication|FATAL|chromium|ImeTracker|InputMethod" | tail -n 180 > emulator-screenshots/focal_logcat.log || true
 
           if [ "$INST_EXIT" -ne 0 ] || grep -q "FAILURES!!!" emulator-screenshots/instrument.log || ! grep -q "OK (" emulator-screenshots/instrument.log; then
             echo "Instrumentation verification failed (exit=$INST_EXIT)!"
+            adb exec-out screencap -p > emulator-screenshots/failure_screen.png || true
             cat emulator-screenshots/android_runtime_errors.log || true
             exit 1
           fi
