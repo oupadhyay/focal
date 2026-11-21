@@ -69,11 +69,13 @@ import app.focal.design.LocalGestureLeaseController
 import app.focal.design.SiteFavicon
 import app.focal.design.SpaceAmbientPalette
 import app.focal.design.consumeClicks
+import app.focal.design.focalSheetEntrance
 import app.focal.design.shaders.SmokedGlassBox
 import app.focal.sync.PresenceTabItem
 import app.focal.sync.SyncSessionUiState
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.toImmutableList
+import kotlinx.coroutines.launch
 
 @Immutable
 data class BookmarksSheetUiState(
@@ -142,6 +144,9 @@ fun BookmarksSheet(
         uiState.syncState.desktopPresenceTabs.toImmutableList()
     }
 
+    val dismissSettleScope = androidx.compose.runtime.rememberCoroutineScope()
+    val dismissSettleAnim = remember { androidx.compose.animation.core.Animatable(0f) }
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -159,6 +164,7 @@ fun BookmarksSheet(
                 .padding(horizontal = 10.dp, vertical = 10.dp)
                 .navigationBarsPadding()
                 .imePadding()
+                .focalSheetEntrance(riseDp = 18.dp)
                 .shadow(
                     elevation = 24.dp,
                     shape = FocalGeometry.SheetOuterShape,
@@ -166,7 +172,7 @@ fun BookmarksSheet(
                     spotColor = Color.Black.copy(alpha = 0.55f),
                 )
                 .graphicsLayer {
-                    translationY = internalDismissDragPx.coerceAtLeast(0f)
+                    translationY = (internalDismissDragPx + dismissSettleAnim.value).coerceAtLeast(0f)
                 }
                 .pointerInput(gestureLease) {
                     var dragLeaseToken: GestureLeaseToken? = null
@@ -179,17 +185,34 @@ fun BookmarksSheet(
                                 val stillValid = gestureLease == null || gestureLease.isValid(dragLeaseToken)
                                 gestureLease?.release(dragLeaseToken)
                                 dragLeaseToken = null
-                                if (stillValid && internalDismissDragPx > 120.dp.toPx()) {
-                                    internalDismissDragPx = 0f
+                                val dragged = internalDismissDragPx
+                                internalDismissDragPx = 0f
+                                if (stillValid && dragged > 120.dp.toPx()) {
                                     onDismiss()
-                                } else {
-                                    internalDismissDragPx = 0f
+                                } else if (dragged > 0f) {
+                                    dismissSettleScope.launch {
+                                        dismissSettleAnim.snapTo(dragged)
+                                        dismissSettleAnim.animateTo(
+                                            targetValue = 0f,
+                                            animationSpec = app.focal.design.FocalMotion.spacesSheetSpring(),
+                                        )
+                                    }
                                 }
                             },
                             onDragCancel = {
                                 gestureLease?.release(dragLeaseToken)
                                 dragLeaseToken = null
+                                val dragged = internalDismissDragPx
                                 internalDismissDragPx = 0f
+                                if (dragged > 0f) {
+                                    dismissSettleScope.launch {
+                                        dismissSettleAnim.snapTo(dragged)
+                                        dismissSettleAnim.animateTo(
+                                            targetValue = 0f,
+                                            animationSpec = app.focal.design.FocalMotion.spacesSheetSpring(),
+                                        )
+                                    }
+                                }
                             },
                             onVerticalDrag = { change, dragAmount ->
                                 if (gestureLease != null && !gestureLease.isValid(dragLeaseToken)) {

@@ -62,8 +62,10 @@ import app.focal.design.GestureLeaseOwner
 import app.focal.design.GestureLeaseToken
 import app.focal.design.LocalGestureLeaseController
 import app.focal.design.consumeClicks
+import app.focal.design.focalSheetEntrance
 import app.focal.design.shaders.SmokedGlassBox
 import app.focal.engine.webview.WebViewSession
+import kotlinx.coroutines.launch
 
 /**
  * Screen 07 · Long-Press Scrollable `LinkPeekSheet` + Clean Link Preview Header.
@@ -189,6 +191,9 @@ fun LinkPeekSheet(
         }
     }
 
+    val dragSettleScope = androidx.compose.runtime.rememberCoroutineScope()
+    val dragSettleAnim = remember { androidx.compose.animation.core.Animatable(0f) }
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -201,9 +206,11 @@ fun LinkPeekSheet(
                 .statusBarsPadding()
                 .navigationBarsPadding()
                 .padding(horizontal = 12.dp, vertical = 12.dp)
+                .focalSheetEntrance(riseDp = 18.dp)
                 .graphicsLayer {
-                    translationY = verticalDragPx
-                    val norm = (kotlin.math.abs(verticalDragPx) / 600f).coerceIn(0f, 0.15f)
+                    val effectiveDragY = verticalDragPx + dragSettleAnim.value
+                    translationY = effectiveDragY
+                    val norm = (kotlin.math.abs(effectiveDragY) / 600f).coerceIn(0f, 0.15f)
                     scaleX = 1f - norm
                     scaleY = 1f - norm
                 },
@@ -310,23 +317,36 @@ fun LinkPeekSheet(
                                             val stillValid = gestureLease == null || gestureLease.isValid(dragLeaseToken)
                                             gestureLease?.release(dragLeaseToken)
                                             dragLeaseToken = null
+                                            val dragged = verticalDragPx
+                                            verticalDragPx = 0f
                                             when {
-                                                !stillValid -> verticalDragPx = 0f
-                                                verticalDragPx > 110.dp.toPx() -> {
-                                                    verticalDragPx = 0f
-                                                    onDismiss()
+                                                stillValid && dragged > 110.dp.toPx() -> onDismiss()
+                                                stillValid && dragged < -110.dp.toPx() -> onExpandFullTab(cleanedResult.cleanUrl)
+                                                kotlin.math.abs(dragged) > 1f -> {
+                                                    dragSettleScope.launch {
+                                                        dragSettleAnim.snapTo(dragged)
+                                                        dragSettleAnim.animateTo(
+                                                            targetValue = 0f,
+                                                            animationSpec = app.focal.design.FocalMotion.linkPeekSpring(),
+                                                        )
+                                                    }
                                                 }
-                                                verticalDragPx < -110.dp.toPx() -> {
-                                                    verticalDragPx = 0f
-                                                    onExpandFullTab(cleanedResult.cleanUrl)
-                                                }
-                                                else -> verticalDragPx = 0f
                                             }
                                         },
                                         onDragCancel = {
                                             gestureLease?.release(dragLeaseToken)
                                             dragLeaseToken = null
+                                            val dragged = verticalDragPx
                                             verticalDragPx = 0f
+                                            if (kotlin.math.abs(dragged) > 1f) {
+                                                dragSettleScope.launch {
+                                                    dragSettleAnim.snapTo(dragged)
+                                                    dragSettleAnim.animateTo(
+                                                        targetValue = 0f,
+                                                        animationSpec = app.focal.design.FocalMotion.linkPeekSpring(),
+                                                    )
+                                                }
+                                            }
                                         },
                                         onVerticalDrag = { change, dragAmount ->
                                             if (gestureLease != null && !gestureLease.isValid(dragLeaseToken)) {

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -32,8 +33,10 @@ import kotlinx.coroutines.delay
 object LaunchKeyboardGeometry {
     const val MIN_KEYBOARD_DP = 120
     const val MAX_VIEWPORT_FRACTION = 0.65f
-    const val HANDOFF_RATIO = 0.85f
-    const val LAUNCH_HOLD_TIMEOUT_MS = 480L
+    const val HANDOFF_TOLERANCE_PX = 8
+    const val HARDWARE_KEYBOARD_TIMEOUT_MS = 550L
+    const val SHORT_IME_SETTLE_DEBOUNCE_MS = 140L
+    const val LAUNCH_HOLD_TIMEOUT_MS = HARDWARE_KEYBOARD_TIMEOUT_MS
     const val STABILIZE_PERSIST_DEBOUNCE_MS = 180L
 
     /**
@@ -51,8 +54,13 @@ object LaunchKeyboardGeometry {
     }
 
     /**
-     * Computes whether the live IME has caught up closely enough to hand off control directly
-     * to live `WindowInsets.ime` tracking (so subsequent IME dismissal lowers the sheet 1:1).
+     * Computes whether the live IME has reached resting cached height so control can hand off
+     * directly to live `WindowInsets.ime` tracking with **zero downward dip or bounce**.
+     *
+     * Handing off early (e.g., at 85% of cached height while the keyboard is still rising) would
+     * drop the search bar downward and immediately bounce it back up as the keyboard finishes
+     * opening. Requiring `liveImeAboveNavPx >= cachedHeightPx - HANDOFF_TOLERANCE_PX` guarantees
+     * a completely monotonic, bounce-free handoff.
      */
     fun hasLiveImeCaughtUp(
         liveImeAboveNavPx: Int,
@@ -61,16 +69,42 @@ object LaunchKeyboardGeometry {
     ): Boolean {
         if (liveImeAboveNavPx < minKeyboardPx) return false
         if (cachedHeightPx <= 0) return true
-        return liveImeAboveNavPx >= (cachedHeightPx * HANDOFF_RATIO).toInt()
+        val catchUpThreshold = (cachedHeightPx - HANDOFF_TOLERANCE_PX).coerceAtLeast(minKeyboardPx)
+        return liveImeAboveNavPx >= catchUpThreshold
+    }
+
+    /**
+     * Returns true if the software keyboard had risen to realistic height and is now actively
+     * retracting (e.g. user pressed Back mid-rise), so control should hand off immediately.
+     */
+    fun isKeyboardClosing(
+        liveImeAboveNavPx: Int,
+        peakLiveImePx: Int,
+        minKeyboardPx: Int,
+    ): Boolean {
+        return peakLiveImePx >= minKeyboardPx &&
+            liveImeAboveNavPx < (peakLiveImePx - HANDOFF_TOLERANCE_PX)
+    }
+
+    /**
+     * Resolves how long the cached hold should wait while `liveImeAboveNavPx` remains unchanged:
+     * - While still `0px`, waits [HARDWARE_KEYBOARD_TIMEOUT_MS] in case IME startup is slow or a
+     *   hardware keyboard suppresses the soft IME.
+     * - Once `liveImeAboveNavPx > 0`, every frame the keyboard rises cancels and restarts the wait;
+     *   only if it stops moving short of cached height for [SHORT_IME_SETTLE_DEBOUNCE_MS] does the
+     *   sheet smoothly glide down once to match the new shorter keyboard height.
+     */
+    fun resolveHoldTimeoutMs(liveImeAboveNavPx: Int): Long {
+        return if (liveImeAboveNavPx > 0) SHORT_IME_SETTLE_DEBOUNCE_MS else HARDWARE_KEYBOARD_TIMEOUT_MS
     }
 
     /**
      * Resolves the bottom padding (above navigation bars) for `SearchSheet`:
      * - During the initial mount window (`holdCachedWindowActive && !imeHasStabilized`), pins the
      *   sheet at `maxOf(liveImeAboveNavPx, cachedHeightPx)` so frame 0 renders at exact resting
-     *   keyboard height with zero upward jump.
-     * - Once the live IME catches up (or if the launch window expires with a hardware keyboard),
-     *   tracks `liveImeAboveNavPx` 1:1 so dismissing the IME smoothly lowers the sheet to `0`.
+     *   keyboard height with zero upward jump and zero mid-rise downward dip.
+     * - Once the live IME reaches resting height (or if the launch window expires when the IME
+     *   settled shorter or a hardware keyboard suppressed it), tracks `liveImeAboveNavPx` 1:1.
      */
     fun resolveEffectiveBottomPaddingPx(
         liveImeAboveNavPx: Int,
@@ -120,12 +154,13 @@ class LaunchKeyboardStore(context: Context) {
 }
 
 /**
- * Zero-jump IME bottom padding for `SearchSheet` (must be placed **after** `navigationBarsPadding()`).
+ * Zero-jump, zero-bounce IME bottom padding for `SearchSheet` (must be placed **after** `navigationBarsPadding()`).
  *
  * On frame 0, elevates the sheet directly to the last persisted IME height for the active screen
  * orientation while the software keyboard animates up behind it, then seamlessly hands off to
- * live `WindowInsets.ime` tracking once the keyboard reaches resting height (or glides down cleanly
- * if a hardware keyboard suppresses the soft IME).
+ * live `WindowInsets.ime` tracking once the keyboard reaches resting height — or settles smoothly
+ * with critically-damped motion if the keyboard settled at a different height or a hardware keyboard
+ * is active.
  */
 fun Modifier.zeroJumpImePadding(): Modifier = composed {
     val context = LocalContext.current
@@ -154,18 +189,38 @@ fun Modifier.zeroJumpImePadding(): Modifier = composed {
     var holdCachedWindowActive by remember(isLandscape, cachedHeightPx) {
         mutableStateOf(cachedHeightPx > 0)
     }
+    var smoothSettlingAfterHoldExpiry by remember(isLandscape, cachedHeightPx) {
+        mutableStateOf(false)
+    }
+    var peakLiveImePx by remember(isLandscape, cachedHeightPx) { mutableIntStateOf(0) }
 
-    // Hand off seamlessly once the live IME reaches resting height
-    if (!imeHasStabilized && LaunchKeyboardGeometry.hasLiveImeCaughtUp(liveImeAboveNavPx, cachedHeightPx, minKeyboardPx)) {
-        imeHasStabilized = true
-        holdCachedWindowActive = false
+    if (liveImeAboveNavPx > peakLiveImePx) {
+        peakLiveImePx = liveImeAboveNavPx
     }
 
-    // Fallback release if no soft IME opens (e.g., hardware keyboard connected)
-    LaunchedEffect(isLandscape, cachedHeightPx) {
-        if (cachedHeightPx > 0) {
-            delay(LaunchKeyboardGeometry.LAUNCH_HOLD_TIMEOUT_MS)
-            holdCachedWindowActive = false
+    // Hand off seamlessly once the live IME reaches resting cached height (0px dip, 0px bounce)
+    // or if the user actively dismisses the keyboard mid-rise.
+    if (
+        !imeHasStabilized && (
+            LaunchKeyboardGeometry.hasLiveImeCaughtUp(liveImeAboveNavPx, cachedHeightPx, minKeyboardPx) ||
+                LaunchKeyboardGeometry.isKeyboardClosing(liveImeAboveNavPx, peakLiveImePx, minKeyboardPx)
+            )
+    ) {
+        imeHasStabilized = true
+        holdCachedWindowActive = false
+        smoothSettlingAfterHoldExpiry = false
+    }
+
+    // Activity-aware fallback release: keyed on `liveImeAboveNavPx` so an actively rising keyboard
+    // NEVER times out mid-animation and dips downward. Releases only once movement stops short of
+    // cached height (140ms) or no soft keyboard appears at all (550ms hardware keyboard fallback).
+    LaunchedEffect(isLandscape, cachedHeightPx, liveImeAboveNavPx, imeHasStabilized, holdCachedWindowActive) {
+        if (!imeHasStabilized && holdCachedWindowActive && cachedHeightPx > 0) {
+            delay(LaunchKeyboardGeometry.resolveHoldTimeoutMs(liveImeAboveNavPx))
+            if (!imeHasStabilized && holdCachedWindowActive) {
+                holdCachedWindowActive = false
+                smoothSettlingAfterHoldExpiry = true
+            }
         }
     }
 
@@ -184,19 +239,22 @@ fun Modifier.zeroJumpImePadding(): Modifier = composed {
         holdCachedWindowActive = holdCachedWindowActive,
     )
 
-    val animatedFallbackBottomPx by animateIntAsState(
+    val animatedSettleBottomPx by animateIntAsState(
         targetValue = targetBottomPx,
         animationSpec = spring(
-            stiffness = Spring.StiffnessMediumLow,
+            stiffness = Spring.StiffnessMedium,
             dampingRatio = Spring.DampingRatioNoBouncy,
         ),
-        label = "FocalZeroJumpImeFallback",
+        label = "FocalZeroJumpImeSettle",
     )
 
-    // Use direct 1:1 tracking whenever live IME is moving or frame-0 cached height is held;
-    // only spring-settle smoothly if the cached hold window expires with liveIme == 0.
-    val expiredWithoutSoftIme = !imeHasStabilized && !holdCachedWindowActive && cachedHeightPx > 0 && liveImeAboveNavPx == 0
-    val resolvedBottomPx = (if (expiredWithoutSoftIme) animatedFallbackBottomPx else targetBottomPx)
+    // Once the post-hold smooth settle finishes, switch permanently to direct 1:1 live IME tracking
+    if (smoothSettlingAfterHoldExpiry && kotlin.math.abs(animatedSettleBottomPx - targetBottomPx) <= 2) {
+        smoothSettlingAfterHoldExpiry = false
+        imeHasStabilized = true
+    }
+
+    val resolvedBottomPx = (if (smoothSettlingAfterHoldExpiry) animatedSettleBottomPx else targetBottomPx)
         .coerceAtLeast(0)
 
     this.padding(bottom = with(density) { resolvedBottomPx.toDp() })

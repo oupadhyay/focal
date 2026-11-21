@@ -2,6 +2,7 @@ package app.focal.feature.browser
 
 import android.graphics.Bitmap
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -33,6 +34,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -59,7 +61,9 @@ import app.focal.design.SiteFavicon
 import app.focal.design.shaders.SmokedGlassBox
 import app.focal.engine.api.EngineTelemetryState
 import app.focal.engine.api.PageTranslationPhase
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 
 private enum class CenterPillAxisLock {
@@ -101,12 +105,14 @@ fun FocalBottomBar(
     val haptics = LocalHapticFeedback.current
     val density = LocalDensity.current
     val gestureLease = LocalGestureLeaseController.current
+    val scope = rememberCoroutineScope()
     val barTintState = rememberUpdatedState(colors.effectiveBarGlass)
 
     val latestOnTapSearch = rememberUpdatedState(onTapCenterSearch)
     val latestOnStepTab = rememberUpdatedState(onStepToAdjacentTab)
 
     var showTabQuickMenu by remember { mutableStateOf(false) }
+    var scrubSettleJob by remember { mutableStateOf<Job?>(null) }
 
     val slopPx = with(density) { 10.dp.toPx() }
     val tabCrossingStepPx = with(density) { 88.dp.toPx() }
@@ -212,6 +218,8 @@ fun FocalBottomBar(
                 .pointerInput(slopPx, tabCrossingStepPx, gestureLease) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
+                        scrubSettleJob?.cancel()
+                        scrubSettleJob = null
                         var totalDx = 0f
                         var totalDy = 0f
                         var axisLock = CenterPillAxisLock.UNDECIDED
@@ -273,7 +281,6 @@ fun FocalBottomBar(
                                 }
                             }
 
-                            scrubOffsetPxState.floatValue = 0f
                             if (
                                 !preempted &&
                                 axisLock == CenterPillAxisLock.UNDECIDED &&
@@ -284,7 +291,20 @@ fun FocalBottomBar(
                                 latestOnTapSearch.value()
                             }
                         } finally {
-                            scrubOffsetPxState.floatValue = 0f
+                            val settleStart = scrubOffsetPxState.floatValue
+                            if (abs(settleStart) > 0.5f) {
+                                scrubSettleJob?.cancel()
+                                scrubSettleJob = scope.launch {
+                                    Animatable(settleStart).animateTo(
+                                        targetValue = 0f,
+                                        animationSpec = FocalMotion.tabScrubSnapSpring(),
+                                    ) {
+                                        scrubOffsetPxState.floatValue = value
+                                    }
+                                }
+                            } else {
+                                scrubOffsetPxState.floatValue = 0f
+                            }
                             gestureLease?.release(activeLeaseToken)
                         }
                     }
@@ -414,12 +434,12 @@ fun SmartContextualPillsRow(
 
     AnimatedVisibility(
         visible = visible && (showReaderPill || showTranslatePill),
-        enter = fadeIn() + scaleIn(
-            initialScale = 0.88f,
+        enter = fadeIn(animationSpec = androidx.compose.animation.core.tween(150)) + scaleIn(
+            initialScale = 0.92f,
             animationSpec = FocalMotion.smartPillSpring(),
         ),
-        exit = fadeOut() + scaleOut(
-            targetScale = 0.88f,
+        exit = fadeOut(animationSpec = androidx.compose.animation.core.tween(115)) + scaleOut(
+            targetScale = 0.94f,
             animationSpec = FocalMotion.smartPillSpring(),
         ),
         modifier = modifier,

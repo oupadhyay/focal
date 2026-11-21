@@ -326,7 +326,17 @@ fun TabSwitcherSheet(
                         }
                     }
 
-                    AnimatedVisibility(visible = !isPrivateAperture && archiveExpanded && archivedTabs.isNotEmpty()) {
+                    AnimatedVisibility(
+                        visible = !isPrivateAperture && archiveExpanded && archivedTabs.isNotEmpty(),
+                        enter = fadeIn(animationSpec = tween(150)) +
+                            androidx.compose.animation.expandVertically(
+                                animationSpec = FocalMotion.menuSubtabSpring(),
+                            ),
+                        exit = fadeOut(animationSpec = tween(115)) +
+                            androidx.compose.animation.shrinkVertically(
+                                animationSpec = FocalMotion.menuSubtabSpring(),
+                            ),
+                    ) {
                         Box(modifier = Modifier.padding(horizontal = 18.dp)) {
                             FocalGroupedCard {
                                 Column(
@@ -498,7 +508,17 @@ fun TabSwitcherSheet(
                                             }
                                         },
                                         onDragCancel = {
+                                            val startOffset = swipeUpDragPx
                                             swipeUpDragPx = 0f
+                                            if (!latestIsDraggingTab.value && startOffset < 0f) {
+                                                scope.launch {
+                                                    settleAnim.snapTo(startOffset)
+                                                    settleAnim.animateTo(
+                                                        targetValue = 0f,
+                                                        animationSpec = FocalMotion.tabScrubSnapSpring(),
+                                                    )
+                                                }
+                                            }
                                         },
                                         onVerticalDrag = { change, dragAmount ->
                                             if (latestIsDraggingTab.value) return@detectVerticalDragGestures

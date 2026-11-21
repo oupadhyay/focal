@@ -1,7 +1,9 @@
 package app.focal.design
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.SpringSpec
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -13,13 +15,18 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.dp
 
 val LocalFocalColors = staticCompositionLocalOf { FocalPalettes.DarkSmokedOled }
 val LocalFocalTypography = staticCompositionLocalOf { DefaultFocalTypeScale }
@@ -38,35 +45,67 @@ fun Modifier.consumeClicks(): Modifier = this.pointerInput(Unit) {
 }
 
 /**
- * Locked 120Hz Spring Physics specifications from Focal's Master Motion Table.
+ * Critically-damped (`DampingRatioNoBouncy`) 120Hz optical motion physics.
+ *
+ * Every spring settles smoothly with zero overshoot or extra rebound bounce across
+ * search docking, floating sheets, switches, contextual pills, and tab gestures.
  */
 object FocalMotion {
-    /** Bottom Pill <-> Search Sheet Morph (`stiffness = 380f, dampingRatio = 0.82f`) */
-    fun <T> searchMorphSpring(): SpringSpec<T> = spring(stiffness = 380f, dampingRatio = 0.82f)
+    /** Bottom Pill <-> Search Sheet Morph (`stiffness = 520f`, critically damped) */
+    fun <T> searchMorphSpring(): SpringSpec<T> =
+        spring(stiffness = 520f, dampingRatio = Spring.DampingRatioNoBouncy)
 
-    /** Double-Space Site Pill (`im␣␣ -> [IMDb]`: `stiffness = 520f, dampingRatio = 0.76f`) */
-    fun <T> siteChipSpring(): SpringSpec<T> = spring(stiffness = 520f, dampingRatio = 0.76f)
+    /** Double-Space Site Pill (`im␣␣ -> [IMDb]`: `stiffness = 560f`, critically damped) */
+    fun <T> siteChipSpring(): SpringSpec<T> =
+        spring(stiffness = 560f, dampingRatio = Spring.DampingRatioNoBouncy)
 
-    /** Bottom-Bar Horizontal Tab Scrub release snap (`stiffness = 420f, dampingRatio = 0.86f`) */
-    fun <T> tabScrubSnapSpring(): SpringSpec<T> = spring(stiffness = 420f, dampingRatio = 0.86f)
+    /** Bottom-Bar Horizontal Tab Scrub & Swipe-Close cancel settle (`stiffness = 480f`, critically damped) */
+    fun <T> tabScrubSnapSpring(): SpringSpec<T> =
+        spring(stiffness = 480f, dampingRatio = Spring.DampingRatioNoBouncy)
 
-    /** Bottom-Bar Swipe-Up -> Spaces Sheet (`stiffness = 390f, dampingRatio = 0.84f`) */
-    fun <T> spacesSheetSpring(): SpringSpec<T> = spring(stiffness = 390f, dampingRatio = 0.84f)
+    /** Floating Sheet Enter/Exit & Dismiss-Cancel settle (`stiffness = 460f`, critically damped) */
+    fun <T> spacesSheetSpring(): SpringSpec<T> =
+        spring(stiffness = 460f, dampingRatio = Spring.DampingRatioNoBouncy)
 
-    /** Pinch-to-Summarize Snap / Cancel at `0.68f` (`stiffness = 340f, dampingRatio = 0.80f`) */
-    fun <T> pinchSnapSpring(): SpringSpec<T> = spring(stiffness = 340f, dampingRatio = 0.80f)
+    /** Pinch-to-Summarize Snap / Cancel at `0.68f` (`stiffness = 400f`, critically damped) */
+    fun <T> pinchSnapSpring(): SpringSpec<T> =
+        spring(stiffness = 400f, dampingRatio = Spring.DampingRatioNoBouncy)
 
-    /** Long-Press Link Peek Reveal (`stiffness = 460f, dampingRatio = 0.78f`) */
-    fun <T> linkPeekSpring(): SpringSpec<T> = spring(stiffness = 460f, dampingRatio = 0.78f)
+    /** Long-Press Link Peek Reveal & Dismiss-Cancel settle (`stiffness = 480f`, critically damped) */
+    fun <T> linkPeekSpring(): SpringSpec<T> =
+        spring(stiffness = 480f, dampingRatio = Spring.DampingRatioNoBouncy)
 
-    /** Smart Contextual Pill (`Aa Reader`) Appear (`stiffness = 480f, dampingRatio = 0.82f`) */
-    fun <T> smartPillSpring(): SpringSpec<T> = spring(stiffness = 480f, dampingRatio = 0.82f)
+    /** Smart Contextual Pills, Switches, Dock Hide & Overlay Dim (`stiffness = 520f`, critically damped) */
+    fun <T> smartPillSpring(): SpringSpec<T> =
+        spring(stiffness = 520f, dampingRatio = Spring.DampingRatioNoBouncy)
 
-    /** Shared-axis Menu <-> Site Overrides slide (`stiffness = 440f, dampingRatio = 0.85f`) */
-    fun <T> menuSubtabSpring(): SpringSpec<T> = spring(stiffness = 440f, dampingRatio = 0.85f)
+    /** Shared-axis Menu <-> Site Overrides transition (`stiffness = 500f`, critically damped) */
+    fun <T> menuSubtabSpring(): SpringSpec<T> =
+        spring(stiffness = 500f, dampingRatio = Spring.DampingRatioNoBouncy)
 
     val ZeroVisibilityIntOffset = IntOffset(1, 1)
     val ZeroVisibilityOffset = Offset(0.5f, 0.5f)
+}
+
+/**
+ * Critically-damped GPU-only vertical rise (`0` layout passes, `0` overshoot) applied directly
+ * to floating Smoked Glass sheet cards while their parent backdrop scrim crossfades edge-to-edge.
+ */
+@Composable
+fun Modifier.focalSheetEntrance(
+    riseDp: Dp = 18.dp,
+    key: Any = Unit,
+): Modifier {
+    val riseFraction = remember(key) { Animatable(1f) }
+    LaunchedEffect(key) {
+        riseFraction.animateTo(
+            targetValue = 0f,
+            animationSpec = FocalMotion.spacesSheetSpring(),
+        )
+    }
+    return this.graphicsLayer {
+        translationY = riseFraction.value * riseDp.toPx()
+    }
 }
 
 object FocalTheme {

@@ -20,7 +20,16 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -750,7 +759,49 @@ private fun FocalRootCoordinator(
                                 }
                             },
                     ) {
-                        when (val currentOverlay = overlaySheet) {
+                        AnimatedContent(
+                            targetState = overlaySheet,
+                            contentKey = { sheet ->
+                                when (sheet) {
+                                    is ActiveOverlaySheet.Reader -> "reader:${sheet.document.url}"
+                                    is ActiveOverlaySheet.LinkPeek -> "link:${sheet.rawUrl}"
+                                    else -> sheet::class.simpleName.orEmpty()
+                                }
+                            },
+                            transitionSpec = {
+                                val enteringFullScreen = targetState == ActiveOverlaySheet.TabSwitcher ||
+                                    targetState is ActiveOverlaySheet.Reader
+                                val exitingFullScreen = initialState == ActiveOverlaySheet.TabSwitcher ||
+                                    initialState is ActiveOverlaySheet.Reader
+                                val enter = when {
+                                    targetState == ActiveOverlaySheet.None -> fadeIn(animationSpec = tween(1))
+                                    enteringFullScreen && initialState == ActiveOverlaySheet.None -> {
+                                        fadeIn(
+                                            animationSpec = tween(165, easing = FastOutSlowInEasing),
+                                        ) + scaleIn(
+                                            initialScale = 0.98f,
+                                            animationSpec = FocalMotion.spacesSheetSpring(),
+                                        )
+                                    }
+                                    else -> fadeIn(animationSpec = tween(155, easing = FastOutSlowInEasing))
+                                }
+                                val exit = when {
+                                    initialState == ActiveOverlaySheet.None -> fadeOut(animationSpec = tween(1))
+                                    exitingFullScreen && targetState == ActiveOverlaySheet.None -> {
+                                        fadeOut(
+                                            animationSpec = tween(130, easing = FastOutSlowInEasing),
+                                        ) + scaleOut(
+                                            targetScale = 0.985f,
+                                            animationSpec = tween(130, easing = FastOutSlowInEasing),
+                                        )
+                                    }
+                                    else -> fadeOut(animationSpec = tween(120, easing = FastOutSlowInEasing))
+                                }
+                                (enter togetherWith exit).using(SizeTransform(clip = false))
+                            },
+                            label = "FocalActiveOverlaySheet",
+                        ) { currentOverlay ->
+                        when (currentOverlay) {
                             ActiveOverlaySheet.None -> Unit
 
                             ActiveOverlaySheet.Search -> {
@@ -1092,6 +1143,7 @@ private fun FocalRootCoordinator(
                                     },
                                 )
                             }
+                        }
                         }
 
                         // Explicit SAS & Relay Host Confirmation Sheet for focal-pair:// intents (P0-6)

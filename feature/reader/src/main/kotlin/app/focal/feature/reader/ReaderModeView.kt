@@ -2,6 +2,7 @@ package app.focal.feature.reader
 
 import android.graphics.Bitmap
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -65,6 +66,7 @@ import app.focal.design.ReaderPaperThemeColors
 import app.focal.design.SiteFavicon
 import app.focal.design.SwitzerBody
 import app.focal.design.consumeClicks
+import app.focal.design.focalSheetEntrance
 import app.focal.design.shaders.SmokedGlassBox
 import app.focal.engine.api.OriginOverrides
 import app.focal.engine.api.PageTranslationPhase
@@ -421,6 +423,7 @@ fun PageMenuAndSiteOverridesSheet(
                 .padding(horizontal = 10.dp)
                 .navigationBarsPadding()
                 .padding(bottom = 10.dp)
+                .focalSheetEntrance(riseDp = 18.dp)
                 .shadow(
                     elevation = 24.dp,
                     shape = FocalGeometry.SheetOuterShape,
@@ -535,6 +538,41 @@ fun PageMenuAndSiteOverridesSheet(
 
                 AnimatedContent(
                     targetState = activeTab,
+                    transitionSpec = {
+                        val toSettings = targetState == PageMenuTab.SITE_OVERRIDES
+                        val slideDistanceDivisor = 10
+                        (
+                            androidx.compose.animation.fadeIn(
+                                animationSpec = androidx.compose.animation.core.tween(
+                                    durationMillis = 160,
+                                    easing = androidx.compose.animation.core.FastOutSlowInEasing,
+                                ),
+                            ) + androidx.compose.animation.slideInHorizontally(
+                                animationSpec = app.focal.design.FocalMotion.menuSubtabSpring(),
+                                initialOffsetX = { fullWidth ->
+                                    if (toSettings) fullWidth / slideDistanceDivisor else -fullWidth / slideDistanceDivisor
+                                },
+                            )
+                            ) togetherWith (
+                            androidx.compose.animation.fadeOut(
+                                animationSpec = androidx.compose.animation.core.tween(
+                                    durationMillis = 110,
+                                    easing = androidx.compose.animation.core.FastOutSlowInEasing,
+                                ),
+                            ) + androidx.compose.animation.slideOutHorizontally(
+                                animationSpec = androidx.compose.animation.core.tween(
+                                    durationMillis = 130,
+                                    easing = androidx.compose.animation.core.FastOutSlowInEasing,
+                                ),
+                                targetOffsetX = { fullWidth ->
+                                    if (toSettings) -fullWidth / slideDistanceDivisor else fullWidth / slideDistanceDivisor
+                                },
+                            )
+                            ) using androidx.compose.animation.SizeTransform(
+                            clip = false,
+                            sizeAnimationSpec = { _, _ -> app.focal.design.FocalMotion.menuSubtabSpring() },
+                        )
+                    },
                     label = "FocalPageMenuSubtab",
                 ) { tab ->
                     if (tab == PageMenuTab.MENU) {

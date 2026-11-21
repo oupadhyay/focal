@@ -45,6 +45,7 @@ import app.focal.design.GestureLeaseOwner
 import app.focal.design.GestureLeaseToken
 import app.focal.design.LocalGestureLeaseController
 import app.focal.design.consumeClicks
+import app.focal.design.focalSheetEntrance
 import app.focal.design.shaders.SmokedGlassBox
 
 const val PINCH_SUMMARIZE_SNAP_THRESHOLD: Float = 0.68f
@@ -190,6 +191,7 @@ fun PinchSummarySheet(
                 .padding(horizontal = 10.dp)
                 .navigationBarsPadding()
                 .padding(bottom = 10.dp)
+                .focalSheetEntrance(riseDp = 18.dp)
                 .consumeClicks(),
         ) {
             Column(

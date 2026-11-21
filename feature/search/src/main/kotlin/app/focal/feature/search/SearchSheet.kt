@@ -73,6 +73,7 @@ import app.focal.design.FocalMotion
 import app.focal.design.FocalTheme
 import app.focal.design.SiteFavicon
 import app.focal.design.consumeClicks
+import app.focal.design.focalSheetEntrance
 import app.focal.design.shaders.SmokedGlassBox
 import app.focal.sync.SyncEvent
 import kotlinx.collections.immutable.ImmutableList
@@ -185,6 +186,7 @@ fun SearchSheet(
                 .navigationBarsPadding()
                 .zeroJumpImePadding()
                 .padding(bottom = 8.dp)
+                .focalSheetEntrance(riseDp = 12.dp)
                 .shadow(
                     elevation = 24.dp,
                     shape = FocalGeometry.SheetOuterShape,
@@ -263,8 +265,16 @@ fun SearchSheet(
                 // Zero-Network Inline Answer Row (Calculator · Units · World Clock)
                 AnimatedVisibility(
                     visible = inlineAnswer != null,
-                    enter = fadeIn() + expandVertically(expandFrom = Alignment.Bottom),
-                    exit = fadeOut() + shrinkVertically(shrinkTowards = Alignment.Bottom),
+                    enter = fadeIn(animationSpec = androidx.compose.animation.core.tween(150)) +
+                        expandVertically(
+                            expandFrom = Alignment.Bottom,
+                            animationSpec = FocalMotion.smartPillSpring(),
+                        ),
+                    exit = fadeOut(animationSpec = androidx.compose.animation.core.tween(110)) +
+                        shrinkVertically(
+                            shrinkTowards = Alignment.Bottom,
+                            animationSpec = FocalMotion.smartPillSpring(),
+                        ),
                 ) {
                     val answer = inlineAnswer
                     if (answer != null) {
@@ -404,15 +414,15 @@ fun SearchSheet(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(9.dp),
                 ) {
-                    // Spring-animated Site Search Chip (`[GitHub ×]`) — appears strictly when triggered
+                    // Critically-damped Site Search Chip (`[GitHub ×]`) — crisp reveal without overshoot
                     AnimatedVisibility(
                         visible = activeSite != null,
-                        enter = fadeIn() + scaleIn(
-                            initialScale = 0.78f,
+                        enter = fadeIn(animationSpec = androidx.compose.animation.core.tween(140)) + scaleIn(
+                            initialScale = 0.90f,
                             animationSpec = FocalMotion.siteChipSpring(),
                         ),
-                        exit = fadeOut() + scaleOut(
-                            targetScale = 0.82f,
+                        exit = fadeOut(animationSpec = androidx.compose.animation.core.tween(100)) + scaleOut(
+                            targetScale = 0.92f,
                             animationSpec = FocalMotion.siteChipSpring(),
                         ),
                     ) {

@@ -152,8 +152,8 @@ fun BrowserViewportScreen(
                     // Horizontal tab scrub parallax + Android 14–16 Predictive Back + subtle sheet recession
                     val scrubPx = scrubOffsetPxState.floatValue
                     val backProg = predictiveBackProgressState.floatValue
-                    val scrubActive = kotlin.math.abs(scrubPx) > 1f
-                    val scrubScale = if (scrubActive) 0.94f else 1f
+                    val scrubFraction = (kotlin.math.abs(scrubPx) / 88.dp.toPx()).coerceIn(0f, 1f)
+                    val scrubScale = 1f - (scrubFraction * 0.06f)
                     val backScale = 1f - (backProg * 0.06f)
                     val sheetRecedeScale = 1f - (overlayDimProgress * 0.025f)
 
