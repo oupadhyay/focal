@@ -397,11 +397,31 @@ class FocalComposeUiHarnessTest {
             y = workBounds.center.y - cardBounds.top,
         )
 
-        // Press and hold past 260ms threshold, then drag over the "Work" group pill
+        // 1. Press and hold past 260ms threshold at card center: ghost card must lift centered directly under finger
         frontCard.performTouchInput {
             down(center)
             advanceEventTime(340L)
-            moveTo(center + Offset(0f, -4f))
+            moveTo(center + Offset(0f, -2f))
+        }
+        composeRule.waitForIdle()
+        val pickupGhost = composeRule.onNodeWithTag("drag_ghost_card")
+        pickupGhost.assertIsDisplayed()
+        val pickupGhostBounds = pickupGhost.fetchSemanticsNode().boundsInRoot
+        val expectedPressRootX = cardBounds.center.x
+        val expectedPressRootY = cardBounds.center.y - 2f
+        assertTrue(
+            "Expected lifted ghost X (${pickupGhostBounds.center.x}) within 8px of finger ($expectedPressRootX)",
+            kotlin.math.abs(pickupGhostBounds.center.x - expectedPressRootX) <= 8f,
+        )
+        assertTrue(
+            "Expected lifted ghost Y (${pickupGhostBounds.center.y}) within 8px of finger ($expectedPressRootY)",
+            kotlin.math.abs(pickupGhostBounds.center.y - expectedPressRootY) <= 8f,
+        )
+        val pickupSnap = composeRule.captureSnapshotPng("03c_tab_switcher_long_press_pickup.png")
+        assertTrue(pickupSnap.length() > 1_000L)
+
+        // 2. Drag up onto the "Work" group pill
+        frontCard.performTouchInput {
             advanceEventTime(40L)
             moveTo(targetInCardLocal)
         }

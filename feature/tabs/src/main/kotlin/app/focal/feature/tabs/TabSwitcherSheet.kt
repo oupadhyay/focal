@@ -227,10 +227,14 @@ fun TabSwitcherSheet(
                         Color.Transparent,
                     ),
                 ),
-            )
-            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
-            .navigationBarsPadding(),
+            ),
     ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
+                .navigationBarsPadding(),
+        ) {
         Column(
             modifier = Modifier.fillMaxSize(),
             verticalArrangement = Arrangement.SpaceBetween,
@@ -908,13 +912,14 @@ fun TabSwitcherSheet(
                 }
             }
         }
+        }
 
-        // 5. Floating Miniature Drag Ghost Card tracking the user's finger 1:1 across groups
+        // 5. Floating Miniature Drag Ghost Card tracking the user's finger 1:1 in zero-inset root space
         val currentDrag = activeTabDrag
         val rootBounds = sheetRootCoords?.takeIf { it.isAttached }?.boundsInRoot()
         if (currentDrag != null && rootBounds != null) {
-            val ghostWidthDp = 136.dp
-            val ghostHeightDp = 180.dp
+            val ghostWidthDp = 128.dp
+            val ghostHeightDp = 168.dp
             val ghostWidthPx = with(density) { ghostWidthDp.toPx() }
             val ghostHeightPx = with(density) { ghostHeightDp.toPx() }
             val ghostScale by animateFloatAsState(
@@ -932,16 +937,20 @@ fun TabSwitcherSheet(
 
             val minXPx = with(density) { 12.dp.toPx() }
             val maxXPx = (rootBounds.width - ghostWidthPx - minXPx).coerceAtLeast(minXPx)
-            val minYPx = with(density) { 96.dp.toPx() }
+            val stripBottomLocalY = spaceDropTargets.values
+                .maxOfOrNull { it.bottom - rootBounds.top }
+                ?: with(density) { 88.dp.toPx() }
+            val minYPx = stripBottomLocalY + with(density) { 44.dp.toPx() }
             val maxYPx = (rootBounds.height - ghostHeightPx - with(density) { 24.dp.toPx() }).coerceAtLeast(minYPx)
             val offsetXPx = (localX - ghostWidthPx * 0.5f).coerceIn(minXPx, maxXPx).roundToInt()
-            val offsetYPx = (localY + with(density) { 26.dp.toPx() }).coerceIn(minYPx, maxYPx).roundToInt()
+            val offsetYPx = (localY - ghostHeightPx * 0.5f).coerceIn(minYPx, maxYPx).roundToInt()
 
             Box(
                 modifier = Modifier
                     .zIndex(300f)
                     .offset { IntOffset(offsetXPx, offsetYPx) }
                     .size(width = ghostWidthDp, height = ghostHeightDp)
+                    .testTag("drag_ghost_card")
                     .graphicsLayer {
                         scaleX = ghostScale
                         scaleY = ghostScale
