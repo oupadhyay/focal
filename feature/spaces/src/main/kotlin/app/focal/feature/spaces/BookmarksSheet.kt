@@ -1,24 +1,28 @@
 package app.focal.feature.spaces
 
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,7 +33,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.FloatState
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -54,7 +57,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.focal.database.BookmarkEntity
 import app.focal.database.SpaceEntity
-import app.focal.design.FocalFaviconTile
 import app.focal.design.FocalGeometry
 import app.focal.design.FocalGlyphs
 import app.focal.design.FocalGroupedCard
@@ -74,29 +76,23 @@ import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.toImmutableList
 
 @Immutable
-data class SpacesSheetUiState(
+data class BookmarksSheetUiState(
     val spaces: ImmutableList<SpaceEntity>,
     val activeSpaceId: String,
-    val pinnedSquircles: ImmutableList<BookmarkEntity>,
-    val foldersAndBookmarks: ImmutableList<BookmarkEntity>,
+    val allBookmarks: ImmutableList<BookmarkEntity>,
     val syncState: SyncSessionUiState,
 )
 
 /**
- * Screen 05 & Screen 09 · Concentric Spaces & Bookmarks Smoked Glass Sheet with Ambient GPU Tinting.
- *
- * - Switching between `Personal` (`#F4725E`), `Work` (`#94A3B8`), and `Reading` (`#4ADE80`)
- *   cross-fades `spaceAmbient` in `260ms` purely in the draw/shader phase while keeping all
- *   foreground controls 100% achromatic.
- * - Uses borderless tonal `FocalFaviconTile`s and grouped `FocalGroupedCard` lists with `0.5.dp`
- *   inset dividers.
+ * Dedicated Mobile Bookmarks Sheet — clean, zero-pinned-tabs list of saved bookmarks & folders
+ * filterable by group (`All`, `Personal`, `Work`, `Reading`), with instant 1-tap opening,
+ * Edit-mode removal, folder creation, and Desktop E2EE Sync access.
  */
 @Composable
-fun SpacesSheet(
-    uiState: SpacesSheetUiState,
-    externalDragOffsetPx: FloatState? = null,
-    onSelectSpace: (String) -> Unit,
+fun BookmarksSheet(
+    uiState: BookmarksSheetUiState,
     onOpenUrl: (String) -> Unit,
+    onDeleteBookmark: (String) -> Unit = {},
     onCreateFolder: (spaceId: String, folderName: String) -> Unit,
     onStartE2eePairing: () -> Unit,
     onDismiss: () -> Unit,
@@ -106,33 +102,42 @@ fun SpacesSheet(
     val typography = FocalTheme.typography
     val clipboard = LocalClipboardManager.current
     val gestureLease = LocalGestureLeaseController.current
-
-    val activeSpace = uiState.spaces.firstOrNull { it.id == uiState.activeSpaceId }
-        ?: uiState.spaces.firstOrNull()
-    val ambientSpec = SpaceAmbientPalette.fromKeyOrHex(
-        keyOrId = activeSpace?.id ?: "personal",
-        fallbackHex = activeSpace?.ambientHex,
-    )
-
-    val animatedSpaceAmbient = animateColorAsState(
-        targetValue = ambientSpec.ambientFor(colors.isDarkGlass),
-        animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
-        label = "FocalSpaceAmbientUniform",
-    )
     val sheetBaseTint = rememberUpdatedState(colors.effectiveSheetGlass)
 
     var internalDismissDragPx by remember { mutableFloatStateOf(0f) }
+    var selectedFilterSpaceId by remember { mutableStateOf<String?>(null) } // null == All
+    var isEditing by remember { mutableStateOf(false) }
     var showPairingModal by remember { mutableStateOf(false) }
     var showCreateFolderDialog by remember { mutableStateOf(false) }
     var customFolderName by remember { mutableStateOf("") }
     var expandedFolderId by remember { mutableStateOf<String?>(null) }
 
-    val pinsRow = remember(uiState.pinnedSquircles) {
-        uiState.pinnedSquircles.take(4).toImmutableList()
+    val filteredEntries = remember(uiState.allBookmarks, selectedFilterSpaceId) {
+        if (selectedFilterSpaceId == null) {
+            uiState.allBookmarks
+        } else {
+            uiState.allBookmarks.filter { it.spaceId == selectedFilterSpaceId }
+        }
     }
-    val rootItems = remember(uiState.foldersAndBookmarks) {
-        uiState.foldersAndBookmarks.filter { it.parentFolderId == null }.toImmutableList()
+
+    val bookmarkLinks = remember(filteredEntries) {
+        val seenUrls = LinkedHashSet<String>()
+        filteredEntries
+            .filter { !it.isFolder && !it.url.isNullOrBlank() && it.parentFolderId == null }
+            .sortedByDescending { it.updatedAtEpochMs }
+            .filter { entry ->
+                val key = entry.url.orEmpty().trim().trimEnd('/').lowercase()
+                seenUrls.add(key)
+            }
+            .toImmutableList()
     }
+
+    val folders = remember(filteredEntries) {
+        filteredEntries
+            .filter { it.isFolder && it.parentFolderId == null }
+            .toImmutableList()
+    }
+
     val desktopTabs = remember(uiState.syncState.desktopPresenceTabs) {
         uiState.syncState.desktopPresenceTabs.toImmutableList()
     }
@@ -141,20 +146,19 @@ fun SpacesSheet(
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black.copy(alpha = 0.52f))
-            .clickable(onClick = onDismiss),
+            .clickable(onClick = onDismiss)
+            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top)),
         contentAlignment = Alignment.BottomCenter,
     ) {
         SmokedGlassBox(
             shape = FocalGeometry.SheetOuterShape,
             glassTintState = sheetBaseTint,
             borderSpecular = colors.borderSpecular,
-            spaceAmbientState = animatedSpaceAmbient,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 10.dp)
+                .padding(horizontal = 10.dp, vertical = 10.dp)
                 .navigationBarsPadding()
                 .imePadding()
-                .padding(bottom = 10.dp)
                 .shadow(
                     elevation = 24.dp,
                     shape = FocalGeometry.SheetOuterShape,
@@ -162,8 +166,7 @@ fun SpacesSheet(
                     spotColor = Color.Black.copy(alpha = 0.55f),
                 )
                 .graphicsLayer {
-                    val ext = externalDragOffsetPx?.floatValue ?: 0f
-                    translationY = (internalDismissDragPx + ext).coerceAtLeast(0f)
+                    translationY = internalDismissDragPx.coerceAtLeast(0f)
                 }
                 .pointerInput(gestureLease) {
                     var dragLeaseToken: GestureLeaseToken? = null
@@ -193,8 +196,10 @@ fun SpacesSheet(
                                     internalDismissDragPx = 0f
                                     return@detectVerticalDragGestures
                                 }
-                                change.consume()
-                                internalDismissDragPx = (internalDismissDragPx + dragAmount).coerceAtLeast(0f)
+                                if (dragAmount > 0f || internalDismissDragPx > 0f) {
+                                    change.consume()
+                                    internalDismissDragPx = (internalDismissDragPx + dragAmount).coerceAtLeast(0f)
+                                }
                             },
                         )
                     } finally {
@@ -207,50 +212,11 @@ fun SpacesSheet(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 14.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 FocalSheetGrabber(
                     modifier = Modifier.align(Alignment.CenterHorizontally),
                 )
-
-                // Capsule Space Switcher (Personal · Work · Reading)
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(CircleShape)
-                        .background(colors.surfacePillSubtle)
-                        .padding(3.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    uiState.spaces.forEach { space ->
-                        val selected = space.id == uiState.activeSpaceId
-                        val dotColor = SpaceAmbientPalette.fromKeyOrHex(space.id, space.ambientHex).dotColor
-                        Row(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(CircleShape)
-                                .background(if (selected) colors.surfacePillActive else Color.Transparent)
-                                .clickable { onSelectSpace(space.id) }
-                                .padding(vertical = 8.dp, horizontal = 8.dp),
-                            horizontalArrangement = Arrangement.Center,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(7.dp)
-                                    .clip(CircleShape)
-                                    .background(dotColor),
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                text = space.name,
-                                style = typography.controlPillLabel,
-                                color = if (selected) colors.inkOnPillActive else colors.inkSecondary,
-                                maxLines = 1,
-                            )
-                        }
-                    }
-                }
 
                 if (showPairingModal) {
                     E2eePairingCard(
@@ -259,67 +225,256 @@ fun SpacesSheet(
                         onCopyPairingUri = { uri ->
                             clipboard.setText(AnnotatedString(uri))
                         },
-                        onBackToSpace = { showPairingModal = false },
+                        onBackToBookmarks = { showPairingModal = false },
                     )
                 } else {
+                    // Header Row (`Bookmarks` · `Edit`)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Icon(
+                                imageVector = FocalGlyphs.Bookmark,
+                                contentDescription = null,
+                                tint = colors.inkPrimary,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Text(
+                                text = "Bookmarks",
+                                style = typography.sheetTitle,
+                                color = colors.inkPrimary,
+                            )
+                        }
+
+                        if (bookmarkLinks.isNotEmpty() || folders.isNotEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (isEditing) colors.surfacePillActive else colors.surfacePillSubtle,
+                                    )
+                                    .clickable { isEditing = !isEditing }
+                                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                            ) {
+                                Text(
+                                    text = if (isEditing) "Done" else "Edit",
+                                    style = typography.controlPillLabel,
+                                    color = if (isEditing) colors.inkOnPillActive else colors.inkSecondary,
+                                )
+                            }
+                        }
+                    }
+
+                    // Space Filter Pills (`All` · `Personal` · `Work` · `Reading`)
+                    if (uiState.spaces.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            val allSelected = selectedFilterSpaceId == null
+                            Box(
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (allSelected) colors.surfacePillActive else colors.surfacePillSubtle,
+                                    )
+                                    .clickable { selectedFilterSpaceId = null }
+                                    .padding(horizontal = 13.dp, vertical = 7.dp),
+                            ) {
+                                Text(
+                                    text = "All",
+                                    style = typography.controlPillLabel,
+                                    color = if (allSelected) colors.inkOnPillActive else colors.inkSecondary,
+                                )
+                            }
+
+                            uiState.spaces.forEach { space ->
+                                val selected = selectedFilterSpaceId == space.id
+                                val dotColor = SpaceAmbientPalette.fromKeyOrHex(space.id, space.ambientHex).dotColor
+                                Row(
+                                    modifier = Modifier
+                                        .clip(CircleShape)
+                                        .background(
+                                            if (selected) colors.surfacePillActive else colors.surfacePillSubtle,
+                                        )
+                                        .clickable { selectedFilterSpaceId = space.id }
+                                        .padding(horizontal = 12.dp, vertical = 7.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .clip(CircleShape)
+                                            .background(dotColor),
+                                    )
+                                    Text(
+                                        text = space.name,
+                                        style = typography.controlPillLabel,
+                                        color = if (selected) colors.inkOnPillActive else colors.inkSecondary,
+                                        maxLines = 1,
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Scrollable Bookmarks, Folders, and Desktop Sync Content
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .heightIn(max = 460.dp)
                             .verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        // 4-Column Space-Scoped Pinned Squircles
-                        if (pinsRow.isNotEmpty()) {
-                            Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                                Text(
-                                    text = "Pinned",
-                                    style = typography.captionMetadata,
-                                    color = colors.inkSecondary,
-                                    modifier = Modifier.padding(horizontal = 4.dp),
-                                )
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        if (bookmarkLinks.isEmpty() && folders.isEmpty()) {
+                            FocalGroupedCard {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 18.dp, vertical = 26.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(6.dp),
                                 ) {
-                                    pinsRow.forEach { pin ->
-                                        FocalFaviconTile(
-                                            title = pin.title,
-                                            url = pin.url.orEmpty(),
-                                            onClick = { pin.url?.let(onOpenUrl) },
-                                            modifier = Modifier.weight(1f),
+                                    Icon(
+                                        imageVector = FocalGlyphs.Bookmark,
+                                        contentDescription = null,
+                                        tint = colors.inkFaint,
+                                        modifier = Modifier.size(22.dp),
+                                    )
+                                    Text(
+                                        text = "No Bookmarks Yet",
+                                        style = typography.cardTitle,
+                                        color = colors.inkPrimary,
+                                    )
+                                    Text(
+                                        text = "Tap ··· → Bookmark on any page to save it here",
+                                        style = typography.captionMetadata,
+                                        color = colors.inkSecondary,
+                                    )
+                                }
+                            }
+                        }
+
+                        // Saved Bookmarks Card
+                        if (bookmarkLinks.isNotEmpty()) {
+                            FocalGroupedCard {
+                                bookmarkLinks.forEachIndexed { index, item ->
+                                    if (index > 0) {
+                                        FocalHairlineDivider(insetStart = 48.dp)
+                                    }
+                                    val url = item.url.orEmpty()
+                                    val displayHost = remember(url) {
+                                        url.removePrefix("https://")
+                                            .removePrefix("http://")
+                                            .removePrefix("www.")
+                                            .trimEnd('/')
+                                    }
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                if (!isEditing && url.isNotBlank()) {
+                                                    onOpenUrl(url)
+                                                }
+                                            }
+                                            .padding(horizontal = 14.dp, vertical = 11.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        SiteFavicon(
+                                            urlOrDomain = url,
+                                            size = 22.dp,
+                                            cornerRadius = 6.dp,
                                         )
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = item.title.ifBlank { displayHost },
+                                                style = typography.bodyCompact.copy(
+                                                    fontWeight = FontWeight.Medium,
+                                                    fontSize = 14.5.sp,
+                                                ),
+                                                color = colors.inkPrimary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                            if (displayHost.isNotBlank()) {
+                                                Text(
+                                                    text = displayHost,
+                                                    style = typography.captionMetadata,
+                                                    color = colors.inkSecondary,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                )
+                                            }
+                                        }
+                                        if (isEditing) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(28.dp)
+                                                    .clip(CircleShape)
+                                                    .background(colors.surfacePillSubtle)
+                                                    .clickable { onDeleteBookmark(item.id) },
+                                                contentAlignment = Alignment.Center,
+                                            ) {
+                                                Icon(
+                                                    imageVector = FocalGlyphs.Close,
+                                                    contentDescription = "Remove ${item.title}",
+                                                    tint = colors.inkPrimary,
+                                                    modifier = Modifier.size(13.dp),
+                                                )
+                                            }
+                                        } else {
+                                            Icon(
+                                                imageVector = FocalGlyphs.ChevronRight,
+                                                contentDescription = null,
+                                                tint = colors.inkFaint,
+                                                modifier = Modifier.size(15.dp),
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
 
-                        // Grouped Saved Folders & Bookmarks Card
-                        if (rootItems.isNotEmpty()) {
-                            Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                        // Saved Folders Card
+                        if (folders.isNotEmpty()) {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                 Text(
-                                    text = "Bookmarks",
+                                    text = "Folders",
                                     style = typography.captionMetadata,
                                     color = colors.inkSecondary,
                                     modifier = Modifier.padding(horizontal = 4.dp),
                                 )
                                 FocalGroupedCard {
-                                    rootItems.forEachIndexed { index, item ->
+                                    folders.forEachIndexed { index, folder ->
                                         if (index > 0) {
                                             FocalHairlineDivider(insetStart = 48.dp)
+                                        }
+                                        val children = remember(uiState.allBookmarks, folder.id) {
+                                            uiState.allBookmarks.filter { it.parentFolderId == folder.id }
                                         }
                                         Column(
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .clickable {
-                                                    if (item.isFolder) {
+                                                    if (!isEditing) {
                                                         expandedFolderId =
-                                                            if (expandedFolderId == item.id) null else item.id
-                                                    } else {
-                                                        item.url?.let(onOpenUrl)
+                                                            if (expandedFolderId == folder.id) null else folder.id
                                                     }
                                                 }
                                                 .padding(horizontal = 14.dp, vertical = 11.dp),
-                                            verticalArrangement = Arrangement.spacedBy(3.dp),
+                                            verticalArrangement = Arrangement.spacedBy(4.dp),
                                         ) {
                                             Row(
                                                 modifier = Modifier.fillMaxWidth(),
@@ -331,28 +486,20 @@ fun SpacesSheet(
                                                     verticalAlignment = Alignment.CenterVertically,
                                                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                                                 ) {
-                                                    if (item.isFolder) {
-                                                        Box(
-                                                            modifier = Modifier.size(20.dp),
-                                                            contentAlignment = Alignment.Center,
-                                                        ) {
-                                                            Icon(
-                                                                imageVector = FocalGlyphs.Folder,
-                                                                contentDescription = null,
-                                                                tint = colors.inkSecondary,
-                                                                modifier = Modifier.size(18.dp),
-                                                            )
-                                                        }
-                                                    } else {
-                                                        SiteFavicon(
-                                                            urlOrDomain = item.url.orEmpty(),
-                                                            size = 20.dp,
-                                                            cornerRadius = 5.dp,
+                                                    Box(
+                                                        modifier = Modifier.size(22.dp),
+                                                        contentAlignment = Alignment.Center,
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = FocalGlyphs.Folder,
+                                                            contentDescription = null,
+                                                            tint = colors.inkSecondary,
+                                                            modifier = Modifier.size(18.dp),
                                                         )
                                                     }
                                                     Column(modifier = Modifier.weight(1f)) {
                                                         Text(
-                                                            text = item.title,
+                                                            text = folder.title,
                                                             style = typography.bodyCompact.copy(
                                                                 fontWeight = FontWeight.Medium,
                                                                 fontSize = 14.5.sp,
@@ -361,8 +508,12 @@ fun SpacesSheet(
                                                             maxLines = 1,
                                                             overflow = TextOverflow.Ellipsis,
                                                         )
-                                                        val subtitle = item.subtitle ?: item.url
-                                                        if (!subtitle.isNullOrBlank()) {
+                                                        val subtitle = if (children.isNotEmpty()) {
+                                                            "${children.size} saved"
+                                                        } else {
+                                                            folder.subtitle.orEmpty()
+                                                        }
+                                                        if (subtitle.isNotBlank()) {
                                                             Text(
                                                                 text = subtitle,
                                                                 style = typography.captionMetadata,
@@ -374,48 +525,60 @@ fun SpacesSheet(
                                                     }
                                                 }
                                                 Spacer(Modifier.width(8.dp))
-                                                Icon(
-                                                    imageVector = if (item.isFolder && expandedFolderId == item.id) {
-                                                        FocalGlyphs.ChevronDown
-                                                    } else {
-                                                        FocalGlyphs.ChevronRight
-                                                    },
-                                                    contentDescription = null,
-                                                    tint = colors.inkFaint,
-                                                    modifier = Modifier.size(15.dp),
-                                                )
+                                                if (isEditing) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(28.dp)
+                                                            .clip(CircleShape)
+                                                            .background(colors.surfacePillSubtle)
+                                                            .clickable { onDeleteBookmark(folder.id) },
+                                                        contentAlignment = Alignment.Center,
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = FocalGlyphs.Close,
+                                                            contentDescription = "Remove ${folder.title}",
+                                                            tint = colors.inkPrimary,
+                                                            modifier = Modifier.size(13.dp),
+                                                        )
+                                                    }
+                                                } else {
+                                                    Icon(
+                                                        imageVector = if (expandedFolderId == folder.id) {
+                                                            FocalGlyphs.ChevronDown
+                                                        } else {
+                                                            FocalGlyphs.ChevronRight
+                                                        },
+                                                        contentDescription = null,
+                                                        tint = colors.inkFaint,
+                                                        modifier = Modifier.size(15.dp),
+                                                    )
+                                                }
                                             }
 
-                                            // Nested Folder Children
-                                            if (item.isFolder && expandedFolderId == item.id) {
-                                                val children = uiState.foldersAndBookmarks.filter {
-                                                    it.parentFolderId == item.id
-                                                }
-                                                if (children.isNotEmpty()) {
-                                                    Spacer(Modifier.height(6.dp))
-                                                    children.forEach { child ->
-                                                        Row(
-                                                            modifier = Modifier
-                                                                .fillMaxWidth()
-                                                                .clip(RoundedCornerShape(10.dp))
-                                                                .clickable { child.url?.let(onOpenUrl) }
-                                                                .padding(start = 32.dp, top = 6.dp, bottom = 6.dp, end = 4.dp),
-                                                            verticalAlignment = Alignment.CenterVertically,
-                                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                                        ) {
-                                                            SiteFavicon(
-                                                                urlOrDomain = child.url.orEmpty(),
-                                                                size = 15.dp,
-                                                                cornerRadius = 4.dp,
-                                                            )
-                                                            Text(
-                                                                text = child.title,
-                                                                style = typography.bodyCompact,
-                                                                color = colors.inkPrimary,
-                                                                maxLines = 1,
-                                                                overflow = TextOverflow.Ellipsis,
-                                                            )
-                                                        }
+                                            if (expandedFolderId == folder.id && children.isNotEmpty()) {
+                                                Spacer(Modifier.height(4.dp))
+                                                children.forEach { child ->
+                                                    Row(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .clip(RoundedCornerShape(10.dp))
+                                                            .clickable { child.url?.let(onOpenUrl) }
+                                                            .padding(start = 34.dp, top = 6.dp, bottom = 6.dp, end = 4.dp),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                    ) {
+                                                        SiteFavicon(
+                                                            urlOrDomain = child.url.orEmpty(),
+                                                            size = 16.dp,
+                                                            cornerRadius = 4.dp,
+                                                        )
+                                                        Text(
+                                                            text = child.title,
+                                                            style = typography.bodyCompact,
+                                                            color = colors.inkPrimary,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis,
+                                                        )
                                                     }
                                                 }
                                             }
@@ -425,12 +588,12 @@ fun SpacesSheet(
                             }
                         }
 
-                        // Custom Folder Name Prompt
+                        // Custom Folder Creation Card
                         if (showCreateFolderDialog) {
                             val submitFolder = {
-                                val spaceId = activeSpace?.id ?: "personal"
+                                val targetSpace = selectedFilterSpaceId ?: uiState.activeSpaceId
                                 val cleanName = customFolderName.trim().ifBlank { "New Folder" }
-                                onCreateFolder(spaceId, cleanName)
+                                onCreateFolder(targetSpace, cleanName)
                                 customFolderName = ""
                                 showCreateFolderDialog = false
                             }
@@ -509,7 +672,7 @@ fun SpacesSheet(
                             }
                         }
 
-                        // Live on Desktop (E2EE) Presence Card
+                        // Quiet Desktop Sync (E2EE) Presence Card
                         LiveDesktopPresenceCard(
                             peerName = uiState.syncState.peerDeviceName,
                             desktopTabs = desktopTabs,
@@ -524,7 +687,7 @@ fun SpacesSheet(
                         )
                     }
 
-                    // Bottom Footer Bar
+                    // Bottom Footer Bar (`Done` · `+ New Folder`)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -549,9 +712,7 @@ fun SpacesSheet(
                             modifier = Modifier
                                 .clip(CircleShape)
                                 .background(colors.surfacePillActive)
-                                .clickable {
-                                    showCreateFolderDialog = true
-                                }
+                                .clickable { showCreateFolderDialog = true }
                                 .padding(horizontal = 14.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(5.dp),
@@ -677,15 +838,12 @@ private fun LiveDesktopPresenceCard(
     }
 }
 
-/**
- * Screen 09 · Zero-Account E2EE Pairing View (`focal-pair://v1?secret=...` + 64-word SAS).
- */
 @Composable
 private fun E2eePairingCard(
     syncState: SyncSessionUiState,
     onGenerateNewSession: () -> Unit,
     onCopyPairingUri: (String) -> Unit,
-    onBackToSpace: () -> Unit,
+    onBackToBookmarks: () -> Unit,
 ) {
     val colors = FocalTheme.colors
     val typography = FocalTheme.typography
@@ -709,7 +867,7 @@ private fun E2eePairingCard(
                 modifier = Modifier
                     .clip(CircleShape)
                     .background(colors.surfacePillSubtle)
-                    .clickable(onClick = onBackToSpace)
+                    .clickable(onClick = onBackToBookmarks)
                     .padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(5.dp),
@@ -800,9 +958,7 @@ private fun E2eePairingCard(
                     .weight(1f)
                     .clip(CircleShape)
                     .background(colors.surfacePillActive)
-                    .clickable {
-                        syncState.pairingUri?.let(onCopyPairingUri)
-                    }
+                    .clickable { syncState.pairingUri?.let(onCopyPairingUri) }
                     .padding(vertical = 10.dp),
                 contentAlignment = Alignment.Center,
             ) {

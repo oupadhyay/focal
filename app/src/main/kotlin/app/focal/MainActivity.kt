@@ -97,11 +97,12 @@ import app.focal.feature.reader.ReaderSitePreferencesResolver
 import app.focal.feature.search.DefaultSearchSquirclePins
 import app.focal.feature.search.QuickSquirclePin
 import app.focal.feature.search.SearchSheet
-import app.focal.feature.spaces.SpacesSheet
-import app.focal.feature.spaces.SpacesSheetUiState
+import app.focal.feature.spaces.BookmarksSheet
+import app.focal.feature.spaces.BookmarksSheetUiState
 import app.focal.feature.tabs.TabSwitcherSheet
 import app.focal.sync.SyncRelaySessionManager
 import kotlinx.collections.immutable.toImmutableList
+import kotlinx.collections.immutable.toImmutableMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -209,6 +210,7 @@ private fun FocalRootCoordinator(
 
     // Configuration-surviving session state from BrowserSessionViewModel (P0-3)
     val liveSessions by sessionVm.liveSessions.collectAsState()
+    val tabPreviews by sessionVm.tabPreviews.collectAsState()
     val privateTabs by sessionVm.privateTabs.collectAsState()
     val selectedTabId by sessionVm.selectedTabId.collectAsState()
     val isPrivateAperture by sessionVm.isPrivateAperture.collectAsState()
@@ -219,16 +221,16 @@ private fun FocalRootCoordinator(
 
     // Room reactive streams wrapped in remember { toImmutableList() } (P2-1)
     val spaces by database.spaceDao().observeSpaces().collectAsState(initial = emptyList())
-    val spacePins by remember(activeSpaceId) {
-        database.bookmarkDao().observePinnedBySpace(activeSpaceId)
-    }.collectAsState(initial = emptyList())
-    val spaceItems by remember(activeSpaceId) {
-        database.bookmarkDao().observeItemsBySpace(activeSpaceId)
+    val allBookmarks by remember {
+        database.bookmarkDao().observeAllBookmarks()
     }.collectAsState(initial = emptyList())
     val quickSearchBookmarks by remember {
         database.bookmarkDao().observeQuickSearchPins(limit = 5)
     }.collectAsState(initial = emptyList())
 
+    val allActiveTabs by remember {
+        database.tabMetadataDao().observeAllActiveTabs()
+    }.collectAsState(initial = emptyList())
     val activeTabsInSpace by remember(activeSpaceId) {
         database.tabMetadataDao().observeActiveTabsForSpace(activeSpaceId)
     }.collectAsState(initial = emptyList())
@@ -238,10 +240,13 @@ private fun FocalRootCoordinator(
     }.collectAsState(initial = emptyList())
 
     val immutableSpaces = remember(spaces) { spaces.toImmutableList() }
-    val immutableSpacePins = remember(spacePins) { spacePins.toImmutableList() }
-    val immutableSpaceItems = remember(spaceItems) { spaceItems.toImmutableList() }
+    val immutableAllBookmarks = remember(allBookmarks) { allBookmarks.toImmutableList() }
     val immutableActiveTabs = remember(activeTabsInSpace) { activeTabsInSpace.toImmutableList() }
     val immutableArchivedTabs = remember(archivedTabs) { archivedTabs.toImmutableList() }
+    val immutableTabPreviews = remember(tabPreviews) { tabPreviews.toImmutableMap() }
+    val tabCountBySpace = remember(allActiveTabs) {
+        allActiveTabs.groupingBy { it.spaceId }.eachCount().toImmutableMap()
+    }
 
     val syncUiState by syncManager.state.collectAsState()
     val mediaBridgeState by FocalMediaBridge.activeMedia.collectAsState()
@@ -373,10 +378,6 @@ private fun FocalRootCoordinator(
             }
         }
     }
-
-    // 1:1 finger-coupled vertical swipe-up offset for SpacesSheet (P2-6)
-    val spacesSheetRevealDistancePx = with(density) { 420.dp.toPx() }
-    val spacesDragOffsetPxState = remember { mutableFloatStateOf(0f) }
 
     var isSummarizing by remember { mutableStateOf(false) }
     var activeGroundedSummary by remember { mutableStateOf<GroundedPageSummary?>(null) }
@@ -510,6 +511,15 @@ private fun FocalRootCoordinator(
                 is EngineSessionEvent.PageLoaded -> {
                     // Re-sample after DOM/CSS load and late SPA hydration (e.g., Next.js/Tailwind themes)
                     scheduleSettledGlassSamples(longArrayOf(80L, 420L, 1_000L))
+                    val loadedTabId = sessionVm.selectedTabId.value
+                    if (loadedTabId != null) {
+                        scope.launch {
+                            delay(280L)
+                            if (sessionVm.selectedTabId.value == loadedTabId && latestOverlaySheet == ActiveOverlaySheet.None) {
+                                sessionVm.capturePreviewForTab(loadedTabId)
+                            }
+                        }
+                    }
                 }
                 is EngineSessionEvent.DownloadRequested -> {
                     enqueueSafeBrowserDownload(
@@ -522,7 +532,7 @@ private fun FocalRootCoordinator(
         }
     }
 
-    // Lease-based exclusivity across tab scrub, Spaces swipe-up, Pinch-to-Summarize, sheet drags, and Predictive Back
+    // Lease-based exclusivity across tab scrub, Pinch-to-Summarize, sheet drags, and Predictive Back
     val gestureLeaseController = remember { GestureLeaseController() }
 
     // Android 14–16 Predictive Back Handler: shrinks & translates active sheet or web page 1:1 with finger (P1-5)
@@ -539,6 +549,9 @@ private fun FocalRootCoordinator(
             predictiveBackProgressState.floatValue = 0f
             when {
                 pendingPairingRequest != null -> sessionVm.dismissPendingPairing()
+                overlaySheet == ActiveOverlaySheet.TabSwitcher -> {
+                    sessionVm.dismissTabSwitcher(immutableActiveTabs)
+                }
                 overlaySheet != ActiveOverlaySheet.None -> {
                     if (overlaySheet == ActiveOverlaySheet.PinchSummary) {
                         pinchProgressState.floatValue = 0f
@@ -548,7 +561,6 @@ private fun FocalRootCoordinator(
                             dismissedAutoReaderUrls = dismissedAutoReaderUrls + url
                         }
                     }
-                    spacesDragOffsetPxState.floatValue = 0f
                     sessionVm.setOverlaySheet(ActiveOverlaySheet.None)
                 }
                 else -> activeSession?.goBack()
@@ -605,13 +617,11 @@ private fun FocalRootCoordinator(
                 pinchCenterYState = pinchCenterYState,
                 predictiveBackProgressState = predictiveBackProgressState,
                 bottomBarScrollHideFraction = bottomBarScrollHideState,
-                spacesDragOffsetPxState = spacesDragOffsetPxState,
-                spacesSheetRevealDistancePx = spacesSheetRevealDistancePx,
                 onOpenSearchSheet = {
                     sessionVm.openSearchSheet(forNewTab = false)
                 },
                 onOpenTabSwitcher = {
-                    sessionVm.setOverlaySheet(ActiveOverlaySheet.TabSwitcher)
+                    sessionVm.openTabSwitcher()
                 },
                 onCloseCurrentTab = {
                     val closingId = selectedTabId
@@ -624,24 +634,6 @@ private fun FocalRootCoordinator(
                 },
                 onStepToAdjacentTab = { delta ->
                     sessionVm.stepToAdjacentTab(delta, immutableActiveTabs)
-                },
-                onOpenSpacesSheet = {
-                    sessionVm.setOverlaySheet(ActiveOverlaySheet.Spaces)
-                },
-                onSettleSpacesSwipeUp = { committed ->
-                    scope.launch {
-                        val target = if (committed) 0f else spacesSheetRevealDistancePx
-                        Animatable(spacesDragOffsetPxState.floatValue).animateTo(
-                            targetValue = target,
-                            animationSpec = FocalMotion.spacesSheetSpring(),
-                        ) {
-                            spacesDragOffsetPxState.floatValue = value
-                        }
-                        if (!committed) {
-                            sessionVm.setOverlaySheet(ActiveOverlaySheet.None)
-                            spacesDragOffsetPxState.floatValue = 0f
-                        }
-                    }
                 },
                 onOpenPageMenu = {
                     sessionVm.setOverlaySheet(ActiveOverlaySheet.PageMenu)
@@ -767,36 +759,34 @@ private fun FocalRootCoordinator(
                                 )
                             }
 
-                            ActiveOverlaySheet.Spaces -> {
-                                val spacesUiState = remember(
+                            ActiveOverlaySheet.Bookmarks -> {
+                                val bookmarksUiState = remember(
                                     immutableSpaces,
                                     activeSpaceId,
-                                    immutableSpacePins,
-                                    immutableSpaceItems,
+                                    immutableAllBookmarks,
                                     syncUiState,
                                 ) {
-                                    SpacesSheetUiState(
+                                    BookmarksSheetUiState(
                                         spaces = immutableSpaces,
                                         activeSpaceId = activeSpaceId,
-                                        pinnedSquircles = immutableSpacePins,
-                                        foldersAndBookmarks = immutableSpaceItems,
+                                        allBookmarks = immutableAllBookmarks,
                                         syncState = syncUiState,
                                     )
                                 }
-                                SpacesSheet(
-                                    uiState = spacesUiState,
-                                    externalDragOffsetPx = spacesDragOffsetPxState,
-                                    onSelectSpace = { nextSpace ->
-                                        sessionVm.selectSpace(nextSpace)
-                                    },
+                                BookmarksSheet(
+                                    uiState = bookmarksUiState,
                                     onOpenUrl = { url ->
-                                        spacesDragOffsetPxState.floatValue = 0f
                                         sessionVm.openUrlInTab(
                                             url = url,
                                             privateMode = false,
                                             openInBackground = false,
                                             forceNewTab = false,
                                         )
+                                    },
+                                    onDeleteBookmark = { bookmarkId ->
+                                        scope.launch(Dispatchers.IO) {
+                                            database.bookmarkDao().deleteBookmark(bookmarkId)
+                                        }
                                     },
                                     onCreateFolder = { spaceId, folderName ->
                                         val now = System.currentTimeMillis()
@@ -818,7 +808,6 @@ private fun FocalRootCoordinator(
                                         sessionVm.startBootstrapPairing()
                                     },
                                     onDismiss = {
-                                        spacesDragOffsetPxState.floatValue = 0f
                                         sessionVm.setOverlaySheet(ActiveOverlaySheet.None)
                                     },
                                 )
@@ -829,8 +818,18 @@ private fun FocalRootCoordinator(
                                     activeTabs = immutableActiveTabs,
                                     archivedTabs = immutableArchivedTabs,
                                     selectedTabId = selectedTabId,
+                                    spaces = immutableSpaces,
+                                    activeSpaceId = activeSpaceId,
+                                    tabCountBySpace = tabCountBySpace,
+                                    tabPreviews = immutableTabPreviews,
                                     isPrivateAperture = isPrivateAperture,
                                     privateTabs = privateTabs,
+                                    onSelectSpace = { nextSpaceId ->
+                                        sessionVm.selectSpace(nextSpaceId)
+                                    },
+                                    onTogglePrivateMode = { priv ->
+                                        sessionVm.setPrivateAperture(priv)
+                                    },
                                     onSelectTab = { tabId ->
                                         sessionVm.selectTab(tabId, immutableActiveTabs)
                                     },
@@ -848,17 +847,38 @@ private fun FocalRootCoordinator(
                                             )
                                         }
                                     },
+                                    onOpenBookmarks = {
+                                        sessionVm.setOverlaySheet(ActiveOverlaySheet.Bookmarks)
+                                    },
                                     onNewSearch = { priv ->
                                         sessionVm.openSearchSheet(forNewTab = true, privateMode = priv)
                                     },
                                     onDone = {
-                                        sessionVm.setOverlaySheet(ActiveOverlaySheet.None)
+                                        sessionVm.dismissTabSwitcher(immutableActiveTabs)
                                     },
                                 )
                             }
 
                             ActiveOverlaySheet.PageMenu -> {
                                 val rawUrl = activeSessionState?.url.orEmpty()
+                                val cleanedCurrentUrl = remember(rawUrl) {
+                                    if (rawUrl.isBlank() || rawUrl == "about:blank") {
+                                        ""
+                                    } else {
+                                        adblockController.cleanTrackingUrl(rawUrl).cleanUrl
+                                    }
+                                }
+                                val existingBookmark = remember(immutableAllBookmarks, cleanedCurrentUrl) {
+                                    val normalized = cleanedCurrentUrl.trim().trimEnd('/').lowercase()
+                                    if (normalized.isBlank()) {
+                                        null
+                                    } else {
+                                        immutableAllBookmarks.firstOrNull { bm ->
+                                            !bm.isFolder &&
+                                                bm.url.orEmpty().trim().trimEnd('/').lowercase() == normalized
+                                        }
+                                    }
+                                }
                                 val sessionTelemetry = activeSession?.telemetry?.collectAsState()?.value
                                 PageMenuAndSiteOverridesSheet(
                                     domain = activeSessionState?.domain.orEmpty(),
@@ -870,6 +890,7 @@ private fun FocalRootCoordinator(
                                     blockedCountInTab = sessionTelemetry?.blockedTrackersInSession ?: 0L,
                                     overrides = effectiveOverrides,
                                     translationStatus = activeSessionState?.translationStatus ?: PageTranslationStatus(),
+                                    isCurrentPageBookmarked = existingBookmark != null,
                                     onGoBack = {
                                         activeSession?.goBack()
                                         sessionVm.setOverlaySheet(ActiveOverlaySheet.None)
@@ -897,45 +918,34 @@ private fun FocalRootCoordinator(
                                         context.startActivity(Intent.createChooser(shareIntent, null))
                                         sessionVm.setOverlaySheet(ActiveOverlaySheet.None)
                                     },
-                                    onPinToSpace = {
-                                        if (rawUrl.isNotBlank()) {
-                                            val now = System.currentTimeMillis()
-                                            val domain = activeSessionState?.domain.orEmpty()
-                                            scope.launch(Dispatchers.IO) {
-                                                database.bookmarkDao().upsertBookmark(
-                                                    BookmarkEntity(
-                                                        id = "pin-${UUID.randomUUID()}",
-                                                        spaceId = activeSpaceId,
-                                                        isPinnedSquircle = true,
-                                                        shortCode = domain.take(2).uppercase(),
-                                                        title = domain.ifBlank { "Pinned" },
-                                                        url = adblockController.cleanTrackingUrl(rawUrl).cleanUrl,
-                                                        sortOrder = immutableSpacePins.size,
-                                                        createdAtEpochMs = now,
-                                                        updatedAtEpochMs = now,
-                                                    ),
-                                                )
+                                    onSaveBookmark = {
+                                        if (cleanedCurrentUrl.isNotBlank()) {
+                                            val currentSaved = existingBookmark
+                                            if (currentSaved != null) {
+                                                scope.launch(Dispatchers.IO) {
+                                                    database.bookmarkDao().deleteBookmark(currentSaved.id)
+                                                }
+                                            } else {
+                                                val now = System.currentTimeMillis()
+                                                scope.launch(Dispatchers.IO) {
+                                                    database.bookmarkDao().upsertBookmark(
+                                                        BookmarkEntity(
+                                                            id = "bm-${UUID.randomUUID()}",
+                                                            spaceId = activeSpaceId,
+                                                            title = activeSessionState?.title?.ifBlank { cleanedCurrentUrl }
+                                                                ?: cleanedCurrentUrl,
+                                                            url = cleanedCurrentUrl,
+                                                            createdAtEpochMs = now,
+                                                            updatedAtEpochMs = now,
+                                                        ),
+                                                    )
+                                                }
                                             }
                                         }
                                         sessionVm.setOverlaySheet(ActiveOverlaySheet.None)
                                     },
-                                    onSaveBookmark = {
-                                        if (rawUrl.isNotBlank()) {
-                                            val now = System.currentTimeMillis()
-                                            scope.launch(Dispatchers.IO) {
-                                                database.bookmarkDao().upsertBookmark(
-                                                    BookmarkEntity(
-                                                        id = "bm-${UUID.randomUUID()}",
-                                                        spaceId = activeSpaceId,
-                                                        title = activeSessionState?.title?.ifBlank { rawUrl } ?: rawUrl,
-                                                        url = adblockController.cleanTrackingUrl(rawUrl).cleanUrl,
-                                                        createdAtEpochMs = now,
-                                                        updatedAtEpochMs = now,
-                                                    ),
-                                                )
-                                            }
-                                        }
-                                        sessionVm.setOverlaySheet(ActiveOverlaySheet.None)
+                                    onOpenBookmarks = {
+                                        sessionVm.setOverlaySheet(ActiveOverlaySheet.Bookmarks)
                                     },
                                     onOpenReaderMode = {
                                         activeSession?.extractReadableArticle { doc ->

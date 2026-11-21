@@ -161,6 +161,9 @@ interface EngineSession {
 
     fun translatePageInPlace(targetLanguageCode: String? = null) {}
     fun restoreOriginalPageLanguage() {}
+    fun capturePreviewBitmap(maxWidthPx: Int = 540, onResult: (Bitmap?) -> Unit) {
+        onResult(null)
+    }
 
     fun setPlaybackRate(rate: Float)
     fun setMediaPlaying(playing: Boolean)

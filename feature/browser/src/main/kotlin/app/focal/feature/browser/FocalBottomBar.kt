@@ -45,6 +45,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.focal.design.FocalGlyphs
@@ -63,17 +65,15 @@ import kotlin.math.abs
 private enum class CenterPillAxisLock {
     UNDECIDED,
     HORIZONTAL_TAB_SCRUB,
-    VERTICAL_SPACES_SWIPE,
 }
 
 /**
  * Focal's 3-Part Floating Smoked Glass Bottom Bar (`48.dp` height):
- * - **Left Capsule (`[Tabs]`)**: Tab counter squircle (`Tap = Tab Switcher`, `Long-Press = Quick Close / Private`).
+ * - **Left Capsule (`[Tabs]`)**: Tab counter squircle (`Tap = YAB Tab Switcher`, `Long-Press = Quick Close / Private`).
  * - **Center Pill (`[Search / domain.com]`)**: Vector-locked within `10.dp` touch slop:
  *   - `Tap`: Opens Search-First Sheet above IME.
  *   - `Horizontal Scrub` (`|dx| > |dy| * 1.35f`): Live horizontal tab scrubbing with haptic ticks.
- *   - `Vertical Swipe-Up` (`dy < -touchSlop && |dy| >= |dx|`): Continuously pulls up Spaces & Bookmarks Sheet 1:1.
- * - **Right Capsule (`[...]`)**: Opens Page Menu, Reader & Per-Site Settings sheet.
+ * - **Right Capsule (`[...]`)**: Opens Page Menu, Bookmarks, Reader & Per-Site Settings sheet.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -88,15 +88,11 @@ fun FocalBottomBar(
     loadProgress: Int = 0,
     telemetryFlow: StateFlow<EngineTelemetryState>? = null,
     scrubOffsetPxState: MutableFloatState,
-    spacesDragOffsetPxState: MutableFloatState? = null,
-    spacesSheetRevealDistancePx: Float = 0f,
     onOpenTabSwitcher: () -> Unit,
     onCloseCurrentTab: () -> Unit,
     onOpenNewPrivateTab: () -> Unit,
     onTapCenterSearch: () -> Unit,
     onStepToAdjacentTab: (directionDelta: Int) -> Unit,
-    onSwipeUpOpenSpaces: () -> Unit,
-    onSettleSpacesSwipeUp: (committed: Boolean) -> Unit = {},
     onOpenPageMenu: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -109,19 +105,11 @@ fun FocalBottomBar(
 
     val latestOnTapSearch = rememberUpdatedState(onTapCenterSearch)
     val latestOnStepTab = rememberUpdatedState(onStepToAdjacentTab)
-    val latestOnOpenSpaces = rememberUpdatedState(onSwipeUpOpenSpaces)
-    val latestOnSettleSpaces = rememberUpdatedState(onSettleSpacesSwipeUp)
 
     var showTabQuickMenu by remember { mutableStateOf(false) }
 
     val slopPx = with(density) { 10.dp.toPx() }
     val tabCrossingStepPx = with(density) { 88.dp.toPx() }
-    val revealTravelPx = if (spacesSheetRevealDistancePx > 0f) {
-        spacesSheetRevealDistancePx
-    } else {
-        with(density) { 420.dp.toPx() }
-    }
-    val commitSwipePx = with(density) { 88.dp.toPx() }
 
     Row(
         modifier = modifier
@@ -145,6 +133,7 @@ fun FocalBottomBar(
                         ambientColor = Color.Black.copy(alpha = 0.35f),
                         spotColor = Color.Black.copy(alpha = 0.45f),
                     )
+                    .semantics { contentDescription = "Open Tabs" }
                     .combinedClickable(
                         onClick = onOpenTabSwitcher,
                         onLongClick = {
@@ -205,7 +194,7 @@ fun FocalBottomBar(
             }
         }
 
-        // 2. Center Capsule: Tap = Search · Horizontal Scrub = Switch Tabs · Vertical Swipe-Up = Spaces
+        // 2. Center Capsule: Tap = Search · Horizontal Scrub = Switch Tabs
         SmokedGlassBox(
             shape = CircleShape,
             glassTintState = barTintState,
@@ -220,7 +209,7 @@ fun FocalBottomBar(
                     ambientColor = Color.Black.copy(alpha = 0.35f),
                     spotColor = Color.Black.copy(alpha = 0.45f),
                 )
-                .pointerInput(slopPx, tabCrossingStepPx, revealTravelPx, commitSwipePx, gestureLease) {
+                .pointerInput(slopPx, tabCrossingStepPx, gestureLease) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         var totalDx = 0f
@@ -229,8 +218,6 @@ fun FocalBottomBar(
                         var activeLeaseToken: GestureLeaseToken? = null
                         var preempted = false
                         var emittedSteps = 0
-                        var spacesSwipeOpened = false
-                        var commitHapticSent = false
 
                         try {
                             while (true) {
@@ -266,17 +253,6 @@ fun FocalBottomBar(
                                             axisLock = CenterPillAxisLock.HORIZONTAL_TAB_SCRUB
                                             change.consume()
                                         }
-                                    } else if (totalDy < -slopPx && absDy >= absDx) {
-                                        val token = gestureLease?.tryAcquire(GestureLeaseOwner.SPACES_SWIPE_UP)
-                                        if (gestureLease == null || token != null) {
-                                            activeLeaseToken = token
-                                            axisLock = CenterPillAxisLock.VERTICAL_SPACES_SWIPE
-                                            spacesSwipeOpened = true
-                                            spacesDragOffsetPxState?.floatValue =
-                                                (revealTravelPx + totalDy).coerceIn(0f, revealTravelPx)
-                                            latestOnOpenSpaces.value()
-                                            change.consume()
-                                        }
                                     }
                                 } else {
                                     change.consume()
@@ -293,24 +269,12 @@ fun FocalBottomBar(
                                             latestOnStepTab.value(stepDir)
                                         }
                                     }
-                                    CenterPillAxisLock.VERTICAL_SPACES_SWIPE -> {
-                                        spacesDragOffsetPxState?.floatValue =
-                                            (revealTravelPx + totalDy).coerceIn(0f, revealTravelPx)
-                                        if (!commitHapticSent && -totalDy >= commitSwipePx) {
-                                            commitHapticSent = true
-                                            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                        } else if (commitHapticSent && -totalDy < commitSwipePx) {
-                                            commitHapticSent = false
-                                        }
-                                    }
                                     CenterPillAxisLock.UNDECIDED -> Unit
                                 }
                             }
 
                             scrubOffsetPxState.floatValue = 0f
-                            if (spacesSwipeOpened) {
-                                latestOnSettleSpaces.value(!preempted && -totalDy >= commitSwipePx)
-                            } else if (
+                            if (
                                 !preempted &&
                                 axisLock == CenterPillAxisLock.UNDECIDED &&
                                 abs(totalDx) <= slopPx &&

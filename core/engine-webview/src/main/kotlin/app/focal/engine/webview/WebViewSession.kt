@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.MutableContextWrapper
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
@@ -1021,6 +1022,44 @@ class WebViewSession internal constructor(
             if (!disposed.get()) {
                 webView.evaluateJavascript(InPlaceDomTranslationScripts.RESTORE_ORIGINAL_SCRIPT, null)
             }
+        }
+    }
+
+    override fun capturePreviewBitmap(maxWidthPx: Int, onResult: (Bitmap?) -> Unit) {
+        if (disposed.get()) {
+            onResult(null)
+            return
+        }
+        runOnMain {
+            if (disposed.get()) {
+                onResult(null)
+                return@runOnMain
+            }
+            val currentUrl = _state.value.url
+            val viewW = webView.width
+            val viewH = webView.height
+            if (
+                currentUrl.isBlank() ||
+                currentUrl.equals("about:blank", ignoreCase = true) ||
+                viewW <= 0 ||
+                viewH <= 0
+            ) {
+                onResult(null)
+                return@runOnMain
+            }
+            val bitmap = runCatching {
+                val safeMaxW = maxWidthPx.coerceIn(180, 720)
+                val scale = (safeMaxW.toFloat() / viewW.toFloat()).coerceAtMost(1f)
+                val targetW = (viewW * scale).toInt().coerceAtLeast(1)
+                val targetH = (viewH * scale).toInt().coerceAtLeast(1)
+                val bmp = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.RGB_565)
+                val canvas = Canvas(bmp)
+                canvas.scale(scale, scale)
+                canvas.translate(-webView.scrollX.toFloat(), -webView.scrollY.toFloat())
+                webView.draw(canvas)
+                bmp
+            }.getOrNull()
+            onResult(bitmap)
         }
     }
 

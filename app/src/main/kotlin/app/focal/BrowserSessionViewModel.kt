@@ -1,5 +1,6 @@
 package app.focal
 
+import android.graphics.Bitmap
 import android.net.Uri
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
@@ -43,7 +44,7 @@ import java.util.concurrent.ConcurrentHashMap
 sealed interface ActiveOverlaySheet {
     data object None : ActiveOverlaySheet
     data object Search : ActiveOverlaySheet
-    data object Spaces : ActiveOverlaySheet
+    data object Bookmarks : ActiveOverlaySheet
     data object TabSwitcher : ActiveOverlaySheet
     data object PageMenu : ActiveOverlaySheet
     data class Reader(val document: ReadableDocument) : ActiveOverlaySheet
@@ -69,8 +70,9 @@ private data class TabPersistenceProjection(
 /**
  * Configuration-surviving ViewModel managing Focal's live [EngineSession] pool,
  * isolated in-memory Private Aperture (`◎`) tabs, debounced Room tab persistence,
- * automatic disposal of 24h auto-archived tabs, multi-tab media routing, and
- * explicit SAS-verified E2EE pairing & Spaces/Presence continuity.
+ * live WebView preview thumbnails for the YAB-style tab deck, automatic disposal
+ * of 24h auto-archived tabs, multi-tab media routing, and explicit SAS-verified
+ * E2EE pairing & Spaces/Presence continuity.
  */
 @OptIn(FlowPreview::class)
 class BrowserSessionViewModel(
@@ -84,11 +86,17 @@ class BrowserSessionViewModel(
     private val sessionJobs = ConcurrentHashMap<String, Job>()
     private val persistedNonPrivateTabIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
+    private val previewLock = Any()
+    private val previewMap = LinkedHashMap<String, Bitmap>(16, 0.75f, true)
+
     private val privateTabLock = Any()
     private val privateTabMap = LinkedHashMap<String, TabMetadataEntity>()
 
     private val _liveSessions = MutableStateFlow<Map<String, EngineSession>>(emptyMap())
     val liveSessions: StateFlow<Map<String, EngineSession>> = _liveSessions.asStateFlow()
+
+    private val _tabPreviews = MutableStateFlow<Map<String, Bitmap>>(emptyMap())
+    val tabPreviews: StateFlow<Map<String, Bitmap>> = _tabPreviews.asStateFlow()
 
     private val _privateTabs = MutableStateFlow<ImmutableList<TabMetadataEntity>>(persistentListOf())
     val privateTabs: StateFlow<ImmutableList<TabMetadataEntity>> = _privateTabs.asStateFlow()
@@ -155,6 +163,7 @@ class BrowserSessionViewModel(
                     persistedNonPrivateTabIds.remove(archivedId)
                     sessionJobs.remove(archivedId)?.cancel()
                     removeSessionInternal(archivedId)?.dispose()
+                    removePreviewBitmap(archivedId)
                     FocalMediaBridge.clearIfOwnedBy(archivedId)
 
                     if (_selectedTabId.value == archivedId) {
@@ -304,6 +313,52 @@ class BrowserSessionViewModel(
         _overlaySheet.value = sheet
     }
 
+    fun openTabSwitcher() {
+        capturePreviewForTab(_selectedTabId.value)
+        _pendingNewTabInSearch.value = false
+        _overlaySheet.value = ActiveOverlaySheet.TabSwitcher
+    }
+
+    fun capturePreviewForTab(tabId: String?) {
+        if (tabId.isNullOrBlank()) return
+        val session = getSession(tabId) ?: return
+        session.capturePreviewBitmap(maxWidthPx = 540) { bmp ->
+            if (bmp != null) {
+                putPreviewBitmap(tabId, bmp)
+            }
+        }
+    }
+
+    fun dismissTabSwitcher(activeSpaceTabs: List<TabMetadataEntity>) {
+        if (_isPrivateAperture.value) {
+            val currentPriv = _privateTabs.value
+            val selId = _selectedTabId.value
+            if (selId == null || currentPriv.none { it.id == selId }) {
+                val firstPriv = currentPriv.firstOrNull()
+                if (firstPriv != null) {
+                    selectTab(firstPriv.id, activeSpaceTabs)
+                    return
+                } else {
+                    _selectedTabId.value = null
+                    FocalMediaBridge.onSelectedTabChanged(null)
+                }
+            }
+        } else {
+            val selId = _selectedTabId.value
+            if (selId == null || activeSpaceTabs.none { it.id == selId }) {
+                val firstInSpace = activeSpaceTabs.firstOrNull()
+                if (firstInSpace != null) {
+                    selectTab(firstInSpace.id, activeSpaceTabs)
+                    return
+                } else {
+                    _selectedTabId.value = null
+                    FocalMediaBridge.onSelectedTabChanged(null)
+                }
+            }
+        }
+        _overlaySheet.value = ActiveOverlaySheet.None
+    }
+
     fun openSearchSheet(forNewTab: Boolean = false, privateMode: Boolean? = null) {
         _pendingNewTabInSearch.value = forNewTab
         if (privateMode != null) {
@@ -317,6 +372,7 @@ class BrowserSessionViewModel(
     }
 
     fun selectSpace(spaceId: String) {
+        _isPrivateAperture.value = false
         _activeSpaceId.value = spaceId
     }
 
@@ -350,7 +406,7 @@ class BrowserSessionViewModel(
         runCatching {
             syncManager.joinFromPairingUri(preview.normalizedUri, connectRelay = true)
         }
-        _overlaySheet.value = ActiveOverlaySheet.Spaces
+        _overlaySheet.value = ActiveOverlaySheet.Bookmarks
     }
 
     fun dismissPendingPairing() {
@@ -394,6 +450,9 @@ class BrowserSessionViewModel(
         val tabId = if (reuseCurrentTab) {
             currentSelId!!
         } else {
+            if (!openInBackground && currentSelId != null) {
+                capturePreviewForTab(currentSelId)
+            }
             UUID.randomUUID().toString()
         }
 
@@ -441,6 +500,10 @@ class BrowserSessionViewModel(
     }
 
     fun selectTab(tabId: String, activeSpaceTabs: List<TabMetadataEntity>) {
+        val currentSelId = _selectedTabId.value
+        if (currentSelId != null && currentSelId != tabId) {
+            capturePreviewForTab(currentSelId)
+        }
         val now = System.currentTimeMillis()
         val privateMeta = synchronized(privateTabLock) { privateTabMap[tabId] }
         if (privateMeta != null) {
@@ -483,6 +546,7 @@ class BrowserSessionViewModel(
             if (!alreadyLive) {
                 session.loadUrl(meta.url)
             }
+            _activeSpaceId.value = meta.spaceId
             _selectedTabId.value = meta.id
             _isPrivateAperture.value = false
             _overlaySheet.value = ActiveOverlaySheet.None
@@ -512,6 +576,7 @@ class BrowserSessionViewModel(
         sessionJobs.remove(tabId)?.cancel()
         val disposedSession = removeSessionInternal(tabId)
         disposedSession?.dispose()
+        removePreviewBitmap(tabId)
         FocalMediaBridge.clearIfOwnedBy(tabId)
 
         val wasPrivate = removePrivateTabInMemory(tabId) || disposedSession?.isPrivate == true
@@ -550,6 +615,7 @@ class BrowserSessionViewModel(
         for (id in allPrivateIds) {
             sessionJobs.remove(id)?.cancel()
             removeSessionInternal(id)?.dispose()
+            removePreviewBitmap(id)
             FocalMediaBridge.clearIfOwnedBy(id)
         }
         synchronized(privateTabLock) {
@@ -737,6 +803,25 @@ class BrowserSessionViewModel(
         }
     }
 
+    private fun putPreviewBitmap(tabId: String, bitmap: Bitmap) {
+        synchronized(previewLock) {
+            previewMap[tabId] = bitmap
+            while (previewMap.size > MAX_CACHED_TAB_PREVIEWS) {
+                val eldestKey = previewMap.entries.firstOrNull()?.key ?: break
+                previewMap.remove(eldestKey)
+            }
+            _tabPreviews.value = LinkedHashMap(previewMap)
+        }
+    }
+
+    private fun removePreviewBitmap(tabId: String) {
+        synchronized(previewLock) {
+            if (previewMap.remove(tabId) != null) {
+                _tabPreviews.value = LinkedHashMap(previewMap)
+            }
+        }
+    }
+
     private fun extractCleanDomain(url: String): String {
         return runCatching {
             Uri.parse(url).host?.removePrefix("www.").orEmpty()
@@ -748,6 +833,11 @@ class BrowserSessionViewModel(
             job.cancel()
         }
         sessionJobs.clear()
+
+        synchronized(previewLock) {
+            previewMap.clear()
+            _tabPreviews.value = emptyMap()
+        }
 
         val sessionsToDispose = synchronized(sessionLock) {
             val all = sessionMap.values.toList()
@@ -763,6 +853,8 @@ class BrowserSessionViewModel(
     }
 
     companion object {
+        private const val MAX_CACHED_TAB_PREVIEWS = 16
+
         fun factory(app: FocalApplication): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")

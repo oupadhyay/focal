@@ -469,4 +469,12 @@ object FocalGlyphs {
             lineTo(9.2f, 18.4f)
         }
     }
+
+    val Check: ImageVector by lazy {
+        strokeIcon("FocalCheck", strokeWidth = 2.15f) {
+            moveTo(5.6f, 12.6f)
+            lineTo(10.0f, 17.0f)
+            lineTo(18.6f, 7.6f)
+        }
+    }
 }

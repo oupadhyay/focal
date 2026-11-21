@@ -31,13 +31,14 @@ import app.focal.design.FocalTheme
 import app.focal.engine.api.OriginOverrides
 import app.focal.feature.reader.PageMenuAndSiteOverridesSheet
 import app.focal.feature.search.SearchSheet
-import app.focal.feature.spaces.SpacesSheet
-import app.focal.feature.spaces.SpacesSheetUiState
+import app.focal.feature.spaces.BookmarksSheet
+import app.focal.feature.spaces.BookmarksSheetUiState
 import app.focal.feature.tabs.TabSwitcherSheet
 import app.focal.sync.PresenceTabItem
 import app.focal.sync.SyncConnectionStatus
 import app.focal.sync.SyncSessionUiState
 import kotlinx.collections.immutable.persistentListOf
+import kotlinx.collections.immutable.persistentMapOf
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -129,23 +130,20 @@ class FocalComposeUiHarnessTest {
     }
 
     @Test
-    fun spacesSheet_rendersConcentricGroupedCardsAndFavicons() {
+    fun bookmarksSheet_rendersZeroPinnedTabsAndCleanBookmarksList() {
         val now = 1_763_400_000_000L
-        val uiState = SpacesSheetUiState(
+        val uiState = BookmarksSheetUiState(
             spaces = persistentListOf(
                 SpaceEntity("personal", "Personal", "#F4725E", 0, now),
                 SpaceEntity("work", "Work", "#94A3B8", 1, now),
                 SpaceEntity("reading", "Reading", "#4ADE80", 2, now),
             ),
             activeSpaceId = "work",
-            pinnedSquircles = persistentListOf(
-                BookmarkEntity("p1", "work", isPinnedSquircle = true, shortCode = "GH", title = "GitHub", url = "https://github.com", createdAtEpochMs = now, updatedAtEpochMs = now),
-                BookmarkEntity("p2", "work", isPinnedSquircle = true, shortCode = "DV", title = "Android", url = "https://developer.android.com", createdAtEpochMs = now, updatedAtEpochMs = now),
-                BookmarkEntity("p3", "work", isPinnedSquircle = true, shortCode = "RS", title = "Docs.rs", url = "https://docs.rs", createdAtEpochMs = now, updatedAtEpochMs = now),
-                BookmarkEntity("p4", "work", isPinnedSquircle = true, shortCode = "HN", title = "HackerNews", url = "https://news.ycombinator.com", createdAtEpochMs = now, updatedAtEpochMs = now),
-            ),
-            foldersAndBookmarks = persistentListOf(
-                BookmarkEntity("b1", "work", title = "Jetpack Compose Architecture", url = "https://developer.android.com/jetpack/compose", createdAtEpochMs = now, updatedAtEpochMs = now),
+            allBookmarks = persistentListOf(
+                BookmarkEntity("b1", "work", title = "Jetpack Compose Architecture", url = "https://developer.android.com/jetpack/compose", createdAtEpochMs = now, updatedAtEpochMs = now + 3_000L),
+                BookmarkEntity("b2", "work", title = "GitHub", url = "https://github.com", createdAtEpochMs = now, updatedAtEpochMs = now + 2_000L),
+                BookmarkEntity("b3", "reading", title = "Stratechery", url = "https://stratechery.com", createdAtEpochMs = now, updatedAtEpochMs = now + 1_000L),
+                BookmarkEntity("f1", "reading", isFolder = true, title = "Longform Queue", subtitle = "Browser engines · Typography", createdAtEpochMs = now, updatedAtEpochMs = now),
             ),
             syncState = SyncSessionUiState(
                 status = SyncConnectionStatus.CONNECTED,
@@ -159,10 +157,10 @@ class FocalComposeUiHarnessTest {
 
         composeRule.setContent {
             FocalTheme(darkGlass = true) {
-                SpacesSheet(
+                BookmarksSheet(
                     uiState = uiState,
-                    onSelectSpace = {},
                     onOpenUrl = {},
+                    onDeleteBookmark = {},
                     onCreateFolder = { _, _ -> },
                     onStartE2eePairing = {},
                     onDismiss = {},
@@ -171,18 +169,25 @@ class FocalComposeUiHarnessTest {
         }
 
         composeRule.waitForIdle()
+        composeRule.onNodeWithText("Bookmarks").assertIsDisplayed()
+        composeRule.onNodeWithText("All").assertIsDisplayed()
+        composeRule.onNodeWithText("Jetpack Compose Architecture").assertIsDisplayed()
         composeRule.onNodeWithText("GitHub").assertIsDisplayed()
-        composeRule.onNodeWithText("Android").assertIsDisplayed()
-        composeRule.onNodeWithText("Docs.rs").assertIsDisplayed()
-        composeRule.onNodeWithText("HN").assertIsDisplayed()
+        composeRule.onNodeWithText("Stratechery").assertIsDisplayed()
+        composeRule.onNodeWithText("Pinned").assertDoesNotExist()
 
-        val snap = composeRule.captureSnapshotPng("02_spaces_sheet_favicons.png")
+        val snap = composeRule.captureSnapshotPng("02_bookmarks_sheet_clean.png")
         assertTrue(snap.length() > 1_000L)
     }
 
     @Test
-    fun tabSwitcherSheet_rendersCleanCardsWithoutOverlappingBottomBar() {
+    fun tabSwitcherSheet_rendersYabStackedPreviewDeckAndTopGroups() {
         val now = 1_763_400_000_000L
+        val spaces = persistentListOf(
+            SpaceEntity("personal", "Personal", "#F4725E", 0, now),
+            SpaceEntity("work", "Work", "#94A3B8", 1, now),
+            SpaceEntity("reading", "Reading", "#4ADE80", 2, now),
+        )
         val tabs = persistentListOf(
             TabMetadataEntity(
                 id = "t1",
@@ -204,6 +209,34 @@ class FocalComposeUiHarnessTest {
                 createdAtEpochMs = now - 600_000L,
                 blockedTrackersCount = 2,
             ),
+            TabMetadataEntity(
+                id = "t3",
+                spaceId = "personal",
+                url = "https://stratechery.com",
+                domain = "stratechery.com",
+                title = "Stratechery by Ben Thompson",
+                lastActiveEpochMs = now - 900_000L,
+                createdAtEpochMs = now - 1_200_000L,
+                blockedTrackersCount = 1,
+            ),
+        )
+
+        fun mockPageBitmap(bgColor: Int, headerColor: Int): Bitmap {
+            val bmp = Bitmap.createBitmap(360, 680, Bitmap.Config.RGB_565)
+            val canvas = Canvas(bmp)
+            canvas.drawColor(bgColor)
+            val paint = android.graphics.Paint().apply { color = headerColor }
+            canvas.drawRect(0f, 0f, 360f, 110f, paint)
+            paint.color = android.graphics.Color.argb(60, 128, 128, 128)
+            canvas.drawRoundRect(24f, 140f, 336f, 260f, 18f, 18f, paint)
+            canvas.drawRoundRect(24f, 290f, 336f, 440f, 18f, 18f, paint)
+            return bmp
+        }
+
+        val previews = persistentMapOf(
+            "t1" to mockPageBitmap(android.graphics.Color.WHITE, android.graphics.Color.rgb(241, 243, 246)),
+            "t2" to mockPageBitmap(android.graphics.Color.rgb(18, 22, 28), android.graphics.Color.rgb(28, 34, 42)),
+            "t3" to mockPageBitmap(android.graphics.Color.rgb(247, 244, 236), android.graphics.Color.rgb(232, 226, 214)),
         )
 
         composeRule.setContent {
@@ -217,11 +250,18 @@ class FocalComposeUiHarnessTest {
                         activeTabs = tabs,
                         archivedTabs = persistentListOf(),
                         selectedTabId = "t1",
+                        spaces = spaces,
+                        activeSpaceId = "personal",
+                        tabCountBySpace = persistentMapOf("personal" to 3, "work" to 1),
+                        tabPreviews = previews,
                         isPrivateAperture = false,
                         nowEpochMs = now,
+                        onSelectSpace = {},
+                        onTogglePrivateMode = {},
                         onSelectTab = {},
                         onCloseTab = {},
                         onRestoreArchivedTab = {},
+                        onOpenBookmarks = {},
                         onNewSearch = {},
                         onDone = {},
                     )
@@ -230,7 +270,14 @@ class FocalComposeUiHarnessTest {
         }
 
         composeRule.waitForIdle()
+        composeRule.onNodeWithText("Personal").assertIsDisplayed()
+        composeRule.onNodeWithText("Work").assertIsDisplayed()
+        composeRule.onNodeWithText("Reading").assertIsDisplayed()
+        composeRule.onNodeWithText("Private").assertIsDisplayed()
         composeRule.onAllNodesWithText("focal - Google Search")[0].assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Bookmarks").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("New Tab").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Done").assertIsDisplayed()
 
         val tabSnap = composeRule.captureSnapshotPng("03_tab_switcher_clean.png")
         assertTrue(tabSnap.length() > 1_000L)
@@ -256,8 +303,8 @@ class FocalComposeUiHarnessTest {
                     onReload = {},
                     onCopyCleanLink = {},
                     onShareCleanLink = {},
-                    onPinToSpace = {},
                     onSaveBookmark = {},
+                    onOpenBookmarks = {},
                     onOpenReaderMode = {},
                     onUpdateSiteOverrides = { overrides = it },
                     onDismiss = {},
@@ -267,6 +314,8 @@ class FocalComposeUiHarnessTest {
 
         composeRule.waitForIdle()
         composeRule.onNodeWithText("github.com").assertIsDisplayed()
+        composeRule.onNodeWithText("Bookmarks").assertIsDisplayed()
+        composeRule.onNodeWithText("Pin").assertDoesNotExist()
         composeRule.onNodeWithText("focal://calm").assertDoesNotExist()
 
         val actionsSnap = composeRule.captureSnapshotPng("04a_page_menu_actions.png")
@@ -308,7 +357,6 @@ class FocalComposeUiHarnessTest {
                     onCloseCurrentTab = {},
                     onOpenNewPrivateTab = {},
                     onStepToAdjacentTab = {},
-                    onOpenSpacesSheet = {},
                     onOpenPageMenu = {},
                     onOpenReaderMode = {},
                     onPinchSnapSummarize = {},

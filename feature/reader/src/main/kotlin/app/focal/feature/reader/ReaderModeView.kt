@@ -372,14 +372,15 @@ fun PageMenuAndSiteOverridesSheet(
     blockedCountInTab: Long,
     overrides: OriginOverrides,
     translationStatus: PageTranslationStatus = PageTranslationStatus(),
+    isCurrentPageBookmarked: Boolean = false,
     initialTab: PageMenuTab = PageMenuTab.MENU,
     onGoBack: () -> Unit,
     onGoForward: () -> Unit,
     onReload: () -> Unit,
     onCopyCleanLink: () -> Unit,
     onShareCleanLink: () -> Unit,
-    onPinToSpace: () -> Unit,
     onSaveBookmark: () -> Unit,
+    onOpenBookmarks: () -> Unit = {},
     onOpenReaderMode: () -> Unit,
     onTranslatePage: () -> Unit = {},
     onUpdateSiteOverrides: (OriginOverrides) -> Unit,
@@ -533,7 +534,7 @@ fun PageMenuAndSiteOverridesSheet(
                 ) { tab ->
                     if (tab == PageMenuTab.MENU) {
                         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            // 4 Borderless Tonal Quick Action Squircles (Share · Copy · Pin · Bookmark)
+                            // 3 Borderless Tonal Quick Action Squircles (Share · Copy · Bookmark)
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -553,14 +554,7 @@ fun PageMenuAndSiteOverridesSheet(
                                     modifier = Modifier.weight(1f),
                                 )
                                 FocalActionTile(
-                                    label = "Pin",
-                                    icon = FocalGlyphs.Pin,
-                                    enabled = hasActivePage,
-                                    onClick = onPinToSpace,
-                                    modifier = Modifier.weight(1f),
-                                )
-                                FocalActionTile(
-                                    label = "Bookmark",
+                                    label = if (isCurrentPageBookmarked) "Saved" else "Bookmark",
                                     icon = FocalGlyphs.Bookmark,
                                     enabled = hasActivePage,
                                     onClick = onSaveBookmark,
@@ -570,6 +564,14 @@ fun PageMenuAndSiteOverridesSheet(
 
                             // Single Grouped Card with 0.5dp Inset Dividers (YAB / Lens style)
                             FocalGroupedCard {
+                                FocalMenuRow(
+                                    title = "Bookmarks",
+                                    icon = FocalGlyphs.Bookmark,
+                                    enabled = true,
+                                    showChevron = true,
+                                    onClick = onOpenBookmarks,
+                                )
+                                FocalHairlineDivider()
                                 FocalMenuRow(
                                     title = "Reader Mode",
                                     icon = FocalGlyphs.Reader,

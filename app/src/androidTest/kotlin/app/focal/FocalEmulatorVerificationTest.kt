@@ -183,13 +183,15 @@ class FocalEmulatorVerificationTest {
         composeRule.onNodeWithText("example.com").assertIsDisplayed()
         captureEmulatorScreenshot("05_emulator_live_webview.png")
 
-        // 6. Open Page Menu (Actions + on-device Translate Page row + Site Settings subtab)
+        // 6. Open Page Menu (Actions + Bookmarks + on-device Translate Page row + Site Settings subtab)
         composeRule.onNodeWithContentDescription("Page Menu").performClick()
         composeRule.waitUntil(timeoutMillis = 8_000L) {
             composeRule.onAllNodesWithText("Translate Page").fetchSemanticsNodes().isNotEmpty()
         }
+        composeRule.onNodeWithText("Bookmarks").assertIsDisplayed()
         composeRule.onNodeWithText("Reader Mode").assertIsDisplayed()
         composeRule.onNodeWithText("Translate Page").assertIsDisplayed()
+        composeRule.onNodeWithText("Pin").assertDoesNotExist()
         SystemClock.sleep(300L)
         captureEmulatorScreenshot("06_emulator_page_menu.png")
 
@@ -209,6 +211,40 @@ class FocalEmulatorVerificationTest {
         }
         composeRule.waitUntil(timeoutMillis = 8_000L) {
             composeRule.onAllNodesWithText("Block Ads & Trackers").fetchSemanticsNodes().isEmpty()
+        }
+        composeRule.onNodeWithText("example.com").assertIsDisplayed()
+
+        // 7. Open YAB-style Stacked Tab Switcher (top Space groups + live WebView card + Bookmarks button)
+        composeRule.onNodeWithContentDescription("Open Tabs").performClick()
+        composeRule.waitUntil(timeoutMillis = 8_000L) {
+            composeRule.onAllNodesWithText("Personal").fetchSemanticsNodes().isNotEmpty() &&
+                composeRule.onAllNodesWithText("Work").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithText("Personal").assertIsDisplayed()
+        composeRule.onNodeWithText("Work").assertIsDisplayed()
+        composeRule.onNodeWithText("Private").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Bookmarks").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Done").assertIsDisplayed()
+        SystemClock.sleep(450L)
+        captureEmulatorScreenshot("07b_emulator_yab_tab_switcher.png")
+
+        // 8. Open dedicated Bookmarks sheet from Tab Switcher bottom-left button (zero Pinned section)
+        composeRule.onNodeWithContentDescription("Bookmarks").performClick()
+        composeRule.waitUntil(timeoutMillis = 8_000L) {
+            composeRule.onAllNodesWithText("Bookmarks").fetchSemanticsNodes().isNotEmpty() &&
+                composeRule.onAllNodesWithText("All").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithText("Bookmarks").assertIsDisplayed()
+        composeRule.onNodeWithText("Pinned").assertDoesNotExist()
+        SystemClock.sleep(300L)
+        captureEmulatorScreenshot("07c_emulator_bookmarks_sheet.png")
+
+        // Dismiss Bookmarks via Back and verify clean return to WebView
+        composeRule.runOnIdle {
+            composeRule.activity.onBackPressedDispatcher.onBackPressed()
+        }
+        composeRule.waitUntil(timeoutMillis = 8_000L) {
+            composeRule.onAllNodesWithText("New Folder").fetchSemanticsNodes().isEmpty()
         }
         composeRule.onNodeWithText("example.com").assertIsDisplayed()
     }
