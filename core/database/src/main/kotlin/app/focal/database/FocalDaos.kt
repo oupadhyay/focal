@@ -162,6 +162,16 @@ interface TabMetadataDao {
 
     @Query(
         """
+        UPDATE tab_metadata
+        SET spaceId = :targetSpaceId,
+            lastActiveEpochMs = :nowEpochMs
+        WHERE id = :tabId
+        """,
+    )
+    suspend fun moveTabToSpace(tabId: String, targetSpaceId: String, nowEpochMs: Long)
+
+    @Query(
+        """
         DELETE FROM tab_metadata
         WHERE isArchived = 1
           AND archivedAtEpochMs IS NOT NULL

@@ -858,6 +858,9 @@ private fun FocalRootCoordinator(
                                     onCloseTab = { tabId ->
                                         sessionVm.closeTab(tabId, immutableActiveTabs)
                                     },
+                                    onMoveTabToSpace = { tabId, targetSpaceId ->
+                                        sessionVm.moveTabToSpace(tabId, targetSpaceId, immutableActiveTabs)
+                                    },
                                     onCloseAllPrivateTabs = {
                                         sessionVm.closeAllPrivateTabs(immutableActiveTabs)
                                     },

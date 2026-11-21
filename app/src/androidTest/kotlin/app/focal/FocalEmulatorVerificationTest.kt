@@ -3,15 +3,18 @@ package app.focal
 import android.content.ClipboardManager
 import android.graphics.Bitmap
 import android.os.SystemClock
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTouchInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import app.focal.adblock.NativeAdblockController
@@ -250,6 +253,43 @@ class FocalEmulatorVerificationTest {
         composeRule.onNodeWithContentDescription("Done").assertIsDisplayed()
         SystemClock.sleep(450L)
         captureEmulatorScreenshot("07b_emulator_yab_tab_switcher.png")
+
+        // 7b. Press-and-hold front tab card and drag onto "Work" pill to move tab between groups
+        val frontCard = composeRule.onNodeWithTag("front_tab_card")
+        val cardBounds = frontCard.fetchSemanticsNode().boundsInRoot
+        val workBounds = composeRule.onNodeWithText("Work").fetchSemanticsNode().boundsInRoot
+        val targetInCardLocal = Offset(
+            x = workBounds.center.x - cardBounds.left,
+            y = workBounds.center.y - cardBounds.top,
+        )
+        frontCard.performTouchInput {
+            down(center)
+            advanceEventTime(380L)
+            val start = center
+            for (step in 1..8) {
+                advanceEventTime(25L)
+                val fraction = step / 8f
+                moveTo(
+                    Offset(
+                        x = start.x + (targetInCardLocal.x - start.x) * fraction,
+                        y = start.y + (targetInCardLocal.y - start.y) * fraction,
+                    ),
+                )
+            }
+            advanceEventTime(80L)
+            up()
+        }
+        composeRule.waitUntil(timeoutMillis = 8_000L) {
+            composeRule.onAllNodesWithText("Moved to Work").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithText("Moved to Work").assertIsDisplayed()
+        composeRule.onNodeWithText("View").performClick()
+        composeRule.waitUntil(timeoutMillis = 8_000L) {
+            composeRule.onAllNodesWithText("Moved to Work").fetchSemanticsNodes().isEmpty() &&
+                composeRule.onAllNodesWithText("Example Domain").fetchSemanticsNodes().isNotEmpty()
+        }
+        SystemClock.sleep(350L)
+        captureEmulatorScreenshot("07d_emulator_tab_moved_to_work.png")
 
         // 8. Open dedicated Bookmarks sheet from Tab Switcher bottom-left button (zero Pinned section)
         composeRule.onNodeWithContentDescription("Bookmarks").performClick()

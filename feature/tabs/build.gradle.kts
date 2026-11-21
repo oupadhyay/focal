@@ -37,4 +37,6 @@ dependencies {
     implementation(libs.androidx.compose.material3)
 
     api(libs.androidx.work.runtime.ktx)
+
+    testImplementation(libs.junit)
 }

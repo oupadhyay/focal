@@ -84,6 +84,7 @@ class BrowserSessionViewModel(
     private val sessionLock = Any()
     private val sessionMap = LinkedHashMap<String, EngineSession>()
     private val sessionJobs = ConcurrentHashMap<String, Job>()
+    private val tabSpaceIds = ConcurrentHashMap<String, String>()
     private val persistedNonPrivateTabIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     private val previewLock = Any()
@@ -161,6 +162,7 @@ class BrowserSessionViewModel(
 
                 for (archivedId in archivedLiveIds) {
                     persistedNonPrivateTabIds.remove(archivedId)
+                    tabSpaceIds.remove(archivedId)
                     sessionJobs.remove(archivedId)?.cancel()
                     removeSessionInternal(archivedId)?.dispose()
                     removePreviewBitmap(archivedId)
@@ -574,6 +576,7 @@ class BrowserSessionViewModel(
 
     fun closeTab(tabId: String, activeSpaceTabs: List<TabMetadataEntity>) {
         sessionJobs.remove(tabId)?.cancel()
+        tabSpaceIds.remove(tabId)
         val disposedSession = removeSessionInternal(tabId)
         disposedSession?.dispose()
         removePreviewBitmap(tabId)
@@ -603,6 +606,44 @@ class BrowserSessionViewModel(
         }
     }
 
+    /**
+     * Moves a regular (non-private) tab into [targetSpaceId], preserving its live WebView session,
+     * preview bitmap, and updating [tabSpaceIds] so future navigations persist under the new group.
+     */
+    fun moveTabToSpace(
+        tabId: String,
+        targetSpaceId: String,
+        activeSpaceTabs: List<TabMetadataEntity>,
+    ) {
+        if (targetSpaceId.isBlank() || _isPrivateAperture.value) return
+        val isPrivateTab = synchronized(privateTabLock) { privateTabMap.containsKey(tabId) } ||
+            getSession(tabId)?.isPrivate == true
+        if (isPrivateTab) return
+
+        val existingTab = activeSpaceTabs.firstOrNull { it.id == tabId }
+        val currentSpace = existingTab?.spaceId ?: tabSpaceIds[tabId]
+        if (currentSpace == targetSpaceId) return
+
+        val now = System.currentTimeMillis()
+        tabSpaceIds[tabId] = targetSpaceId
+        persistedNonPrivateTabIds.add(tabId)
+        viewModelScope.launch(Dispatchers.IO) {
+            database.tabMetadataDao().moveTabToSpace(
+                tabId = tabId,
+                targetSpaceId = targetSpaceId,
+                nowEpochMs = now,
+            )
+        }
+
+        if (_selectedTabId.value == tabId) {
+            val nextInCurrentSpace = activeSpaceTabs.firstOrNull { it.id != tabId }?.id
+            if (nextInCurrentSpace != null) {
+                _selectedTabId.value = nextInCurrentSpace
+                FocalMediaBridge.onSelectedTabChanged(nextInCurrentSpace)
+            }
+        }
+    }
+
     fun closeAllPrivateTabs(fallbackRegularTabs: List<TabMetadataEntity>) {
         val privateSessionIds = synchronized(sessionLock) {
             sessionMap.filterValues { it.isPrivate }.keys.toList()
@@ -614,6 +655,7 @@ class BrowserSessionViewModel(
 
         for (id in allPrivateIds) {
             sessionJobs.remove(id)?.cancel()
+            tabSpaceIds.remove(id)
             removeSessionInternal(id)?.dispose()
             removePreviewBitmap(id)
             FocalMediaBridge.clearIfOwnedBy(id)
@@ -641,6 +683,7 @@ class BrowserSessionViewModel(
             sessionMap[tabId]?.let { return it }
             val created = browserEngine.createSession(isPrivate = isPrivate, spaceId = spaceId)
             sessionMap[tabId] = created
+            tabSpaceIds[tabId] = spaceId
             _liveSessions.value = LinkedHashMap(sessionMap)
             sessionJobs[tabId] = observeRegisteredSession(
                 fixedTabId = tabId,
@@ -690,7 +733,7 @@ class BrowserSessionViewModel(
                         .collect { proj ->
                             upsertPrivateTabInMemory(
                                 tabId = fixedTabId,
-                                spaceId = fixedSpaceId,
+                                spaceId = tabSpaceIds[fixedTabId] ?: fixedSpaceId,
                                 url = proj.url,
                                 domain = proj.domain,
                                 title = proj.title.ifBlank { proj.domain.ifBlank { proj.url } },
@@ -736,7 +779,7 @@ class BrowserSessionViewModel(
                             database.tabMetadataDao().upsertTab(
                                 TabMetadataEntity(
                                     id = fixedTabId,
-                                    spaceId = fixedSpaceId,
+                                    spaceId = tabSpaceIds[fixedTabId] ?: fixedSpaceId,
                                     url = proj.url,
                                     domain = proj.domain,
                                     title = proj.title.ifBlank { proj.domain.ifBlank { proj.url } },
@@ -833,6 +876,7 @@ class BrowserSessionViewModel(
             job.cancel()
         }
         sessionJobs.clear()
+        tabSpaceIds.clear()
 
         synchronized(previewLock) {
             previewMap.clear()

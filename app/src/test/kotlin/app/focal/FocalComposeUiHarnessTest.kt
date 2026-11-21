@@ -12,16 +12,19 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.AndroidComposeTestRule
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTouchInput
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.focal.database.BookmarkEntity
@@ -45,6 +48,8 @@ import app.focal.sync.SyncConnectionStatus
 import app.focal.sync.SyncSessionUiState
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.persistentMapOf
+import kotlinx.collections.immutable.toImmutableList
+import kotlinx.collections.immutable.toImmutableMap
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -291,6 +296,138 @@ class FocalComposeUiHarnessTest {
 
         val tabSnap = composeRule.captureSnapshotPng("03_tab_switcher_clean.png")
         assertTrue(tabSnap.length() > 1_000L)
+    }
+
+    @Test
+    fun tabSwitcherSheet_longPressDragMovesTabBetweenGroups() {
+        val now = 1_763_400_000_000L
+        val spaces = persistentListOf(
+            SpaceEntity("personal", "Personal", "#F4725E", 0, now),
+            SpaceEntity("work", "Work", "#94A3B8", 1, now),
+            SpaceEntity("reading", "Reading", "#4ADE80", 2, now),
+        )
+        val initialTabs = listOf(
+            TabMetadataEntity(
+                id = "t1",
+                spaceId = "personal",
+                url = "https://stratechery.com",
+                domain = "stratechery.com",
+                title = "Stratechery by Ben Thompson",
+                lastActiveEpochMs = now - 60_000L,
+                createdAtEpochMs = now - 120_000L,
+            ),
+            TabMetadataEntity(
+                id = "t2",
+                spaceId = "personal",
+                url = "https://github.com/oupadhyay/focal",
+                domain = "github.com",
+                title = "oupadhyay/focal",
+                lastActiveEpochMs = now - 300_000L,
+                createdAtEpochMs = now - 600_000L,
+            ),
+        )
+
+        val previewBmp = Bitmap.createBitmap(360, 680, Bitmap.Config.RGB_565).apply {
+            val canvas = Canvas(this)
+            canvas.drawColor(android.graphics.Color.WHITE)
+            val paint = android.graphics.Paint().apply { color = android.graphics.Color.rgb(245, 240, 230) }
+            canvas.drawRect(0f, 0f, 360f, 110f, paint)
+            paint.color = android.graphics.Color.rgb(225, 145, 45)
+            canvas.drawCircle(52f, 55f, 24f, paint)
+        }
+
+        val movedRecords = mutableListOf<Pair<String, String>>()
+        val selectedRecords = mutableListOf<String>()
+        var currentActiveSpace = "personal"
+
+        composeRule.setContent {
+            var allTabs by remember { mutableStateOf(initialTabs) }
+            var activeSpaceId by remember { mutableStateOf("personal") }
+            val activeSpaceTabs = remember(allTabs, activeSpaceId) {
+                allTabs.filter { it.spaceId == activeSpaceId }.toImmutableList()
+            }
+            val counts = remember(allTabs) {
+                allTabs.groupingBy { it.spaceId }.eachCount().toImmutableMap()
+            }
+
+            FocalTheme(darkGlass = true) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(FocalTheme.colors.canvasBackground),
+                ) {
+                    TabSwitcherSheet(
+                        activeTabs = activeSpaceTabs,
+                        archivedTabs = persistentListOf(),
+                        selectedTabId = "t1",
+                        spaces = spaces,
+                        activeSpaceId = activeSpaceId,
+                        tabCountBySpace = counts,
+                        tabPreviews = persistentMapOf("t1" to previewBmp),
+                        isPrivateAperture = false,
+                        nowEpochMs = now,
+                        onSelectSpace = { next ->
+                            activeSpaceId = next
+                            currentActiveSpace = next
+                        },
+                        onTogglePrivateMode = {},
+                        onSelectTab = { id -> selectedRecords += id },
+                        onCloseTab = {},
+                        onMoveTabToSpace = { tabId, targetSpace ->
+                            movedRecords += tabId to targetSpace
+                            allTabs = allTabs.map { tab ->
+                                if (tab.id == tabId) tab.copy(spaceId = targetSpace) else tab
+                            }
+                        },
+                        onRestoreArchivedTab = {},
+                        onOpenBookmarks = {},
+                        onNewSearch = {},
+                        onDone = {},
+                    )
+                }
+            }
+        }
+
+        composeRule.waitForIdle()
+        val frontCard = composeRule.onNodeWithTag("front_tab_card")
+        val cardBounds = frontCard.fetchSemanticsNode().boundsInRoot
+        val workBounds = composeRule.onNodeWithText("Work").fetchSemanticsNode().boundsInRoot
+        val targetInCardLocal = Offset(
+            x = workBounds.center.x - cardBounds.left,
+            y = workBounds.center.y - cardBounds.top,
+        )
+
+        // Press and hold past 260ms threshold, then drag over the "Work" group pill
+        frontCard.performTouchInput {
+            down(center)
+            advanceEventTime(340L)
+            moveTo(center + Offset(0f, -4f))
+            advanceEventTime(40L)
+            moveTo(targetInCardLocal)
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("Move to Work").assertIsDisplayed()
+
+        // Capture mid-drag visual snapshot to inspect floating ghost card + highlighted Work drop pill
+        val midDragSnap = composeRule.captureSnapshotPng("03b_tab_switcher_drag_to_group.png")
+        assertTrue(midDragSnap.length() > 1_000L)
+
+        // Release onto Work — moves tab without accidentally triggering tab selection
+        frontCard.performTouchInput {
+            up()
+        }
+        composeRule.waitForIdle()
+
+        assertEquals(listOf("t1" to "work"), movedRecords)
+        assertTrue("Releasing drag must not trigger onSelectTab", selectedRecords.isEmpty())
+        composeRule.onNodeWithText("Moved to Work").assertIsDisplayed()
+        composeRule.onNodeWithText("View").assertIsDisplayed()
+
+        // Tap 1-tap View jump on confirmation pill and verify tab is live inside Work
+        composeRule.onNodeWithText("View").performClick()
+        composeRule.waitForIdle()
+        assertEquals("work", currentActiveSpace)
+        composeRule.onAllNodesWithText("Stratechery by Ben Thompson")[0].assertIsDisplayed()
     }
 
     @Test
