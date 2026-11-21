@@ -37,8 +37,34 @@ class WarmWebViewPool(
     private val providerWarmed = AtomicBoolean(false)
     private val shutDown = AtomicBoolean(false)
 
+    /**
+     * Cold-launch provider warmup: loads Chromium's WebView APK & native binaries strictly on a
+     * background daemon thread (`setShouldRunUiThreadStartUpTasks(false)`), keeping 0ms of
+     * synchronous Chromium initialization off the main thread during initial `FocusEvent` and
+     * `SearchSheet` / IME launch.
+     */
     @androidx.annotation.OptIn(WebViewCompat.ExperimentalAsyncStartUp::class)
-    fun scheduleIdleWarmup(delayMs: Long = COLD_WARMUP_DELAY_MS) {
+    fun scheduleBackgroundProviderWarmup() {
+        if (shutDown.get()) return
+        if (!providerWarmed.compareAndSet(false, true)) return
+
+        try {
+            val config = WebViewStartUpConfig.Builder(warmupExecutor)
+                .setShouldRunUiThreadStartUpTasks(false)
+                .build()
+            WebViewCompat.startUpWebView(config) {
+                // Background Chromium package & native binary warmup finished with zero UI-thread stall
+            }
+        } catch (_: Throwable) {
+            // Headless JVM / older WebView APKs fall back cleanly to on-demand WebView creation
+        }
+    }
+
+    /**
+     * Replenishes the standby `WebView` pool on an idle main-looper slot once Chromium has
+     * already been initialized by a live tab (subsequent inflations take `< 15ms`).
+     */
+    fun scheduleIdleWarmup(delayMs: Long = REPLENISH_WARMUP_DELAY_MS) {
         if (shutDown.get()) return
         if (!idleScheduled.compareAndSet(false, true)) return
 
@@ -47,20 +73,7 @@ class WarmWebViewPool(
                 idleScheduled.set(false)
                 return@postDelayed
             }
-            if (providerWarmed.compareAndSet(false, true)) {
-                try {
-                    val config = WebViewStartUpConfig.Builder(warmupExecutor)
-                        .setShouldRunUiThreadStartUpTasks(true)
-                        .build()
-                    WebViewCompat.startUpWebView(config) {
-                        enqueueIdleInflateOnMain()
-                    }
-                } catch (_: Throwable) {
-                    enqueueIdleInflateOnMain()
-                }
-            } else {
-                enqueueIdleInflateOnMain()
-            }
+            enqueueIdleInflateOnMain()
         }, delayMs.coerceAtLeast(0L))
     }
 
@@ -166,7 +179,6 @@ class WarmWebViewPool(
     }
 
     companion object {
-        private const val COLD_WARMUP_DELAY_MS = 1_500L
         private const val REPLENISH_WARMUP_DELAY_MS = 400L
     }
 }

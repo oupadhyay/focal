@@ -115,6 +115,7 @@ fun SearchSheet(
     onNavigateToUrl: (url: String, isPrivate: Boolean) -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
+    animateEntrance: Boolean = true,
 ) {
     val colors = FocalTheme.colors
     val typography = FocalTheme.typography
@@ -186,7 +187,7 @@ fun SearchSheet(
                 .navigationBarsPadding()
                 .zeroJumpImePadding()
                 .padding(bottom = 8.dp)
-                .focalSheetEntrance(riseDp = 12.dp)
+                .then(if (animateEntrance) Modifier.focalSheetEntrance(riseDp = 12.dp) else Modifier)
                 .shadow(
                     elevation = 24.dp,
                     shape = FocalGeometry.SheetOuterShape,

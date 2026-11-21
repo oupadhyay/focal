@@ -33,7 +33,7 @@ class WebViewBrowserEngine(
     private val activePrivateSessionIds = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
 
     override fun warmup() {
-        warmPool.scheduleIdleWarmup()
+        warmPool.scheduleBackgroundProviderWarmup()
     }
 
     @SuppressLint("RequiresFeature")

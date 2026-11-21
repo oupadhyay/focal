@@ -132,6 +132,56 @@ half4 main(float2 fragCoord) {
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 private class SmokedGlassShaderHolder {
     val shader: RuntimeShader = RuntimeShader(SMOKED_GLASS_AGSL)
+    private var cachedWidth: Float = -1f
+    private var cachedHeight: Float = -1f
+    private var cachedRadiusPx: Float = -1f
+    private var cachedBase: Color = Color.Unspecified
+    private var cachedAmbient: Color = Color.Unspecified
+    private var cachedEffect: androidx.compose.ui.graphics.RenderEffect? = null
+
+    fun obtainRenderEffect(
+        width: Float,
+        height: Float,
+        radiusPx: Float,
+        base: Color,
+        ambient: Color,
+    ): androidx.compose.ui.graphics.RenderEffect {
+        val current = cachedEffect
+        if (
+            current != null &&
+            cachedWidth == width &&
+            cachedHeight == height &&
+            cachedRadiusPx == radiusPx &&
+            cachedBase == base &&
+            cachedAmbient == ambient
+        ) {
+            return current
+        }
+        shader.setFloatUniform("resolution", width, height)
+        shader.setFloatUniform("glassBaseTint", base.red, base.green, base.blue, base.alpha)
+        shader.setFloatUniform("spaceAmbient", ambient.red, ambient.green, ambient.blue, ambient.alpha)
+
+        val blurEffect = AndroidRenderEffect.createBlurEffect(
+            radiusPx,
+            radiusPx,
+            Shader.TileMode.CLAMP,
+        )
+        val smokedEffect = AndroidRenderEffect.createRuntimeShaderEffect(
+            shader,
+            "blurredBackdrop",
+        )
+        val next = AndroidRenderEffect
+            .createChainEffect(smokedEffect, blurEffect)
+            .asComposeRenderEffect()
+
+        cachedWidth = width
+        cachedHeight = height
+        cachedRadiusPx = radiusPx
+        cachedBase = base
+        cachedAmbient = ambient
+        cachedEffect = next
+        return next
+    }
 }
 
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
@@ -202,7 +252,23 @@ fun Modifier.smokedGlassBackdropEffect(
     } else {
         null
     }
+    return this.smokedGlassBackdropEffectInternal(
+        api33Holder = api33Holder,
+        glassBaseTintState = glassBaseTintState,
+        spaceAmbientState = spaceAmbientState,
+        blurRadius = blurRadius,
+        enabled = enabled,
+    )
+}
 
+@Composable
+private fun Modifier.smokedGlassBackdropEffectInternal(
+    api33Holder: SmokedGlassShaderHolder?,
+    glassBaseTintState: State<Color>,
+    spaceAmbientState: State<Color>,
+    blurRadius: Dp,
+    enabled: Boolean,
+): Modifier {
     return this.graphicsLayer {
         if (!enabled) {
             renderEffect = null
@@ -216,23 +282,13 @@ fun Modifier.smokedGlassBackdropEffect(
         val radiusPx = blurRadius.toPx().coerceAtLeast(1f)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && api33Holder != null) {
-            val glassShader = api33Holder.shader
-            glassShader.setFloatUniform("resolution", w, h)
-            glassShader.setFloatUniform("glassBaseTint", base.red, base.green, base.blue, base.alpha)
-            glassShader.setFloatUniform("spaceAmbient", ambient.red, ambient.green, ambient.blue, ambient.alpha)
-
-            val blurEffect = AndroidRenderEffect.createBlurEffect(
-                radiusPx,
-                radiusPx,
-                Shader.TileMode.CLAMP,
+            renderEffect = api33Holder.obtainRenderEffect(
+                width = w,
+                height = h,
+                radiusPx = radiusPx,
+                base = base,
+                ambient = ambient,
             )
-            val smokedEffect = AndroidRenderEffect.createRuntimeShaderEffect(
-                glassShader,
-                "blurredBackdrop",
-            )
-            renderEffect = AndroidRenderEffect
-                .createChainEffect(smokedEffect, blurEffect)
-                .asComposeRenderEffect()
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             renderEffect = AndroidRenderEffect
                 .createBlurEffect(radiusPx, radiusPx, Shader.TileMode.CLAMP)
@@ -271,13 +327,13 @@ fun SmokedGlassBox(
     val emptyAmbient = remember { mutableStateOf(Color.Transparent) }
     val effectiveAmbient = spaceAmbientState ?: emptyAmbient
     val coordHolder = remember { BackdropCoordHolder() }
-    val agslGlassHolder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+
+    val useLiveBackdrop = backdropLayer != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    val agslGlassHolder = if (useLiveBackdrop && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         remember { runCatching { SmokedGlassShaderHolder() }.getOrNull() }
     } else {
         null
     }
-
-    val useLiveBackdrop = backdropLayer != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
     val specularBrush = remember(borderSpecular) {
         Brush.verticalGradient(
             colors = listOf(
@@ -315,10 +371,12 @@ fun SmokedGlassBox(
             Box(
                 modifier = Modifier
                     .matchParentSize()
-                    .smokedGlassBackdropEffect(
+                    .smokedGlassBackdropEffectInternal(
+                        api33Holder = agslGlassHolder,
                         glassBaseTintState = glassTintState,
                         spaceAmbientState = effectiveAmbient,
                         blurRadius = blurRadius,
+                        enabled = true,
                     )
                     .drawBehind {
                         drawRect(color = fallbackCanvasColor)

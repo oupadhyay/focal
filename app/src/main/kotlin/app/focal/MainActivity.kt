@@ -770,6 +770,12 @@ private fun FocalRootCoordinator(
                                 }
                             },
                     ) {
+                        var hasLeftInitialSearch by remember { mutableStateOf(overlaySheet != ActiveOverlaySheet.Search) }
+                        LaunchedEffect(overlaySheet) {
+                            if (overlaySheet != ActiveOverlaySheet.Search) {
+                                hasLeftInitialSearch = true
+                            }
+                        }
                         AnimatedContent(
                             targetState = overlaySheet,
                             contentKey = { sheet ->
@@ -840,6 +846,7 @@ private fun FocalRootCoordinator(
                                     onDismiss = {
                                         sessionVm.setOverlaySheet(ActiveOverlaySheet.None)
                                     },
+                                    animateEntrance = hasLeftInitialSearch,
                                 )
                             }
 
