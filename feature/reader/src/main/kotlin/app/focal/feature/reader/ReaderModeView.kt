@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
@@ -44,10 +45,12 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.focal.design.AlloCrispDisplay
+import app.focal.design.AppChromeTheme
 import app.focal.design.FocalActionTile
 import app.focal.design.FocalGeometry
 import app.focal.design.FocalGlyphs
@@ -371,6 +374,7 @@ fun PageMenuAndSiteOverridesSheet(
     canGoForward: Boolean,
     blockedCountInTab: Long,
     overrides: OriginOverrides,
+    appTheme: AppChromeTheme = AppChromeTheme.DARK,
     translationStatus: PageTranslationStatus = PageTranslationStatus(),
     isCurrentPageBookmarked: Boolean = false,
     initialTab: PageMenuTab = PageMenuTab.MENU,
@@ -384,6 +388,7 @@ fun PageMenuAndSiteOverridesSheet(
     onOpenReaderMode: () -> Unit,
     onTranslatePage: () -> Unit = {},
     onUpdateSiteOverrides: (OriginOverrides) -> Unit,
+    onUpdateAppTheme: (AppChromeTheme) -> Unit = {},
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -635,157 +640,242 @@ fun PageMenuAndSiteOverridesSheet(
                             }
                         }
                     } else {
-                        // Grouped Live Per-Site Settings Card (Zero Jargon Subtitles, Sleek Custom Switches)
-                        FocalGroupedCard {
-                            FocalMenuRow(
-                                title = "Block Ads & Trackers",
-                                icon = FocalGlyphs.Shield,
-                                trailingLabel = if (blockedCountInTab > 0) {
-                                    "$blockedCountInTab"
-                                } else {
-                                    null
-                                },
-                                onClick = {
-                                    onUpdateSiteOverrides(
-                                        overrides.copy(blockAdsAndTrackers = !overrides.blockAdsAndTrackers),
-                                    )
-                                },
-                                trailingContent = {
-                                    FocalSwitch(
-                                        checked = overrides.blockAdsAndTrackers,
-                                        onCheckedChange = {
-                                            onUpdateSiteOverrides(overrides.copy(blockAdsAndTrackers = it))
-                                        },
-                                    )
-                                },
-                            )
-                            FocalHairlineDivider()
-                            FocalMenuRow(
-                                title = "Dark Web Pages",
-                                icon = FocalGlyphs.Moon,
-                                onClick = {
-                                    onUpdateSiteOverrides(
-                                        overrides.copy(forceDarkWebSurface = !overrides.forceDarkWebSurface),
-                                    )
-                                },
-                                trailingContent = {
-                                    FocalSwitch(
-                                        checked = overrides.forceDarkWebSurface,
-                                        onCheckedChange = {
-                                            onUpdateSiteOverrides(overrides.copy(forceDarkWebSurface = it))
-                                        },
-                                    )
-                                },
-                            )
-                            FocalHairlineDivider()
-                            FocalMenuRow(
-                                title = "Editorial Fonts",
-                                icon = FocalGlyphs.Typography,
-                                onClick = {
-                                    onUpdateSiteOverrides(
-                                        overrides.copy(overridePublisherFonts = !overrides.overridePublisherFonts),
-                                    )
-                                },
-                                trailingContent = {
-                                    FocalSwitch(
-                                        checked = overrides.overridePublisherFonts,
-                                        onCheckedChange = {
-                                            onUpdateSiteOverrides(overrides.copy(overridePublisherFonts = it))
-                                        },
-                                    )
-                                },
-                            )
-                            FocalHairlineDivider()
-                            FocalMenuRow(
-                                title = "Auto Reader Mode",
-                                icon = FocalGlyphs.Reader,
-                                onClick = {
-                                    onUpdateSiteOverrides(
-                                        overrides.copy(autoReaderMode = !overrides.autoReaderMode),
-                                    )
-                                },
-                                trailingContent = {
-                                    FocalSwitch(
-                                        checked = overrides.autoReaderMode,
-                                        onCheckedChange = {
-                                            onUpdateSiteOverrides(overrides.copy(autoReaderMode = it))
-                                        },
-                                    )
-                                },
-                            )
-                            FocalHairlineDivider()
-                            FocalMenuRow(
-                                title = "JavaScript",
-                                icon = FocalGlyphs.Code,
-                                onClick = {
-                                    onUpdateSiteOverrides(
-                                        overrides.copy(javascriptEnabled = !overrides.javascriptEnabled),
-                                    )
-                                },
-                                trailingContent = {
-                                    FocalSwitch(
-                                        checked = overrides.javascriptEnabled,
-                                        onCheckedChange = {
-                                            onUpdateSiteOverrides(overrides.copy(javascriptEnabled = it))
-                                        },
-                                    )
-                                },
-                            )
-                            FocalHairlineDivider()
-                            FocalMenuRow(
-                                title = "Page Zoom",
-                                icon = FocalGlyphs.Search,
-                                trailingContent = {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 460.dp)
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            // Grouped Live Per-Site Settings Card (Zero Jargon Subtitles, Sleek Custom Switches)
+                            FocalGroupedCard {
+                                FocalMenuRow(
+                                    title = "Block Ads & Trackers",
+                                    icon = FocalGlyphs.Shield,
+                                    trailingLabel = if (blockedCountInTab > 0) {
+                                        "$blockedCountInTab"
+                                    } else {
+                                        null
+                                    },
+                                    onClick = {
+                                        onUpdateSiteOverrides(
+                                            overrides.copy(blockAdsAndTrackers = !overrides.blockAdsAndTrackers),
+                                        )
+                                    },
+                                    trailingContent = {
+                                        FocalSwitch(
+                                            checked = overrides.blockAdsAndTrackers,
+                                            onCheckedChange = {
+                                                onUpdateSiteOverrides(overrides.copy(blockAdsAndTrackers = it))
+                                            },
+                                        )
+                                    },
+                                )
+                                FocalHairlineDivider()
+                                FocalMenuRow(
+                                    title = "Dark Web Pages",
+                                    icon = FocalGlyphs.Moon,
+                                    onClick = {
+                                        onUpdateSiteOverrides(
+                                            overrides.copy(forceDarkWebSurface = !overrides.forceDarkWebSurface),
+                                        )
+                                    },
+                                    trailingContent = {
+                                        FocalSwitch(
+                                            checked = overrides.forceDarkWebSurface,
+                                            onCheckedChange = {
+                                                onUpdateSiteOverrides(overrides.copy(forceDarkWebSurface = it))
+                                            },
+                                        )
+                                    },
+                                )
+                                FocalHairlineDivider()
+                                FocalMenuRow(
+                                    title = "Editorial Fonts",
+                                    icon = FocalGlyphs.Typography,
+                                    onClick = {
+                                        onUpdateSiteOverrides(
+                                            overrides.copy(overridePublisherFonts = !overrides.overridePublisherFonts),
+                                        )
+                                    },
+                                    trailingContent = {
+                                        FocalSwitch(
+                                            checked = overrides.overridePublisherFonts,
+                                            onCheckedChange = {
+                                                onUpdateSiteOverrides(overrides.copy(overridePublisherFonts = it))
+                                            },
+                                        )
+                                    },
+                                )
+                                FocalHairlineDivider()
+                                FocalMenuRow(
+                                    title = "Auto Reader Mode",
+                                    icon = FocalGlyphs.Reader,
+                                    onClick = {
+                                        onUpdateSiteOverrides(
+                                            overrides.copy(autoReaderMode = !overrides.autoReaderMode),
+                                        )
+                                    },
+                                    trailingContent = {
+                                        FocalSwitch(
+                                            checked = overrides.autoReaderMode,
+                                            onCheckedChange = {
+                                                onUpdateSiteOverrides(overrides.copy(autoReaderMode = it))
+                                            },
+                                        )
+                                    },
+                                )
+                                FocalHairlineDivider()
+                                FocalMenuRow(
+                                    title = "JavaScript",
+                                    icon = FocalGlyphs.Code,
+                                    onClick = {
+                                        onUpdateSiteOverrides(
+                                            overrides.copy(javascriptEnabled = !overrides.javascriptEnabled),
+                                        )
+                                    },
+                                    trailingContent = {
+                                        FocalSwitch(
+                                            checked = overrides.javascriptEnabled,
+                                            onCheckedChange = {
+                                                onUpdateSiteOverrides(overrides.copy(javascriptEnabled = it))
+                                            },
+                                        )
+                                    },
+                                )
+                                FocalHairlineDivider()
+                                FocalMenuRow(
+                                    title = "Page Zoom",
+                                    icon = FocalGlyphs.Search,
+                                    trailingContent = {
+                                        Row(
+                                            modifier = Modifier
+                                                .clip(CircleShape)
+                                                .background(colors.inkPrimary.copy(alpha = 0.08f))
+                                                .padding(horizontal = 4.dp, vertical = 3.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(26.dp)
+                                                    .clip(CircleShape)
+                                                    .clickable {
+                                                        val next = (overrides.pageZoomPercent - 10).coerceIn(85, 150)
+                                                        onUpdateSiteOverrides(overrides.copy(pageZoomPercent = next))
+                                                    },
+                                                contentAlignment = Alignment.Center,
+                                            ) {
+                                                Icon(
+                                                    imageVector = FocalGlyphs.Minus,
+                                                    contentDescription = "Zoom out",
+                                                    tint = colors.inkPrimary,
+                                                    modifier = Modifier.size(14.dp),
+                                                )
+                                            }
+                                            Text(
+                                                text = "${overrides.pageZoomPercent}%",
+                                                style = typography.tabBadgeNumeral,
+                                                color = colors.inkPrimary,
+                                            )
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(26.dp)
+                                                    .clip(CircleShape)
+                                                    .clickable {
+                                                        val next = (overrides.pageZoomPercent + 10).coerceIn(85, 150)
+                                                        onUpdateSiteOverrides(overrides.copy(pageZoomPercent = next))
+                                                    },
+                                                contentAlignment = Alignment.Center,
+                                            ) {
+                                                Icon(
+                                                    imageVector = FocalGlyphs.Plus,
+                                                    contentDescription = "Zoom in",
+                                                    tint = colors.inkPrimary,
+                                                    modifier = Modifier.size(14.dp),
+                                                )
+                                            }
+                                        }
+                                    },
+                                )
+                            }
+
+                            // Global App Chrome Theme Card (Tab Switcher, Bookmarks & Menus — defaults to Dark)
+                            FocalGroupedCard {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                                ) {
                                     Row(
-                                        modifier = Modifier
-                                            .clip(CircleShape)
-                                            .background(colors.inkPrimary.copy(alpha = 0.08f))
-                                            .padding(horizontal = 4.dp, vertical = 3.dp),
+                                        modifier = Modifier.fillMaxWidth(),
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     ) {
                                         Box(
-                                            modifier = Modifier
-                                                .size(26.dp)
-                                                .clip(CircleShape)
-                                                .clickable {
-                                                    val next = (overrides.pageZoomPercent - 10).coerceIn(85, 150)
-                                                    onUpdateSiteOverrides(overrides.copy(pageZoomPercent = next))
-                                                },
+                                            modifier = Modifier.size(20.dp),
                                             contentAlignment = Alignment.Center,
                                         ) {
                                             Icon(
-                                                imageVector = FocalGlyphs.Minus,
-                                                contentDescription = "Zoom out",
-                                                tint = colors.inkPrimary,
-                                                modifier = Modifier.size(14.dp),
+                                                imageVector = FocalGlyphs.Moon,
+                                                contentDescription = null,
+                                                tint = colors.inkSecondary,
+                                                modifier = Modifier.size(19.dp),
                                             )
                                         }
+                                        Spacer(Modifier.width(14.dp))
                                         Text(
-                                            text = "${overrides.pageZoomPercent}%",
-                                            style = typography.tabBadgeNumeral,
+                                            text = "App Theme",
+                                            style = typography.bodyCompact.copy(
+                                                fontWeight = FontWeight.Medium,
+                                                fontSize = 15.sp,
+                                                lineHeight = 20.sp,
+                                            ),
                                             color = colors.inkPrimary,
+                                            modifier = Modifier.weight(1f),
                                         )
-                                        Box(
-                                            modifier = Modifier
-                                                .size(26.dp)
-                                                .clip(CircleShape)
-                                                .clickable {
-                                                    val next = (overrides.pageZoomPercent + 10).coerceIn(85, 150)
-                                                    onUpdateSiteOverrides(overrides.copy(pageZoomPercent = next))
-                                                },
-                                            contentAlignment = Alignment.Center,
-                                        ) {
-                                            Icon(
-                                                imageVector = FocalGlyphs.Plus,
-                                                contentDescription = "Zoom in",
-                                                tint = colors.inkPrimary,
-                                                modifier = Modifier.size(14.dp),
-                                            )
+                                        Text(
+                                            text = "Tabs & menus",
+                                            style = typography.captionMetadata,
+                                            color = colors.inkSecondary,
+                                        )
+                                    }
+
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(CircleShape)
+                                            .background(colors.surfacePillSubtle)
+                                            .padding(3.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    ) {
+                                        AppChromeTheme.entries.forEach { option ->
+                                            val selected = appTheme == option
+                                            Box(
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .clip(CircleShape)
+                                                    .background(
+                                                        if (selected) colors.surfacePillActive else Color.Transparent,
+                                                    )
+                                                    .clickable { onUpdateAppTheme(option) }
+                                                    .padding(vertical = 7.dp),
+                                                contentAlignment = Alignment.Center,
+                                            ) {
+                                                Text(
+                                                    text = option.label,
+                                                    style = typography.controlPillLabel,
+                                                    color = if (selected) {
+                                                        colors.inkOnPillActive
+                                                    } else {
+                                                        colors.inkSecondary
+                                                    },
+                                                )
+                                            }
                                         }
                                     }
-                                },
-                            )
+                                }
+                            }
                         }
                     }
                 }

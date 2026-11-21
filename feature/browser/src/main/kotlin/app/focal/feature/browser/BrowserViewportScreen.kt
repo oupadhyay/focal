@@ -74,6 +74,7 @@ fun BrowserViewportScreen(
     activeSession: EngineSession?,
     tabCount: Int,
     isPrivateAperture: Boolean,
+    adaptiveBottomBarDarkGlass: Boolean = FocalTheme.colors.isDarkGlass,
     isOverlaySheetOpen: Boolean = false,
     isInPictureInPictureMode: Boolean = false,
     backdropGraphicsLayer: GraphicsLayer = rememberGraphicsLayer(),
@@ -193,76 +194,82 @@ fun BrowserViewportScreen(
             }
         }
 
-        // Layer 2: Floating Lower Dock (hidden in Picture-in-Picture and smoothly recedes when a sheet opens)
+        // Layer 2: Floating Lower Dock — adapts ONLY bottom bar elements to light/dark web pages
         if (!isInPictureInPictureMode && overlayDimProgress < 0.99f) {
             val effectiveBackdropLayer = if (hasLoadedWebUrl) null else backdropGraphicsLayer
-            CompositionLocalProvider(LocalFocalBackdropLayer provides effectiveBackdropLayer) {
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        .navigationBarsPadding()
-                        .padding(bottom = 12.dp)
-                        .graphicsLayer {
-                            val scrollHideY = bottomBarScrollHideFraction.floatValue * 18.dp.toPx()
-                            val sheetHideY = overlayDimProgress * 28.dp.toPx()
-                            translationY = scrollHideY + sheetHideY
-                            alpha = (1f - overlayDimProgress * 1.15f).coerceIn(0f, 1f)
-                        },
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    // Dock Row `8.dp` above the 3-Part Bar: Media Mini-Player (left) + Smart Pills (right)
-                    val activeMedia = mediaMiniPlayerInfo ?: sessionState.activeMedia
+            val dockDarkGlass = if (hasLoadedWebUrl) adaptiveBottomBarDarkGlass else colors.isDarkGlass
+            FocalTheme(
+                darkGlass = dockDarkGlass,
+                isPrivateAperture = isPrivateAperture,
+            ) {
+                CompositionLocalProvider(LocalFocalBackdropLayer provides effectiveBackdropLayer) {
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .navigationBarsPadding()
+                            .padding(bottom = 12.dp)
+                            .graphicsLayer {
+                                val scrollHideY = bottomBarScrollHideFraction.floatValue * 18.dp.toPx()
+                                val sheetHideY = overlayDimProgress * 28.dp.toPx()
+                                translationY = scrollHideY + sheetHideY
+                                alpha = (1f - overlayDimProgress * 1.15f).coerceIn(0f, 1f)
+                            },
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        // Dock Row `8.dp` above the 3-Part Bar: Media Mini-Player (left) + Smart Pills (right)
+                        val activeMedia = mediaMiniPlayerInfo ?: sessionState.activeMedia
 
-                    if (activeMedia != null || (hasLoadedWebUrl && (sessionState.isReaderEligible || showTranslatePill))) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            if (activeMedia != null) {
-                                MediaMiniPlayerDock(
-                                    mediaInfo = activeMedia,
-                                    onTogglePlayPause = onToggleMediaPlayPause,
-                                    onCyclePlaybackRate = onCycleMediaPlaybackRate,
-                                    onEnterPictureInPicture = onEnterPictureInPicture,
-                                    modifier = Modifier.weight(1f, fill = false),
+                        if (activeMedia != null || (hasLoadedWebUrl && (sessionState.isReaderEligible || showTranslatePill))) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                if (activeMedia != null) {
+                                    MediaMiniPlayerDock(
+                                        mediaInfo = activeMedia,
+                                        onTogglePlayPause = onToggleMediaPlayPause,
+                                        onCyclePlaybackRate = onCycleMediaPlaybackRate,
+                                        onEnterPictureInPicture = onEnterPictureInPicture,
+                                        modifier = Modifier.weight(1f, fill = false),
+                                    )
+                                } else {
+                                    Spacer(Modifier.size(1.dp))
+                                }
+
+                                SmartContextualPillsRow(
+                                    visible = pillsVisible && hasLoadedWebUrl,
+                                    showReaderPill = sessionState.isReaderEligible,
+                                    showTranslatePill = showTranslatePill,
+                                    translationPhase = translationPhase,
+                                    onOpenReader = onOpenReaderMode,
+                                    onTriggerTranslate = onTranslatePage,
                                 )
-                            } else {
-                                Spacer(Modifier.size(1.dp))
                             }
-
-                            SmartContextualPillsRow(
-                                visible = pillsVisible && hasLoadedWebUrl,
-                                showReaderPill = sessionState.isReaderEligible,
-                                showTranslatePill = showTranslatePill,
-                                translationPhase = translationPhase,
-                                onOpenReader = onOpenReaderMode,
-                                onTriggerTranslate = onTranslatePage,
-                            )
                         }
-                    }
 
-                    FocalBottomBar(
-                        tabCount = tabCount,
-                        domainOrHint = if (hasLoadedWebUrl) sessionState.domain else "",
-                        pageUrl = if (hasLoadedWebUrl) sessionState.url else "",
-                        favicon = if (hasLoadedWebUrl) sessionState.favicon else null,
-                        isHttps = sessionState.isHttps,
-                        isPrivateAperture = isPrivateAperture,
-                        isLoading = sessionState.isLoading,
-                        loadProgress = sessionState.loadProgress,
-                        telemetryFlow = activeSession?.telemetry,
-                        scrubOffsetPxState = scrubOffsetPxState,
-                        onOpenTabSwitcher = onOpenTabSwitcher,
-                        onCloseCurrentTab = onCloseCurrentTab,
-                        onOpenNewPrivateTab = onOpenNewPrivateTab,
-                        onTapCenterSearch = onOpenSearchSheet,
-                        onStepToAdjacentTab = onStepToAdjacentTab,
-                        onOpenPageMenu = onOpenPageMenu,
-                    )
+                        FocalBottomBar(
+                            tabCount = tabCount,
+                            domainOrHint = if (hasLoadedWebUrl) sessionState.domain else "",
+                            pageUrl = if (hasLoadedWebUrl) sessionState.url else "",
+                            favicon = if (hasLoadedWebUrl) sessionState.favicon else null,
+                            isHttps = sessionState.isHttps,
+                            isPrivateAperture = isPrivateAperture,
+                            isLoading = sessionState.isLoading,
+                            loadProgress = sessionState.loadProgress,
+                            telemetryFlow = activeSession?.telemetry,
+                            scrubOffsetPxState = scrubOffsetPxState,
+                            onOpenTabSwitcher = onOpenTabSwitcher,
+                            onCloseCurrentTab = onCloseCurrentTab,
+                            onOpenNewPrivateTab = onOpenNewPrivateTab,
+                            onTapCenterSearch = onOpenSearchSheet,
+                            onStepToAdjacentTab = onStepToAdjacentTab,
+                            onOpenPageMenu = onOpenPageMenu,
+                        )
+                    }
                 }
             }
         }

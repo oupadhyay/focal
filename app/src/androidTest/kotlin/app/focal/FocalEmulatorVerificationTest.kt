@@ -15,6 +15,8 @@ import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import app.focal.adblock.NativeAdblockController
+import app.focal.design.AppChromeTheme
+import app.focal.design.FocalAppearanceStore
 import app.focal.feature.search.LaunchKeyboardStore
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -215,6 +217,14 @@ class FocalEmulatorVerificationTest {
         composeRule.onNodeWithText("Dark Web Pages").assertIsDisplayed()
         composeRule.onNodeWithText("Editorial Fonts").assertIsDisplayed()
         composeRule.onNodeWithText("Auto Reader Mode").assertIsDisplayed()
+        composeRule.onNodeWithText("App Theme").assertIsDisplayed()
+        composeRule.onNodeWithText("Dark").assertIsDisplayed()
+        composeRule.onNodeWithText("Light").assertIsDisplayed()
+        composeRule.onNodeWithText("System").assertIsDisplayed()
+        assertEquals(
+            AppChromeTheme.DARK,
+            FocalAppearanceStore(composeRule.activity).readTheme(),
+        )
         SystemClock.sleep(300L)
         captureEmulatorScreenshot("07_emulator_site_settings.png")
 
@@ -227,7 +237,7 @@ class FocalEmulatorVerificationTest {
         }
         composeRule.onNodeWithText("example.com").assertIsDisplayed()
 
-        // 7. Open YAB-style Stacked Tab Switcher (top Space groups + live WebView card + Bookmarks button)
+        // 7. Open YAB-style Stacked Tab Switcher (Dark default even from light example.com + top Space groups)
         composeRule.onNodeWithContentDescription("Open Tabs").performClick()
         composeRule.waitUntil(timeoutMillis = 8_000L) {
             composeRule.onAllNodesWithText("Personal").fetchSemanticsNodes().isNotEmpty() &&

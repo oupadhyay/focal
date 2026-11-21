@@ -24,6 +24,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -72,6 +73,8 @@ import app.focal.database.FocalDatabase
 import app.focal.database.OriginOverrideEntity
 import app.focal.database.TabMetadataEntity
 import app.focal.design.AdaptiveGlassController
+import app.focal.design.AppChromeTheme
+import app.focal.design.FocalAppearanceStore
 import app.focal.design.FocalMotion
 import app.focal.design.FocalTheme
 import app.focal.design.GestureLeaseController
@@ -292,6 +295,13 @@ private fun FocalRootCoordinator(
         }
     }
 
+    val appearanceStore = remember(context) { FocalAppearanceStore(context) }
+    var appChromeTheme by remember(appearanceStore) {
+        mutableStateOf(appearanceStore.readTheme())
+    }
+    val isSystemDark = isSystemInDarkTheme()
+    val appDarkUi = appChromeTheme.resolveDarkUi(isSystemDark)
+
     val persistSiteOverrides: (OriginOverrides) -> Unit = { updated ->
         activeSession?.setSiteOverrides(updated)
         // Never write visited domain names to SQLite during Private Aperture ◎ sessions
@@ -302,18 +312,6 @@ private fun FocalRootCoordinator(
                 )
             }
         }
-    }
-
-    // Keep system status bar & nav bar icons contrasted against active Reader paper OR sampled page luminance
-    val effectiveLightStatusBarIcons = if (overlaySheet is ActiveOverlaySheet.Reader) {
-        effectiveReaderPrefs.theme.id == ReaderPaperPalette.Obsidian.id
-    } else {
-        glassState.lightStatusBarIcons
-    }
-    LaunchedEffect(effectiveLightStatusBarIcons) {
-        val insetsController = WindowCompat.getInsetsController(activity.window, view)
-        insetsController.isAppearanceLightStatusBars = !effectiveLightStatusBarIcons
-        insetsController.isAppearanceLightNavigationBars = !effectiveLightStatusBarIcons
     }
 
     // Sticky per-domain Auto-Reader Mode: auto-opens Reader when an eligible article finishes loading
@@ -419,6 +417,29 @@ private fun FocalRootCoordinator(
     val hasLoadedWebUrl = activeSession != null &&
         !activeSessionState?.url.isNullOrBlank() &&
         activeSessionState?.url != "about:blank"
+
+    // Keep system status bar icons contrasted against Reader paper or top app chrome canvas,
+    // and bottom navigation bar icons contrasted against Reader paper, live page bottom bar, or app chrome.
+    val lightStatusBarIcons = if (overlaySheet is ActiveOverlaySheet.Reader) {
+        effectiveReaderPrefs.theme.id == ReaderPaperPalette.Obsidian.id
+    } else {
+        appDarkUi || isPrivateAperture
+    }
+    val lightNavigationBarIcons = when {
+        overlaySheet is ActiveOverlaySheet.Reader -> {
+            effectiveReaderPrefs.theme.id == ReaderPaperPalette.Obsidian.id
+        }
+        overlaySheet == ActiveOverlaySheet.None && hasLoadedWebUrl && !isPrivateAperture -> {
+            glassState.lightStatusBarIcons
+        }
+        else -> appDarkUi || isPrivateAperture
+    }
+    LaunchedEffect(lightStatusBarIcons, lightNavigationBarIcons) {
+        val insetsController = WindowCompat.getInsetsController(activity.window, view)
+        insetsController.isAppearanceLightStatusBars = !lightStatusBarIcons
+        insetsController.isAppearanceLightNavigationBars = !lightNavigationBarIcons
+    }
+
     val latestOverlaySheet by rememberUpdatedState(overlaySheet)
     val latestIsInPip by rememberUpdatedState(isInPictureInPictureMode)
     val latestHasLoadedWebUrl by rememberUpdatedState(hasLoadedWebUrl)
@@ -599,7 +620,7 @@ private fun FocalRootCoordinator(
     }
 
     FocalTheme(
-        darkGlass = glassState.isDarkGlass,
+        darkGlass = appDarkUi,
         isPrivateAperture = isPrivateAperture,
     ) {
         CompositionLocalProvider(LocalGestureLeaseController provides gestureLeaseController) {
@@ -608,6 +629,7 @@ private fun FocalRootCoordinator(
                 activeSession = activeSession,
                 tabCount = displayedTabCount,
                 isPrivateAperture = isPrivateAperture,
+                adaptiveBottomBarDarkGlass = glassState.isDarkGlass,
                 isOverlaySheetOpen = overlaySheet != ActiveOverlaySheet.None,
                 isInPictureInPictureMode = isInPictureInPictureMode,
                 backdropGraphicsLayer = viewportBackdropLayer,
@@ -889,6 +911,7 @@ private fun FocalRootCoordinator(
                                     canGoForward = activeSessionState?.canGoForward == true,
                                     blockedCountInTab = sessionTelemetry?.blockedTrackersInSession ?: 0L,
                                     overrides = effectiveOverrides,
+                                    appTheme = appChromeTheme,
                                     translationStatus = activeSessionState?.translationStatus ?: PageTranslationStatus(),
                                     isCurrentPageBookmarked = existingBookmark != null,
                                     onGoBack = {
@@ -961,6 +984,10 @@ private fun FocalRootCoordinator(
                                             dismissedAutoReaderUrls = dismissedAutoReaderUrls - rawUrl
                                         }
                                         persistSiteOverrides(updated)
+                                    },
+                                    onUpdateAppTheme = { nextTheme ->
+                                        appChromeTheme = nextTheme
+                                        appearanceStore.writeTheme(nextTheme)
                                     },
                                     onDismiss = {
                                         sessionVm.setOverlaySheet(ActiveOverlaySheet.None)

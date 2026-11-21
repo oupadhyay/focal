@@ -27,8 +27,14 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.focal.database.BookmarkEntity
 import app.focal.database.SpaceEntity
 import app.focal.database.TabMetadataEntity
+import app.focal.design.AppChromeTheme
 import app.focal.design.FocalTheme
+import app.focal.engine.api.EngineSession
+import app.focal.engine.api.EngineSessionEvent
+import app.focal.engine.api.EngineSessionState
+import app.focal.engine.api.IndexedDomParagraph
 import app.focal.engine.api.OriginOverrides
+import app.focal.engine.api.ReadableDocument
 import app.focal.feature.reader.PageMenuAndSiteOverridesSheet
 import app.focal.feature.search.SearchSheet
 import app.focal.feature.spaces.BookmarksSheet
@@ -39,6 +45,10 @@ import app.focal.sync.SyncConnectionStatus
 import app.focal.sync.SyncSessionUiState
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.persistentMapOf
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -285,11 +295,14 @@ class FocalComposeUiHarnessTest {
 
     @Test
     fun pageMenuSheet_rendersLensAndYabGradeActionsAndSiteSettings() {
+        var latestAppTheme = AppChromeTheme.DARK
+
         composeRule.setContent {
             var overrides by remember {
                 mutableStateOf(OriginOverrides(origin = "github.com"))
             }
-            FocalTheme(darkGlass = true) {
+            var appTheme by remember { mutableStateOf(AppChromeTheme.DARK) }
+            FocalTheme(darkGlass = appTheme.resolveDarkUi(isSystemInDarkTheme = true)) {
                 PageMenuAndSiteOverridesSheet(
                     domain = "github.com",
                     fullUrl = "https://github.com/oupadhyay/focal",
@@ -298,6 +311,7 @@ class FocalComposeUiHarnessTest {
                     canGoForward = false,
                     blockedCountInTab = 7L,
                     overrides = overrides,
+                    appTheme = appTheme,
                     onGoBack = {},
                     onGoForward = {},
                     onReload = {},
@@ -307,6 +321,10 @@ class FocalComposeUiHarnessTest {
                     onOpenBookmarks = {},
                     onOpenReaderMode = {},
                     onUpdateSiteOverrides = { overrides = it },
+                    onUpdateAppTheme = { next ->
+                        appTheme = next
+                        latestAppTheme = next
+                    },
                     onDismiss = {},
                 )
             }
@@ -321,15 +339,97 @@ class FocalComposeUiHarnessTest {
         val actionsSnap = composeRule.captureSnapshotPng("04a_page_menu_actions.png")
         assertTrue(actionsSnap.length() > 1_000L)
 
-        // Switch to Site Settings subtab and capture snapshot matching user's 2nd screenshot
+        // Switch to Site Settings subtab and verify per-site toggles + configurable App Theme (Dark default)
         composeRule.onAllNodesWithText("Site Settings")[0].performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithText("Block Ads & Trackers").assertIsDisplayed()
         composeRule.onNodeWithText("Dark Web Pages").assertIsDisplayed()
         composeRule.onNodeWithText("Editorial Fonts").assertIsDisplayed()
+        composeRule.onNodeWithText("App Theme").assertIsDisplayed()
+        composeRule.onNodeWithText("Dark").assertIsDisplayed()
+        composeRule.onNodeWithText("Light").assertIsDisplayed()
+        composeRule.onNodeWithText("System").assertIsDisplayed()
 
         val settingsSnap = composeRule.captureSnapshotPng("04b_page_menu_site_settings.png")
         assertTrue(settingsSnap.length() > 1_000L)
+
+        // Switching App Theme updates callback cleanly across Light -> System -> Dark
+        composeRule.onNodeWithText("Light").performClick()
+        composeRule.waitForIdle()
+        assertEquals(AppChromeTheme.LIGHT, latestAppTheme)
+
+        composeRule.onNodeWithText("System").performClick()
+        composeRule.waitForIdle()
+        assertEquals(AppChromeTheme.SYSTEM, latestAppTheme)
+
+        composeRule.onNodeWithText("Dark").performClick()
+        composeRule.waitForIdle()
+        assertEquals(AppChromeTheme.DARK, latestAppTheme)
+    }
+
+    @Test
+    fun browserViewport_lightPageAdaptsOnlyBottomBarNotEntireUi() {
+        val loadedLightPageSession = FakeLoadedEngineSession(
+            url = "https://stratechery.com",
+            domain = "stratechery.com",
+            title = "Stratechery",
+        )
+
+        composeRule.setContent {
+            val pinchProgress = remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
+            val pinchCenterY = remember { androidx.compose.runtime.mutableFloatStateOf(0.5f) }
+            val backProgress = remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
+            val scrollHide = remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
+
+            // App chrome stays Dark Smoked OLED while light webpage switches ONLY the floating bottom bar
+            FocalTheme(darkGlass = true) {
+                app.focal.feature.browser.BrowserViewportScreen(
+                    activeSession = loadedLightPageSession,
+                    tabCount = 5,
+                    isPrivateAperture = false,
+                    adaptiveBottomBarDarkGlass = false,
+                    isOverlaySheetOpen = false,
+                    continuityHandoff = null,
+                    mediaMiniPlayerInfo = null,
+                    pinchProgressState = pinchProgress,
+                    pinchCenterYState = pinchCenterY,
+                    predictiveBackProgressState = backProgress,
+                    bottomBarScrollHideFraction = scrollHide,
+                    onOpenSearchSheet = {},
+                    onOpenTabSwitcher = {},
+                    onCloseCurrentTab = {},
+                    onOpenNewPrivateTab = {},
+                    onStepToAdjacentTab = {},
+                    onOpenPageMenu = {},
+                    onOpenReaderMode = {},
+                    onPinchSnapSummarize = {},
+                    onPinchSnapCancelled = {},
+                    onOpenContinuityHandoff = {},
+                    onToggleMediaPlayPause = {},
+                    onCycleMediaPlaybackRate = {},
+                    onEnterPictureInPicture = {},
+                )
+            }
+        }
+
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("stratechery.com").assertIsDisplayed()
+
+        val bitmap = composeRule.captureSnapshotBitmap("07_light_bottom_bar_on_dark_chrome.png")
+        // Upper chrome canvas stays Dark Smoked OLED (#050507 -> low luminance)
+        val topPixel = bitmap.getPixel(bitmap.width / 2, 24)
+        val topLuma = (0.299 * android.graphics.Color.red(topPixel) +
+            0.587 * android.graphics.Color.green(topPixel) +
+            0.114 * android.graphics.Color.blue(topPixel))
+        // Bottom center pill adapts to Light Alabaster frosted glass (high luminance)
+        val bottomPillY = (bitmap.height - 108).coerceIn(0, bitmap.height - 1)
+        val bottomPillPixel = bitmap.getPixel(bitmap.width / 2, bottomPillY)
+        val bottomPillLuma = (0.299 * android.graphics.Color.red(bottomPillPixel) +
+            0.587 * android.graphics.Color.green(bottomPillPixel) +
+            0.114 * android.graphics.Color.blue(bottomPillPixel))
+
+        assertTrue("Expected dark top app chrome canvas (< 40 luma), got $topLuma", topLuma < 40.0)
+        assertTrue("Expected light alabaster adaptive bottom bar (> 170 luma), got $bottomPillLuma", bottomPillLuma > 170.0)
     }
 
     @Test
@@ -395,6 +495,11 @@ class FocalComposeUiHarnessTest {
     }
 
     private fun AndroidComposeTestRule<*, ComponentActivity>.captureSnapshotPng(fileName: String): File {
+        captureSnapshotBitmap(fileName)
+        return File("build/outputs/robolectric-snapshots", fileName)
+    }
+
+    private fun AndroidComposeTestRule<*, ComponentActivity>.captureSnapshotBitmap(fileName: String): Bitmap {
         waitForIdle()
         val decorView = activity.window.decorView
         val width = decorView.width.coerceAtLeast(1)
@@ -410,6 +515,45 @@ class FocalComposeUiHarnessTest {
         FileOutputStream(outFile).use { out ->
             bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
         }
-        return outFile
+        assertTrue(outFile.length() > 1_000L)
+        return bitmap
+    }
+
+    private class FakeLoadedEngineSession(
+        url: String,
+        domain: String,
+        title: String,
+    ) : EngineSession {
+        override val sessionId: String = "fake-light-session"
+        override val isPrivate: Boolean = false
+        override val spaceId: String = "personal"
+        override val state: StateFlow<EngineSessionState> = MutableStateFlow(
+            EngineSessionState(
+                sessionId = sessionId,
+                spaceId = spaceId,
+                url = url,
+                domain = domain,
+                title = title,
+                isHttps = true,
+            ),
+        )
+        override val events: SharedFlow<EngineSessionEvent> = MutableSharedFlow()
+
+        override fun loadUrl(url: String, headers: Map<String, String>) {}
+        override fun reload() {}
+        override fun stopLoading() {}
+        override fun goBack(): Boolean = false
+        override fun goForward(): Boolean = false
+        override fun setSiteOverrides(overrides: OriginOverrides) {}
+        override fun extractReadableArticle(onResult: (ReadableDocument) -> Unit) {}
+        override fun indexDomParagraphs(onResult: (List<IndexedDomParagraph>) -> Unit) {}
+        override fun scrollToGroundedParagraph(paraId: Int) {}
+        override fun checkHasUnsentFormInput(onResult: (Boolean) -> Unit) = onResult(false)
+        override fun setPlaybackRate(rate: Float) {}
+        override fun setMediaPlaying(playing: Boolean) {}
+        override fun requestElementFullscreenOrPip() {}
+        override fun findInPage(query: String) {}
+        override fun clearFindInPage() {}
+        override fun dispose() {}
     }
 }
