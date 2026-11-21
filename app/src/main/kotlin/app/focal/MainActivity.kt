@@ -744,11 +744,9 @@ private fun FocalRootCoordinator(
 
             // Active Floating Sheet Layer (suppressed during PiP; coupled 1:1 with Predictive Back)
             if (!isInPictureInPictureMode) {
-                val hasActiveWebSurface = activeSession != null &&
-                    !activeSessionState?.url.isNullOrBlank() &&
-                    activeSessionState?.url != "about:blank"
-                val sheetBackdropLayer = if (hasActiveWebSurface) null else viewportBackdropLayer
-                CompositionLocalProvider(LocalFocalBackdropLayer provides sheetBackdropLayer) {
+                // Scrim-backed modal sheets sit over a 52% dimmed backdrop where smokedGlassSurface
+                // matches visually without forcing an offscreen 28.dp full-viewport blur pass on cold start.
+                CompositionLocalProvider(LocalFocalBackdropLayer provides null) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()

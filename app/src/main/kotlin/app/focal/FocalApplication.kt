@@ -67,10 +67,11 @@ class FocalApplication : Application() {
             launch {
                 FocalDatabaseDefaults.seedIfEmpty(database)
             }
-        }
-
-        runCatching {
-            AutoArchiveTabsWorker.schedulePeriodicSweep(this)
+            launch {
+                runCatching {
+                    AutoArchiveTabsWorker.schedulePeriodicSweep(this@FocalApplication)
+                }
+            }
         }
     }
 }

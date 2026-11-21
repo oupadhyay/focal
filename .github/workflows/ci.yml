@@ -209,6 +209,8 @@ jobs:
 
           if [ -z "$RELEASE_PID_1" ] || [ -z "$RELEASE_PID_2" ]; then
             echo "R8 release app.focal process was not running during launch checks!"
+            echo "=== ANR DROPBOX TRACE ==="
+            adb shell dumpsys dropbox --print data_app_anr | head -n 140 || true
             cat emulator-screenshots/release_all_errors.log || true
             exit 1
           fi

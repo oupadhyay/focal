@@ -185,7 +185,13 @@ fun BrowserViewportScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .recordFocalBackdrop(backdropGraphicsLayer),
+                        .then(
+                            if (overlayDimProgress < 0.99f) {
+                                Modifier.recordFocalBackdrop(backdropGraphicsLayer)
+                            } else {
+                                Modifier
+                            },
+                        ),
                 ) {
                     CalmOpticalLaunchCanvas(
                         isPrivateAperture = isPrivateAperture,
