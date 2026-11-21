@@ -10,15 +10,18 @@ import android.webkit.WebView
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import androidx.webkit.WebViewStartUpConfig
 import java.util.ArrayDeque
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Off-screen System `WebView` Zygote pre-warmer (`size = 1`).
  *
- * Schedules idle-frame initialization via `Looper.myQueue().addIdleHandler` after first paint
- * so cold app launch stays `< 220ms` while the first tab creation acquires an already-inflated
- * Chromium `WebView` via [MutableContextWrapper] in `< 2ms`.
+ * Defers warmup past initial window focus and SearchSheet/IME reveal, runs heavy Chromium provider
+ * startup off the main thread via [WebViewCompat.startUpWebView], and then inflates a pooled
+ * [WebView] on a subsequent main-looper idle slot so cold launch never stalls `FocusEvent` while
+ * tab creation acquires an already-warm `WebView` via [MutableContextWrapper] in `< 2ms`.
  */
 class WarmWebViewPool(
     context: Context,
@@ -26,20 +29,51 @@ class WarmWebViewPool(
 ) {
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val warmupExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "focal-webview-warmup").apply { isDaemon = true }
+    }
     private val pool = ArrayDeque<WebView>(targetPoolSize)
     private val idleScheduled = AtomicBoolean(false)
+    private val providerWarmed = AtomicBoolean(false)
     private val shutDown = AtomicBoolean(false)
 
-    fun scheduleIdleWarmup() {
+    @androidx.annotation.OptIn(WebViewCompat.ExperimentalAsyncStartUp::class)
+    fun scheduleIdleWarmup(delayMs: Long = COLD_WARMUP_DELAY_MS) {
         if (shutDown.get()) return
         if (!idleScheduled.compareAndSet(false, true)) return
 
+        mainHandler.postDelayed({
+            if (shutDown.get() || pool.size >= targetPoolSize) {
+                idleScheduled.set(false)
+                return@postDelayed
+            }
+            if (providerWarmed.compareAndSet(false, true)) {
+                try {
+                    val config = WebViewStartUpConfig.Builder(warmupExecutor)
+                        .setShouldRunUiThreadStartUpTasks(true)
+                        .build()
+                    WebViewCompat.startUpWebView(config) {
+                        enqueueIdleInflateOnMain()
+                    }
+                } catch (_: Throwable) {
+                    enqueueIdleInflateOnMain()
+                }
+            } else {
+                enqueueIdleInflateOnMain()
+            }
+        }, delayMs.coerceAtLeast(0L))
+    }
+
+    private fun enqueueIdleInflateOnMain() {
         mainHandler.post {
+            if (shutDown.get() || pool.size >= targetPoolSize) {
+                idleScheduled.set(false)
+                return@post
+            }
             Looper.myQueue().addIdleHandler {
                 idleScheduled.set(false)
                 if (!shutDown.get() && pool.size < targetPoolSize) {
                     try {
-                        // Touch WebView package metadata to ensure WebViewZygote is warm
                         WebViewCompat.getCurrentWebViewPackage(appContext)
                         pool.addLast(createConfiguredWebView(MutableContextWrapper(appContext)))
                     } catch (_: Throwable) {
@@ -64,11 +98,12 @@ class WarmWebViewPool(
                     wrapper.baseContext = unwrappedHost
                 }
             }
-            scheduleIdleWarmup()
+            scheduleIdleWarmup(delayMs = REPLENISH_WARMUP_DELAY_MS)
             return warm
         }
+        providerWarmed.set(true)
         val fresh = createConfiguredWebView(MutableContextWrapper(unwrappedHost))
-        scheduleIdleWarmup()
+        scheduleIdleWarmup(delayMs = REPLENISH_WARMUP_DELAY_MS)
         return fresh
     }
 
@@ -78,6 +113,7 @@ class WarmWebViewPool(
      */
     fun createIsolatedWebView(hostContext: Context): WebView {
         val unwrappedHost = (hostContext as? MutableContextWrapper)?.baseContext ?: hostContext
+        providerWarmed.set(true)
         return createConfiguredWebView(MutableContextWrapper(unwrappedHost))
     }
 
@@ -119,11 +155,18 @@ class WarmWebViewPool(
 
     fun shutdown() {
         if (shutDown.compareAndSet(false, true)) {
+            mainHandler.removeCallbacksAndMessages(null)
+            warmupExecutor.shutdownNow()
             mainHandler.post {
                 while (pool.isNotEmpty()) {
                     pool.pollFirst()?.destroy()
                 }
             }
         }
+    }
+
+    companion object {
+        private const val COLD_WARMUP_DELAY_MS = 1_500L
+        private const val REPLENISH_WARMUP_DELAY_MS = 400L
     }
 }
