@@ -371,11 +371,16 @@ class FocalEmulatorVerificationTest {
         composeRule.waitUntil(timeoutMillis = 8_000L) {
             runCatching {
                 composeRule.onNodeWithTag("find_in_page_bar").assertIsDisplayed()
+                composeRule.onNodeWithTag("find_in_page_input").assertIsDisplayed()
                 true
             }.getOrDefault(false)
         }
-        composeRule.onNode(hasSetTextAction()).performTextInput("Domain")
-        SystemClock.sleep(500L)
+        composeRule.onNodeWithTag("find_in_page_input").performTextInput("Domain")
+        composeRule.waitUntil(timeoutMillis = 8_000L) {
+            composeRule.onAllNodesWithText("1/", substring = true).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithText("Domain").assertIsDisplayed()
+        SystemClock.sleep(300L)
         composeRule.waitForIdle()
         captureEmulatorScreenshot("07g_emulator_find_in_page.png")
 

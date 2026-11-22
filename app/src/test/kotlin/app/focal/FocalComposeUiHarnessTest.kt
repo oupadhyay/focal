@@ -867,9 +867,10 @@ class FocalComposeUiHarnessTest {
         var prevClicks = 0
         var nextClicks = 0
         var closeClicks = 0
-        var lastQuery = "optical"
+        val findFlow = MutableStateFlow(FindInPageState())
 
         composeRule.setContent {
+            val currentFindState by findFlow.collectAsState()
             FocalTheme(darkGlass = true, isPrivateAperture = false) {
                 Box(
                     modifier = Modifier
@@ -878,13 +879,19 @@ class FocalComposeUiHarnessTest {
                     contentAlignment = Alignment.BottomCenter,
                 ) {
                     FindInPageBar(
-                        findState = FindInPageState(
-                            query = lastQuery,
-                            activeMatchOrdinal = 1,
-                            numberOfMatches = 7,
-                            isDoneCounting = true,
-                        ),
-                        onQueryChange = { lastQuery = it },
+                        findState = currentFindState,
+                        onQueryChange = { q ->
+                            findFlow.value = if (q.isBlank()) {
+                                FindInPageState()
+                            } else {
+                                FindInPageState(
+                                    query = q,
+                                    activeMatchOrdinal = 1,
+                                    numberOfMatches = 7,
+                                    isDoneCounting = true,
+                                )
+                            }
+                        },
                         onFindPrevious = { prevClicks++ },
                         onFindNext = { nextClicks++ },
                         onClose = { closeClicks++ },
@@ -895,6 +902,10 @@ class FocalComposeUiHarnessTest {
 
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("find_in_page_bar").assertIsDisplayed()
+        composeRule.onNodeWithTag("find_in_page_input").performTextInput("optical")
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithText("optical").assertIsDisplayed()
         composeRule.onNodeWithText("2/7").assertIsDisplayed()
 
         val snap = composeRule.captureSnapshotPng("10_find_in_page_bar.png")

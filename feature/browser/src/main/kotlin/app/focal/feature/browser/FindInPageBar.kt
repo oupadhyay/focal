@@ -36,9 +36,11 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.focal.design.FocalGlyphs
@@ -66,19 +68,30 @@ fun FindInPageBar(
 ) {
     val colors = FocalTheme.colors
     val typography = FocalTheme.typography
-    val barTintState = rememberUpdatedState(colors.effectiveBarGlass)
+    val barTintState = rememberUpdatedState(colors.effectiveSheetGlass)
 
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
 
-    var queryText by remember { mutableStateOf(findState.query) }
-    var lastExternalQuery by remember { mutableStateOf(findState.query) }
+    var fieldValue by remember {
+        mutableStateOf(
+            TextFieldValue(
+                text = findState.query,
+                selection = TextRange(findState.query.length),
+            ),
+        )
+    }
+    var lastNonEmptyExternalQuery by remember { mutableStateOf(findState.query) }
 
+    // Only clear local input when the engine explicitly resets a previously non-empty find query
+    // (e.g., on page navigation), never clobbering fast in-flight user keystrokes.
     LaunchedEffect(findState.query) {
-        if (findState.query != lastExternalQuery) {
-            lastExternalQuery = findState.query
-            if (queryText != findState.query) {
-                queryText = findState.query
+        if (findState.query.isNotEmpty()) {
+            lastNonEmptyExternalQuery = findState.query
+        } else if (lastNonEmptyExternalQuery.isNotEmpty()) {
+            lastNonEmptyExternalQuery = ""
+            if (fieldValue.text.isNotEmpty()) {
+                fieldValue = TextFieldValue("")
             }
         }
     }
@@ -95,7 +108,7 @@ fun FindInPageBar(
             val activeOrdinal = (findState.activeMatchOrdinal + 1).coerceIn(1, findState.numberOfMatches)
             "$activeOrdinal/${findState.numberOfMatches}"
         }
-        findState.query.isNotBlank() && findState.isDoneCounting && findState.numberOfMatches == 0 -> "0/0"
+        fieldValue.text.isNotBlank() && findState.query.isNotBlank() && findState.isDoneCounting && findState.numberOfMatches == 0 -> "0/0"
         else -> ""
     }
 
@@ -137,7 +150,7 @@ fun FindInPageBar(
                 modifier = Modifier.weight(1f),
                 contentAlignment = Alignment.CenterStart,
             ) {
-                if (queryText.isEmpty()) {
+                if (fieldValue.text.isEmpty()) {
                     Text(
                         text = "Find in page",
                         style = typography.urlDomainPill,
@@ -148,10 +161,13 @@ fun FindInPageBar(
                 }
 
                 BasicTextField(
-                    value = queryText,
+                    value = fieldValue,
                     onValueChange = { next ->
-                        queryText = next
-                        onQueryChange(next)
+                        val textChanged = next.text != fieldValue.text
+                        fieldValue = next
+                        if (textChanged) {
+                            onQueryChange(next.text)
+                        }
                     },
                     singleLine = true,
                     textStyle = typography.urlDomainPill.copy(color = colors.inkPrimary),
@@ -167,6 +183,7 @@ fun FindInPageBar(
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
+                        .testTag("find_in_page_input")
                         .focusRequester(focusRequester),
                 )
             }
