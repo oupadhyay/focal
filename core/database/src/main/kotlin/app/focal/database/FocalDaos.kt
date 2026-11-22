@@ -1,6 +1,8 @@
 package app.focal.database
 
 import androidx.room.Dao
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
@@ -203,4 +205,37 @@ interface OriginOverrideDao {
 
     @Query("DELETE FROM origin_overrides WHERE origin = :origin")
     suspend fun deleteOverride(origin: String)
+}
+
+@Dao
+interface HistoryDao {
+    @Query("SELECT * FROM history_entries ORDER BY visitedAtEpochMs DESC LIMIT :limit")
+    fun observeRecentHistory(limit: Int = 200): Flow<List<HistoryEntryEntity>>
+
+    @Query("SELECT * FROM history_entries WHERE url = :url LIMIT 1")
+    suspend fun getByUrl(url: String): HistoryEntryEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(entry: HistoryEntryEntity)
+
+    @Query("DELETE FROM history_entries WHERE id = :id")
+    suspend fun deleteById(id: String)
+
+    @Query("DELETE FROM history_entries")
+    suspend fun clearAll()
+}
+
+@Dao
+interface DownloadRecordDao {
+    @Query("SELECT * FROM download_records ORDER BY createdAtEpochMs DESC LIMIT :limit")
+    fun observeRecentDownloads(limit: Int = 100): Flow<List<DownloadRecordEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(record: DownloadRecordEntity)
+
+    @Query("DELETE FROM download_records WHERE id = :id")
+    suspend fun deleteById(id: String)
+
+    @Query("DELETE FROM download_records")
+    suspend fun clearAll()
 }

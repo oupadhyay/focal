@@ -8,9 +8,13 @@ import android.graphics.Canvas
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.Message
 import android.view.MotionEvent
 import android.view.ViewGroup
 import android.webkit.CookieManager
+import android.webkit.GeolocationPermissions
+import android.webkit.PermissionRequest
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -37,6 +41,7 @@ import app.focal.engine.api.EngineSession
 import app.focal.engine.api.EngineSessionEvent
 import app.focal.engine.api.EngineSessionState
 import app.focal.engine.api.EngineTelemetryState
+import app.focal.engine.api.FindInPageState
 import app.focal.engine.api.IndexedDomParagraph
 import app.focal.engine.api.OriginOverrides
 import app.focal.engine.api.PageTranslationPhase
@@ -59,6 +64,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import org.json.JSONArray
 import org.json.JSONObject
+import java.lang.ref.WeakReference
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
@@ -108,6 +114,7 @@ class WebViewSession internal constructor(
 
         private const val DESKTOP_USER_AGENT =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+        private const val HISTORY_PREVIEW_MAX_WIDTH_PX = 420
 
         /**
          * Permits only `https://`, `http://`, and `about:blank`, blocking `file://`,
@@ -122,7 +129,49 @@ class WebViewSession internal constructor(
         }
     }
 
+    private data class PendingImageAnchorHit(
+        val imageExtra: String?,
+        val touchXRatio: Float,
+        val touchYRatio: Float,
+    )
+
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val weakSelf = WeakReference(this)
+    private val hrefMessageHandler = Handler(
+        Looper.getMainLooper(),
+        Handler.Callback { msg ->
+            val session = weakSelf.get() ?: return@Callback true
+            if (session.disposed.get()) return@Callback true
+            val hitMeta = msg.obj as? PendingImageAnchorHit
+            val bundle = msg.data
+            val hrefUrl = bundle?.getString("url")?.trim().orEmpty()
+            val anchorTitle = bundle?.getString("title")?.trim()?.takeIf { it.isNotBlank() }
+            val srcUrl = bundle?.getString("src")?.trim().orEmpty()
+            val fallbackImageUrl = hitMeta?.imageExtra?.trim().orEmpty()
+            val resolvedImageUrl = when {
+                srcUrl.isNotBlank() && isAllowedNavigationUrl(srcUrl) -> srcUrl
+                fallbackImageUrl.isNotBlank() && isAllowedNavigationUrl(fallbackImageUrl) -> fallbackImageUrl
+                else -> null
+            }
+            val resolvedLinkUrl = when {
+                hrefUrl.isNotBlank() && isAllowedNavigationUrl(hrefUrl) -> hrefUrl
+                resolvedImageUrl != null -> resolvedImageUrl
+                else -> null
+            }
+            if (resolvedLinkUrl != null) {
+                session._events.tryEmit(
+                    EngineSessionEvent.AnchorLongPressed(
+                        rawUrl = resolvedLinkUrl,
+                        anchorTitle = anchorTitle,
+                        touchXRatio = hitMeta?.touchXRatio ?: session.lastTouchXRatio,
+                        touchYRatio = hitMeta?.touchYRatio ?: session.lastTouchYRatio,
+                        imageUrl = resolvedImageUrl,
+                    ),
+                )
+            }
+            true
+        },
+    )
     private val disposed = AtomicBoolean(false)
     private val sessionBlockedCount = AtomicLong(0L)
     private val sessionScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -130,6 +179,9 @@ class WebViewSession internal constructor(
     private var activeTranslationJob: Job? = null
     private val translationEngine: OnDeviceTranslationEngine by lazy { MlKitTranslationEngine() }
     private val documentScriptHandlers = mutableListOf<ScriptHandler>()
+    private var gpcScriptHandler: ScriptHandler? = null
+    private val historyFrames = HistoryFrameStore()
+    private var pendingFileChooserCallback: ValueCallback<Array<Uri>>? = null
     private val assetLoader: WebViewAssetLoader = WebViewAssetLoader.Builder()
         .setDomain(ASSET_LOADER_DOMAIN)
         .addPathHandler("/res/", WebViewAssetLoader.ResourcesPathHandler(appContext.applicationContext))
@@ -140,6 +192,13 @@ class WebViewSession internal constructor(
 
     @Volatile
     private var defaultMobileUserAgent: String = ""
+
+    @Volatile
+    private var gpcEnabled: Boolean = true
+
+    @Volatile
+    private var bottomChromeInsetPx: Int = 0
+    private var lastAppliedBottomInsetPx: Int = -1
 
     private var lastTouchXRatio: Float = 0.5f
     private var lastTouchYRatio: Float = 0.5f
@@ -322,6 +381,21 @@ class WebViewSession internal constructor(
                                 }
                             }
                         }
+                        "element_zapped" -> {
+                            if (isMainFrame && _state.value.isElementZapperActive) {
+                                val rawSelector = json.optString("selector", "")
+                                val sanitized = ElementZapperScripts.sanitizeSelector(rawSelector)
+                                if (sanitized != null) {
+                                    val origin = _state.value.domain.ifBlank { originHost.removePrefix("www.") }
+                                    _events.tryEmit(
+                                        EngineSessionEvent.ElementZapped(
+                                            origin = origin,
+                                            cssSelector = sanitized,
+                                        ),
+                                    )
+                                }
+                            }
+                        }
                     }
                 } catch (_: Exception) {
                     // Ignore malformed guest-page bridge frames
@@ -338,6 +412,16 @@ class WebViewSession internal constructor(
                 documentScriptHandlers += WebViewCompat.addDocumentStartJavaScript(
                     view,
                     FOCAL_EPHEMERAL_COOKIE_SHIELD_JS,
+                    ALLOWED_BRIDGE_ORIGIN_RULES,
+                )
+            }
+        }
+
+        if (gpcEnabled) {
+            runCatching {
+                gpcScriptHandler = WebViewCompat.addDocumentStartJavaScript(
+                    view,
+                    ElementZapperScripts.GLOBAL_PRIVACY_CONTROL_JS,
                     ALLOWED_BRIDGE_ORIGIN_RULES,
                 )
             }
@@ -372,27 +456,74 @@ class WebViewSession internal constructor(
             _events.tryEmit(EngineSessionEvent.ScrollDeltaChanged(scrollY = scrollY, deltaY = dy))
         }
 
-        view.setOnLongClickListener { webViewInstance ->
-            val hit = (webViewInstance as? WebView)?.hitTestResult ?: view.hitTestResult
-            val type = hit.type
-            if (
-                type == WebView.HitTestResult.SRC_ANCHOR_TYPE ||
-                type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE
-            ) {
-                val targetUrl = hit.extra
-                if (!targetUrl.isNullOrBlank() && isAllowedNavigationUrl(targetUrl)) {
-                    _events.tryEmit(
-                        EngineSessionEvent.AnchorLongPressed(
-                            rawUrl = targetUrl,
-                            anchorTitle = null,
-                            touchXRatio = lastTouchXRatio,
-                            touchYRatio = lastTouchYRatio,
+        view.setFindListener { activeMatchOrdinal, numberOfMatches, isDoneCounting ->
+            _state.update { current ->
+                if (current.findInPageState.query.isBlank()) {
+                    current.copy(findInPageState = FindInPageState())
+                } else {
+                    current.copy(
+                        findInPageState = current.findInPageState.copy(
+                            activeMatchOrdinal = activeMatchOrdinal,
+                            numberOfMatches = numberOfMatches,
+                            isDoneCounting = isDoneCounting,
                         ),
                     )
-                    return@setOnLongClickListener true
                 }
             }
-            false
+        }
+
+        view.setOnLongClickListener { webViewInstance ->
+            if (_state.value.isElementZapperActive) return@setOnLongClickListener false
+            val targetView = (webViewInstance as? WebView) ?: view
+            val hit = targetView.hitTestResult
+            when (hit.type) {
+                WebView.HitTestResult.SRC_ANCHOR_TYPE -> {
+                    val targetUrl = hit.extra
+                    if (!targetUrl.isNullOrBlank() && isAllowedNavigationUrl(targetUrl)) {
+                        _events.tryEmit(
+                            EngineSessionEvent.AnchorLongPressed(
+                                rawUrl = targetUrl,
+                                anchorTitle = null,
+                                touchXRatio = lastTouchXRatio,
+                                touchYRatio = lastTouchYRatio,
+                                imageUrl = null,
+                            ),
+                        )
+                        true
+                    } else {
+                        false
+                    }
+                }
+                WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE -> {
+                    val msg = Message.obtain(hrefMessageHandler).apply {
+                        obj = PendingImageAnchorHit(
+                            imageExtra = hit.extra,
+                            touchXRatio = lastTouchXRatio,
+                            touchYRatio = lastTouchYRatio,
+                        )
+                    }
+                    targetView.requestFocusNodeHref(msg)
+                    true
+                }
+                WebView.HitTestResult.IMAGE_TYPE -> {
+                    val imageUrl = hit.extra
+                    if (!imageUrl.isNullOrBlank() && isAllowedNavigationUrl(imageUrl)) {
+                        _events.tryEmit(
+                            EngineSessionEvent.AnchorLongPressed(
+                                rawUrl = imageUrl,
+                                anchorTitle = null,
+                                touchXRatio = lastTouchXRatio,
+                                touchYRatio = lastTouchYRatio,
+                                imageUrl = imageUrl,
+                            ),
+                        )
+                        true
+                    } else {
+                        false
+                    }
+                }
+                else -> false
+            }
         }
 
         view.setDownloadListener { url, userAgent, contentDisposition, mimeType, contentLength ->
@@ -418,7 +549,20 @@ class WebViewSession internal constructor(
             ): Boolean {
                 val targetUrl = request?.url?.toString() ?: return true
                 // Block file://, content://, javascript:, data:, intent:, and unknown schemes
-                return !isAllowedNavigationUrl(targetUrl)
+                if (!isAllowedNavigationUrl(targetUrl)) return true
+                if (
+                    request.isForMainFrame &&
+                    !request.isRedirect &&
+                    request.hasGesture() &&
+                    Looper.myLooper() == Looper.getMainLooper() &&
+                    !targetUrl.equals(_state.value.url, ignoreCase = true)
+                ) {
+                    captureSnapshotSync(HISTORY_PREVIEW_MAX_WIDTH_PX)?.let { snapshot ->
+                        historyFrames.pushBack(snapshot)
+                    }
+                    historyFrames.clearForward()
+                }
+                return false
             }
 
             @Deprecated("Deprecated in Java")
@@ -483,6 +627,7 @@ class WebViewSession internal constructor(
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 val safeUrl = url.orEmpty()
                 val nextDomain = extractHostDomain(safeUrl)
+                lastAppliedBottomInsetPx = -1
                 cancelAndResetTranslation(resetState = false)
                 sessionBlockedCount.set(0L)
                 _telemetry.update {
@@ -505,6 +650,8 @@ class WebViewSession internal constructor(
                         pageLanguageTag = null,
                         translationStatus = PageTranslationStatus(),
                         activeMedia = null,
+                        findInPageState = FindInPageState(),
+                        isElementZapperActive = false,
                         canGoBack = view?.canGoBack() == true,
                         canGoForward = view?.canGoForward() == true,
                     )
@@ -533,15 +680,24 @@ class WebViewSession internal constructor(
 
             override fun onPageCommitVisible(view: WebView?, url: String?) {
                 val safeUrl = url.orEmpty()
+                if (_state.value.isElementZapperActive) {
+                    _state.update { it.copy(isElementZapperActive = false) }
+                }
                 applyLiveOverridesJs(view)
-                // Fallback cosmetic injection if DocumentStartJavaScript was unavailable on older WebView APK
-                if (
-                    !WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT) &&
-                    currentOverrides.blockAdsAndTrackers
-                ) {
-                    val css = adblockController.cosmeticCssForUrl(safeUrl)
-                    if (css.isNotBlank()) {
-                        injectCssRuleBlock(view, "focal-cosmetic-fallback", css)
+                applyHiddenSelectorsForPage(view, safeUrl, onlyIfNonEmpty = true)
+                if (bottomChromeInsetPx > 0) {
+                    applyBottomChromeInsetJs(view, bottomChromeInsetPx)
+                }
+                // Fallback cosmetic & GPC injection if DocumentStartJavaScript was unavailable on older WebView APK
+                if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                    if (gpcEnabled) {
+                        view?.evaluateJavascript(ElementZapperScripts.GLOBAL_PRIVACY_CONTROL_JS, null)
+                    }
+                    if (currentOverrides.blockAdsAndTrackers) {
+                        val css = adblockController.cosmeticCssForUrl(safeUrl)
+                        if (css.isNotBlank()) {
+                            injectCssRuleBlock(view, "focal-cosmetic-fallback", css)
+                        }
                     }
                 }
                 _events.tryEmit(EngineSessionEvent.NavigationCommitted(url = safeUrl, isMainFrame = true))
@@ -550,6 +706,10 @@ class WebViewSession internal constructor(
             override fun onPageFinished(view: WebView?, url: String?) {
                 val safeUrl = url ?: view?.url.orEmpty()
                 val totalBlocked = sessionBlockedCount.get()
+                applyHiddenSelectorsForPage(view, safeUrl, onlyIfNonEmpty = false)
+                val insetPx = bottomChromeInsetPx
+                applyBottomChromeInsetJs(view, insetPx)
+                lastAppliedBottomInsetPx = insetPx
                 _telemetry.update {
                     it.copy(
                         loadProgress = 100,
@@ -624,19 +784,150 @@ class WebViewSession internal constructor(
                     )
                 }
             }
+
+            override fun onShowFileChooser(
+                webView: WebView?,
+                filePathCallback: ValueCallback<Array<Uri>>?,
+                fileChooserParams: FileChooserParams?,
+            ): Boolean {
+                val callback = filePathCallback ?: return false
+                cancelPendingFileChooser()
+                if (disposed.get()) return false
+
+                val mimeTypes = fileChooserParams?.acceptTypes
+                    ?.mapNotNull { it?.trim() }
+                    ?.filter { it.isNotEmpty() }
+                    ?.distinct()
+                    .orEmpty()
+                val allowMultiple = fileChooserParams?.mode == FileChooserParams.MODE_OPEN_MULTIPLE
+
+                pendingFileChooserCallback = callback
+                val completed = AtomicBoolean(false)
+                val onResult: (List<Uri>?) -> Unit = { uris ->
+                    if (completed.compareAndSet(false, true)) {
+                        runOnMain {
+                            if (pendingFileChooserCallback === callback) {
+                                pendingFileChooserCallback = null
+                                val payload = uris?.takeIf { it.isNotEmpty() }?.toTypedArray()
+                                runCatching { callback.onReceiveValue(payload) }
+                            }
+                        }
+                    }
+                }
+
+                val emitted = _events.tryEmit(
+                    EngineSessionEvent.FileChooserRequested(
+                        mimeTypes = mimeTypes,
+                        allowMultiple = allowMultiple,
+                        onResult = onResult,
+                    ),
+                )
+                if (!emitted) {
+                    if (pendingFileChooserCallback === callback) {
+                        pendingFileChooserCallback = null
+                    }
+                    return false
+                }
+                return true
+            }
+
+            override fun onPermissionRequest(request: PermissionRequest?) {
+                val req = request ?: return
+                if (disposed.get()) {
+                    runCatching { req.deny() }
+                    return
+                }
+                val resources = req.resources ?: emptyArray()
+                if (resources.isEmpty()) {
+                    runCatching { req.deny() }
+                    return
+                }
+                val labels = resources.map { resource ->
+                    when (resource) {
+                        PermissionRequest.RESOURCE_VIDEO_CAPTURE -> "Camera"
+                        PermissionRequest.RESOURCE_AUDIO_CAPTURE -> "Microphone"
+                        PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID -> "Protected Media"
+                        PermissionRequest.RESOURCE_MIDI_SYSEX -> "MIDI"
+                        else -> resource
+                    }
+                }.distinct()
+                val rawOrigin = req.origin?.toString().orEmpty()
+                val displayOrigin = extractHostDomain(rawOrigin)
+                    .ifBlank { rawOrigin.ifBlank { _state.value.domain } }
+                val decided = AtomicBoolean(false)
+                val emitted = _events.tryEmit(
+                    EngineSessionEvent.SitePermissionRequested(
+                        origin = displayOrigin,
+                        resources = labels,
+                        onDecision = { granted ->
+                            if (decided.compareAndSet(false, true)) {
+                                runOnMain {
+                                    if (disposed.get()) {
+                                        runCatching { req.deny() }
+                                    } else {
+                                        runCatching {
+                                            if (granted) req.grant(resources) else req.deny()
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                    ),
+                )
+                if (!emitted && decided.compareAndSet(false, true)) {
+                    runCatching { req.deny() }
+                }
+            }
+
+            override fun onGeolocationPermissionsShowPrompt(
+                origin: String?,
+                callback: GeolocationPermissions.Callback?,
+            ) {
+                val cb = callback ?: return
+                val rawOrigin = origin.orEmpty()
+                if (disposed.get() || rawOrigin.isBlank()) {
+                    runCatching { cb.invoke(rawOrigin, false, false) }
+                    return
+                }
+                val displayOrigin = extractHostDomain(rawOrigin).ifBlank { rawOrigin }
+                val decided = AtomicBoolean(false)
+                val emitted = _events.tryEmit(
+                    EngineSessionEvent.SitePermissionRequested(
+                        origin = displayOrigin,
+                        resources = listOf("Location"),
+                        onDecision = { granted ->
+                            if (decided.compareAndSet(false, true)) {
+                                runOnMain {
+                                    val allow = granted && !disposed.get()
+                                    runCatching { cb.invoke(rawOrigin, allow, false) }
+                                }
+                            }
+                        },
+                    ),
+                )
+                if (!emitted && decided.compareAndSet(false, true)) {
+                    runCatching { cb.invoke(rawOrigin, false, false) }
+                }
+            }
         }
     }
 
     override fun loadUrl(url: String, headers: Map<String, String>) {
-        if (!isAllowedNavigationUrl(url)) return
+        if (!isAllowedNavigationUrl(url) || disposed.get()) return
         runOnMain {
+            if (disposed.get()) return@runOnMain
             val cleaned = if (currentOverrides.blockAdsAndTrackers) {
                 adblockController.cleanTrackingUrl(url).cleanUrl
             } else {
                 url
             }
             if (!isAllowedNavigationUrl(cleaned)) return@runOnMain
-            if (!cleaned.equals("about:blank", ignoreCase = true)) {
+            val isBlankTarget = cleaned.equals("about:blank", ignoreCase = true)
+            if (!isBlankTarget) {
+                captureSnapshotSync(HISTORY_PREVIEW_MAX_WIDTH_PX)?.let { snapshot ->
+                    historyFrames.pushBack(snapshot)
+                }
+                historyFrames.clearForward()
                 cancelAndResetTranslation(resetState = false)
                 _telemetry.update { it.copy(loadProgress = 8) }
                 _state.update {
@@ -648,26 +939,47 @@ class WebViewSession internal constructor(
                         isHttps = cleaned.startsWith("https://", ignoreCase = true),
                         pageLanguageTag = null,
                         translationStatus = PageTranslationStatus(),
+                        findInPageState = FindInPageState(),
+                        isElementZapperActive = false,
                     )
                 }
             }
-            if (headers.isEmpty()) {
+            val mergedHeaders = if (gpcEnabled && !isBlankTarget) {
+                val hasGpc = headers.keys.any { it.equals("Sec-GPC", ignoreCase = true) }
+                if (hasGpc) headers else headers + ("Sec-GPC" to "1")
+            } else {
+                headers
+            }
+            if (mergedHeaders.isEmpty()) {
                 webView.loadUrl(cleaned)
             } else {
-                webView.loadUrl(cleaned, headers)
+                webView.loadUrl(cleaned, mergedHeaders)
             }
         }
     }
 
     override fun reload() = runOnMain {
+        if (disposed.get()) return@runOnMain
         cancelAndResetTranslation(resetState = true)
         webView.reload()
     }
 
-    override fun stopLoading() = runOnMain { webView.stopLoading() }
+    override fun stopLoading() = runOnMain {
+        if (!disposed.get()) webView.stopLoading()
+    }
 
     override fun goBack(): Boolean {
+        if (disposed.get()) return false
         return if (webView.canGoBack()) {
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                if (_state.value.isElementZapperActive) {
+                    setElementZapperActive(false)
+                }
+                captureSnapshotSync(HISTORY_PREVIEW_MAX_WIDTH_PX)?.let { snapshot ->
+                    historyFrames.pushForward(snapshot)
+                }
+            }
+            historyFrames.popBack()
             webView.goBack()
             true
         } else {
@@ -676,7 +988,17 @@ class WebViewSession internal constructor(
     }
 
     override fun goForward(): Boolean {
+        if (disposed.get()) return false
         return if (webView.canGoForward()) {
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                if (_state.value.isElementZapperActive) {
+                    setElementZapperActive(false)
+                }
+                captureSnapshotSync(HISTORY_PREVIEW_MAX_WIDTH_PX)?.let { snapshot ->
+                    historyFrames.pushBack(snapshot)
+                }
+            }
+            historyFrames.popForward()
             webView.goForward()
             true
         } else {
@@ -688,6 +1010,7 @@ class WebViewSession internal constructor(
         currentOverrides = overrides
         _state.update { it.copy(activeOverrides = overrides) }
         runOnMain {
+            if (disposed.get()) return@runOnMain
             webView.settings.javaScriptEnabled = overrides.javascriptEnabled
             webView.settings.textZoom = overrides.pageZoomPercent.coerceIn(75, 200)
             webView.settings.userAgentString = if (overrides.desktopSite) {
@@ -704,6 +1027,7 @@ class WebViewSession internal constructor(
                 }
             }
             applyLiveOverridesJs(webView)
+            applyHiddenSelectorsJs(webView, overrides.hiddenCssSelectors)
         }
     }
 
@@ -1031,36 +1355,35 @@ class WebViewSession internal constructor(
             return
         }
         runOnMain {
-            if (disposed.get()) {
-                onResult(null)
-                return@runOnMain
-            }
-            val currentUrl = _state.value.url
-            val viewW = webView.width
-            val viewH = webView.height
-            if (
-                currentUrl.isBlank() ||
-                currentUrl.equals("about:blank", ignoreCase = true) ||
-                viewW <= 0 ||
-                viewH <= 0
-            ) {
-                onResult(null)
-                return@runOnMain
-            }
-            val bitmap = runCatching {
-                val safeMaxW = maxWidthPx.coerceIn(180, 720)
-                val scale = (safeMaxW.toFloat() / viewW.toFloat()).coerceAtMost(1f)
-                val targetW = (viewW * scale).toInt().coerceAtLeast(1)
-                val targetH = (viewH * scale).toInt().coerceAtLeast(1)
-                val bmp = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.RGB_565)
-                val canvas = Canvas(bmp)
-                canvas.scale(scale, scale)
-                canvas.translate(-webView.scrollX.toFloat(), -webView.scrollY.toFloat())
-                webView.draw(canvas)
-                bmp
-            }.getOrNull()
-            onResult(bitmap)
+            onResult(captureSnapshotSync(maxWidthPx))
         }
+    }
+
+    private fun captureSnapshotSync(maxWidthPx: Int): Bitmap? {
+        if (disposed.get()) return null
+        val currentUrl = _state.value.url
+        val viewW = webView.width
+        val viewH = webView.height
+        if (
+            currentUrl.isBlank() ||
+            currentUrl.equals("about:blank", ignoreCase = true) ||
+            viewW <= 0 ||
+            viewH <= 0
+        ) {
+            return null
+        }
+        return runCatching {
+            val safeMaxW = maxWidthPx.coerceIn(180, 720)
+            val scale = (safeMaxW.toFloat() / viewW.toFloat()).coerceAtMost(1f)
+            val targetW = (viewW * scale).toInt().coerceAtLeast(1)
+            val targetH = (viewH * scale).toInt().coerceAtLeast(1)
+            val bmp = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.RGB_565)
+            val canvas = Canvas(bmp)
+            canvas.scale(scale, scale)
+            canvas.translate(-webView.scrollX.toFloat(), -webView.scrollY.toFloat())
+            webView.draw(canvas)
+            bmp
+        }.getOrNull()
     }
 
     private fun cancelAndResetTranslation(resetState: Boolean) {
@@ -1135,22 +1458,149 @@ class WebViewSession internal constructor(
 
     override fun findInPage(query: String) {
         runOnMain {
-            if (query.isBlank()) webView.clearMatches() else webView.findAllAsync(query)
+            if (disposed.get()) return@runOnMain
+            if (query.isBlank()) {
+                _state.update { it.copy(findInPageState = FindInPageState()) }
+                webView.clearMatches()
+            } else {
+                _state.update {
+                    it.copy(
+                        findInPageState = FindInPageState(
+                            query = query,
+                            activeMatchOrdinal = 0,
+                            numberOfMatches = 0,
+                            isDoneCounting = false,
+                        ),
+                    )
+                }
+                webView.findAllAsync(query)
+            }
         }
     }
 
-    override fun clearFindInPage() = runOnMain { webView.clearMatches() }
+    override fun findNext(forward: Boolean) {
+        runOnMain {
+            if (disposed.get()) return@runOnMain
+            if (_state.value.findInPageState.query.isNotBlank()) {
+                webView.findNext(forward)
+            }
+        }
+    }
+
+    override fun clearFindInPage() {
+        runOnMain {
+            if (disposed.get()) return@runOnMain
+            _state.update { it.copy(findInPageState = FindInPageState()) }
+            webView.clearMatches()
+        }
+    }
+
+    override fun setGlobalPrivacyControl(enabled: Boolean) {
+        gpcEnabled = enabled
+        if (disposed.get()) return
+        runOnMain {
+            if (disposed.get()) return@runOnMain
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                if (enabled) {
+                    if (gpcScriptHandler == null) {
+                        runCatching {
+                            gpcScriptHandler = WebViewCompat.addDocumentStartJavaScript(
+                                webView,
+                                ElementZapperScripts.GLOBAL_PRIVACY_CONTROL_JS,
+                                ALLOWED_BRIDGE_ORIGIN_RULES,
+                            )
+                        }
+                    }
+                } else {
+                    runCatching { gpcScriptHandler?.remove() }
+                    gpcScriptHandler = null
+                }
+            }
+            webView.evaluateJavascript(ElementZapperScripts.buildGpcToggleScript(enabled), null)
+        }
+    }
+
+    override fun setBottomChromeInsetPx(insetPx: Int) {
+        val clamped = insetPx.coerceIn(0, 600)
+        bottomChromeInsetPx = clamped
+        if (disposed.get()) return
+        runOnMain {
+            if (disposed.get()) return@runOnMain
+            if (lastAppliedBottomInsetPx == clamped) return@runOnMain
+            lastAppliedBottomInsetPx = clamped
+            applyBottomChromeInsetJs(webView, clamped)
+        }
+    }
+
+    override fun setElementZapperActive(active: Boolean) {
+        if (disposed.get()) return
+        _state.update { it.copy(isElementZapperActive = active) }
+        runOnMain {
+            if (disposed.get()) return@runOnMain
+            webView.evaluateJavascript(ElementZapperScripts.buildZapperModeToggleScript(active), null)
+        }
+    }
+
+    override fun getHistoryBackPreview(): Bitmap? {
+        if (disposed.get()) return null
+        return historyFrames.peekBack()?.takeUnless { it.isRecycled }
+    }
+
+    override fun getHistoryForwardPreview(): Bitmap? {
+        if (disposed.get()) return null
+        return historyFrames.peekForward()?.takeUnless { it.isRecycled }
+    }
+
+    private fun applyHiddenSelectorsJs(view: WebView?, selectors: List<String>) {
+        val target = view ?: return
+        target.evaluateJavascript(ElementZapperScripts.buildHiddenSelectorsCssScript(selectors), null)
+    }
+
+    private fun applyHiddenSelectorsForPage(
+        view: WebView?,
+        pageUrl: String,
+        onlyIfNonEmpty: Boolean,
+    ) {
+        val target = view ?: return
+        val ov = currentOverrides
+        val pageDomain = extractHostDomain(pageUrl)
+        val matchesOrigin = ov.origin.isBlank() ||
+            pageDomain.isBlank() ||
+            ov.origin.equals(pageDomain, ignoreCase = true)
+        val selectors = if (matchesOrigin) ov.hiddenCssSelectors else emptyList()
+        if (onlyIfNonEmpty && selectors.isEmpty()) return
+        applyHiddenSelectorsJs(target, selectors)
+    }
+
+    private fun applyBottomChromeInsetJs(view: WebView?, insetPx: Int) {
+        val target = view ?: return
+        val currentUrl = target.url ?: _state.value.url
+        if (currentUrl.isBlank() || currentUrl.equals("about:blank", ignoreCase = true)) return
+        target.evaluateJavascript(ElementZapperScripts.buildBottomInsetCssScript(insetPx), null)
+    }
+
+    private fun cancelPendingFileChooser() {
+        val stale = pendingFileChooserCallback ?: return
+        pendingFileChooserCallback = null
+        runCatching { stale.onReceiveValue(null) }
+    }
 
     override fun dispose() {
         if (!disposed.compareAndSet(false, true)) return
         translationGeneration.incrementAndGet()
         sessionScope.cancel()
+        historyFrames.clearAll()
         runOnMain {
             try {
+                cancelPendingFileChooser()
+                hrefMessageHandler.removeCallbacksAndMessages(null)
                 activeTranslationJob?.cancel()
                 activeTranslationJob = null
+                runCatching { gpcScriptHandler?.remove() }
+                gpcScriptHandler = null
                 documentScriptHandlers.forEach { handler -> runCatching { handler.remove() } }
                 documentScriptHandlers.clear()
+                runCatching { webView.setFindListener(null) }
                 if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
                     runCatching { WebViewCompat.removeWebMessageListener(webView, JS_BRIDGE_NAME) }
                 }
@@ -1466,6 +1916,15 @@ private const val FOCAL_DOCUMENT_START_BOOTSTRAP_JS = """
     const t = (e.target && e.target.tagName || '').toLowerCase();
     if (t === 'video' || t === 'audio') reportMedia(e.target, !e.target.paused);
   }, true);
+
+  window.addEventListener('__focal_zapper_event', function(e) {
+    try {
+      if (!window.__focalZapperActive) return;
+      const sel = e && e.detail && typeof e.detail.selector === 'string' ? e.detail.selector : '';
+      if (!sel) return;
+      bridge.postMessage(JSON.stringify({ type: 'element_zapped', selector: sel }));
+    } catch (_) {}
+  });
 })();
 """
 

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/focal_widget_bg"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingStart="16dp"
+    android:paddingTop="10dp"
+    android:paddingEnd="10dp"
+    android:paddingBottom="10dp">
+
+    <LinearLayout
+        android:id="@+id/focal_widget_search_area"
+        android:layout_width="0dp"
+        android:layout_height="38dp"
+        android:layout_weight="1"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingEnd="10dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/widget_search_hint"
+            android:textColor="#E6F4F4F6"
+            android:textSize="15sp"
+            android:maxLines="1"
+            android:ellipsize="end" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/focal_widget_private_button"
+        android:layout_width="wrap_content"
+        android:layout_height="36dp"
+        android:background="@drawable/focal_widget_pill_bg"
+        android:gravity="center"
+        android:paddingStart="13dp"
+        android:paddingEnd="13dp"
+        android:text="@string/widget_private_label"
+        android:textColor="#F4F4F6"
+        android:textSize="13sp"
+        android:textStyle="bold" />
+</LinearLayout>

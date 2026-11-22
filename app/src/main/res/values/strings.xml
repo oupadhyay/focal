@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Focal</string>
+    <string name="widget_description">Focal Quick Search &amp; Private Aperture</string>
+    <string name="widget_search_hint">Search with Focal…</string>
+    <string name="widget_private_label">Private</string>
+    <string name="shortcut_search_short">Search</string>
+    <string name="shortcut_search_long">New Search</string>
+    <string name="shortcut_private_short">Private</string>
+    <string name="shortcut_private_long">Private Aperture</string>
 </resources>

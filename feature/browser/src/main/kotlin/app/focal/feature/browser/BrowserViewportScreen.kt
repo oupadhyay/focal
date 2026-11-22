@@ -1,6 +1,8 @@
 package app.focal.feature.browser
 
+import android.graphics.Bitmap
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -24,28 +26,40 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.FloatState
+import androidx.compose.runtime.IntState
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableFloatState
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.focal.design.FocalGlyphs
 import app.focal.design.FocalMotion
 import app.focal.design.FocalTheme
 import app.focal.design.SiteFavicon
+import app.focal.design.consumeClicks
+import app.focal.design.focalSheetEntrance
 import app.focal.design.shaders.LocalFocalBackdropLayer
+import app.focal.design.shaders.SmokedGlassBox
 import app.focal.design.shaders.hourglassPinchEffect
 import app.focal.design.shaders.opticalVignetteBackground
 import app.focal.design.shaders.recordFocalBackdrop
@@ -102,9 +116,19 @@ fun BrowserViewportScreen(
     onEnterPictureInPicture: () -> Unit,
     onFocusMediaTab: (() -> Unit)? = null,
     onDismissMediaMiniPlayer: (() -> Unit)? = null,
+    fullHideBottomBarOnScroll: Boolean = true,
+    isFindInPageOpen: Boolean = false,
+    onFindQueryChange: (String) -> Unit = {},
+    onFindNext: (Boolean) -> Unit = {},
+    onCloseFindInPage: () -> Unit = {},
+    onExitElementZapper: () -> Unit = {},
+    onBottomChromeInsetChanged: (Int) -> Unit = {},
+    historyBackPreview: Bitmap? = null,
+    predictiveBackSwipeEdgeState: IntState? = null,
     modifier: Modifier = Modifier,
 ) {
     val colors = FocalTheme.colors
+    val typography = FocalTheme.typography
     val sessionState by activeSession?.state?.collectAsState()
         ?: remember { androidx.compose.runtime.mutableStateOf(EngineSessionState(sessionId = "empty")) }
 
@@ -129,17 +153,82 @@ fun BrowserViewportScreen(
         derivedStateOf { !isOverlaySheetOpen && bottomBarScrollHideFraction.floatValue < 0.5f }
     }
 
+    // Bottom Chrome Viewport Clearance Reporting (`WebViewSession.setBottomChromeInsetPx`)
+    var measuredDockHeightPx by remember { mutableIntStateOf(0) }
+    val isDockScrolledOff by remember(bottomBarScrollHideFraction, fullHideBottomBarOnScroll) {
+        derivedStateOf {
+            fullHideBottomBarOnScroll && bottomBarScrollHideFraction.floatValue >= 0.5f
+        }
+    }
+    val effectiveBottomInsetPx = if (
+        isInPictureInPictureMode ||
+        isOverlaySheetOpen ||
+        isFindInPageOpen ||
+        isDockScrolledOff
+    ) {
+        0
+    } else {
+        measuredDockHeightPx
+    }
+    val latestOnBottomChromeInsetChanged = rememberUpdatedState(onBottomChromeInsetChanged)
+    LaunchedEffect(activeSession?.sessionId, effectiveBottomInsetPx) {
+        latestOnBottomChromeInsetChanged.value(effectiveBottomInsetPx)
+    }
+
+    // Interactive Edge-Swipe Back Snapshot Preview (memoized ImageBitmap, zero recomposition during swipe)
+    val historyBackImageBitmap = remember(historyBackPreview) {
+        historyBackPreview?.takeUnless { it.isRecycled }?.asImageBitmap()
+    }
+    val showHistoryBackPreview by remember(
+        predictiveBackProgressState,
+        historyBackImageBitmap,
+        isOverlaySheetOpen,
+        isInPictureInPictureMode,
+    ) {
+        derivedStateOf {
+            !isOverlaySheetOpen &&
+                !isInPictureInPictureMode &&
+                historyBackImageBitmap != null &&
+                predictiveBackProgressState.floatValue > 0.01f
+        }
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(colors.canvasBackground),
     ) {
+        // Layer 0: Cached previous-page snapshot peeking beneath Layer 1 during predictive edge-swipe back
+        if (showHistoryBackPreview && historyBackImageBitmap != null && historyBackPreview?.isRecycled == false) {
+            Image(
+                bitmap = historyBackImageBitmap,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(
+                        WindowInsets.safeDrawing.only(WindowInsetsSides.Top),
+                    )
+                    .graphicsLayer {
+                        val backP = predictiveBackProgressState.floatValue.coerceIn(0f, 1f)
+                        val previewScale = 0.96f + backP * 0.04f
+                        scaleX = previewScale
+                        scaleY = previewScale
+                        alpha = (0.45f + backP * 0.55f).coerceIn(0f, 1f)
+                    }
+                    .testTag("history_back_preview"),
+            )
+        }
+
         // Layer 1: Full-Bleed Web Surface (direct 1x HWUI composition) OR Screen 01 Calm Optical Launch Canvas
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .pinchToSummarizeDetector(
-                    enabled = hasLoadedWebUrl && !isInPictureInPictureMode && !isOverlaySheetOpen,
+                    enabled = hasLoadedWebUrl &&
+                        !isInPictureInPictureMode &&
+                        !isOverlaySheetOpen &&
+                        !sessionState.isElementZapperActive,
                     isPageAtMinimumZoom = {
                         (activeSession?.telemetry?.value?.currentScaleFactor ?: 1f) <= 1.04f
                     },
@@ -155,15 +244,26 @@ fun BrowserViewportScreen(
                 .graphicsLayer {
                     // Horizontal tab scrub parallax + Android 14–16 Predictive Back + subtle sheet recession
                     val scrubPx = scrubOffsetPxState.floatValue
-                    val backProg = predictiveBackProgressState.floatValue
+                    val backProg = predictiveBackProgressState.floatValue.coerceIn(0f, 1f)
+                    val edgeSign = if ((predictiveBackSwipeEdgeState?.intValue ?: 0) == 0) 1f else -1f
+                    val showBackSlide = !isOverlaySheetOpen &&
+                        !isInPictureInPictureMode &&
+                        historyBackImageBitmap != null &&
+                        backProg > 0.01f
+                    val backSlidePx = if (showBackSlide) {
+                        edgeSign * backProg * 96.dp.toPx()
+                    } else {
+                        0f
+                    }
                     val scrubFraction = (kotlin.math.abs(scrubPx) / 88.dp.toPx()).coerceIn(0f, 1f)
                     val scrubScale = 1f - (scrubFraction * 0.06f)
                     val backScale = 1f - (backProg * 0.06f)
                     val sheetRecedeScale = 1f - (overlayDimProgress * 0.025f)
 
-                    translationX = scrubPx
+                    translationX = scrubPx + backSlidePx
                     scaleX = scrubScale * backScale * sheetRecedeScale
                     scaleY = scrubScale * backScale * sheetRecedeScale
+                    shadowElevation = if (showBackSlide) 16.dp.toPx() * backProg else 0f
                 },
         ) {
             if (hasLoadedWebUrl && activeSession != null) {
@@ -204,8 +304,65 @@ fun BrowserViewportScreen(
             }
         }
 
+        // Layer 1.5: Element Zapper Active Floating Smoked Glass Banner (top-center)
+        if (sessionState.isElementZapperActive && !isOverlaySheetOpen && !isInPictureInPictureMode) {
+            val zapperTint = rememberUpdatedState(colors.effectiveBarGlass)
+            SmokedGlassBox(
+                shape = CircleShape,
+                glassTintState = zapperTint,
+                borderSpecular = colors.borderSpecular,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
+                    .padding(top = 8.dp, start = 16.dp, end = 16.dp)
+                    .focalSheetEntrance(riseDp = (-12).dp)
+                    .shadow(
+                        elevation = 14.dp,
+                        shape = CircleShape,
+                        ambientColor = Color.Black.copy(alpha = 0.35f),
+                        spotColor = Color.Black.copy(alpha = 0.45f),
+                    )
+                    .testTag("element_zapper_banner")
+                    .consumeClicks(),
+            ) {
+                Row(
+                    modifier = Modifier.padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Icon(
+                        imageVector = FocalGlyphs.EyeOff,
+                        contentDescription = null,
+                        tint = colors.inkPrimary,
+                        modifier = Modifier.size(15.dp),
+                    )
+                    Text(
+                        text = "Tap an element to hide",
+                        style = typography.controlPillLabel,
+                        color = colors.inkPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Box(
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(colors.surfacePillActive)
+                            .clickable(onClick = onExitElementZapper)
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = "Done",
+                            style = typography.controlPillLabel,
+                            color = colors.inkOnPillActive,
+                        )
+                    }
+                }
+            }
+        }
+
         // Layer 2: Floating Lower Dock — adapts ONLY bottom bar elements to light/dark web pages
-        if (!isInPictureInPictureMode && overlayDimProgress < 0.99f) {
+        if (!isInPictureInPictureMode && !isFindInPageOpen && overlayDimProgress < 0.99f) {
             val effectiveBackdropLayer = if (hasLoadedWebUrl) null else backdropGraphicsLayer
             val dockDarkGlass = if (hasLoadedWebUrl) adaptiveBottomBarDarkGlass else colors.isDarkGlass
             FocalTheme(
@@ -217,13 +374,25 @@ fun BrowserViewportScreen(
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .fillMaxWidth()
+                            .onSizeChanged { size -> measuredDockHeightPx = size.height }
                             .navigationBarsPadding()
                             .padding(bottom = 12.dp)
                             .graphicsLayer {
-                                val scrollHideY = bottomBarScrollHideFraction.floatValue * 18.dp.toPx()
+                                val scrollHideFraction = bottomBarScrollHideFraction.floatValue.coerceIn(0f, 1f)
+                                val scrollHideY = if (fullHideBottomBarOnScroll) {
+                                    scrollHideFraction * 92.dp.toPx()
+                                } else {
+                                    scrollHideFraction * 18.dp.toPx()
+                                }
                                 val sheetHideY = overlayDimProgress * 28.dp.toPx()
+                                val scrollAlpha = if (fullHideBottomBarOnScroll) {
+                                    (1f - scrollHideFraction).coerceIn(0f, 1f)
+                                } else {
+                                    1f
+                                }
+                                val sheetAlpha = (1f - overlayDimProgress * 1.15f).coerceIn(0f, 1f)
                                 translationY = scrollHideY + sheetHideY
-                                alpha = (1f - overlayDimProgress * 1.15f).coerceIn(0f, 1f)
+                                alpha = scrollAlpha * sheetAlpha
                             },
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
@@ -287,6 +456,27 @@ fun BrowserViewportScreen(
                             onOpenPageMenu = onOpenPageMenu,
                         )
                     }
+                }
+            }
+        }
+
+        // Layer 3: Find in Page Floating Smoked Glass Bar (replaces normal bottom bar cleanly above IME)
+        if (isFindInPageOpen && !isOverlaySheetOpen && !isInPictureInPictureMode) {
+            val effectiveBackdropLayer = if (hasLoadedWebUrl) null else backdropGraphicsLayer
+            val dockDarkGlass = if (hasLoadedWebUrl) adaptiveBottomBarDarkGlass else colors.isDarkGlass
+            FocalTheme(
+                darkGlass = dockDarkGlass,
+                isPrivateAperture = isPrivateAperture,
+            ) {
+                CompositionLocalProvider(LocalFocalBackdropLayer provides effectiveBackdropLayer) {
+                    FindInPageBar(
+                        findState = sessionState.findInPageState,
+                        onQueryChange = onFindQueryChange,
+                        onFindPrevious = { onFindNext(false) },
+                        onFindNext = { onFindNext(true) },
+                        onClose = onCloseFindInPage,
+                        modifier = Modifier.align(Alignment.BottomCenter),
+                    )
                 }
             }
         }

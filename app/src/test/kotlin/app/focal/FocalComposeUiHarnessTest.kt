@@ -12,6 +12,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.assertIsDisplayed
@@ -30,23 +31,35 @@ import androidx.compose.ui.test.swipeLeft
 import androidx.compose.ui.test.swipeRight
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import app.focal.adblock.NativeAdblockController
 import app.focal.database.BookmarkEntity
+import app.focal.database.DownloadRecordEntity
+import app.focal.database.HistoryEntryEntity
 import app.focal.database.SpaceEntity
 import app.focal.database.TabMetadataEntity
 import app.focal.design.AppChromeTheme
+import app.focal.design.FocalBrowserSettings
 import app.focal.design.FocalTheme
+import app.focal.design.SearchEnginePreset
 import app.focal.engine.api.ActiveMediaSessionInfo
 import app.focal.engine.api.EngineSession
 import app.focal.engine.api.EngineSessionEvent
 import app.focal.engine.api.EngineSessionState
+import app.focal.engine.api.FindInPageState
 import app.focal.engine.api.IndexedDomParagraph
 import app.focal.engine.api.OriginOverrides
 import app.focal.engine.api.ReadableDocument
+import app.focal.feature.browser.FindInPageBar
+import app.focal.feature.browser.LinkPeekSheet
 import app.focal.feature.media.FocalMediaBridge
+import app.focal.feature.reader.GlobalSettingsSheet
 import app.focal.feature.reader.PageMenuAndSiteOverridesSheet
+import app.focal.feature.reader.UpdateBannerState
 import app.focal.feature.search.SearchSheet
 import app.focal.feature.spaces.BookmarksSheet
 import app.focal.feature.spaces.BookmarksSheetUiState
+import app.focal.feature.spaces.DownloadsSheet
+import app.focal.feature.spaces.HistorySheet
 import app.focal.feature.tabs.TabSwitcherSheet
 import app.focal.sync.PresenceTabItem
 import app.focal.sync.SyncConnectionStatus
@@ -763,6 +776,424 @@ class FocalComposeUiHarnessTest {
         } finally {
             FocalMediaBridge.clearAll()
         }
+    }
+
+    @Test
+    fun searchSheet_liveLocalSuggestions_switchesOpenTab_andUsesConfiguredSearchEngine() {
+        var switchedTabId: String? = null
+        var navigatedUrl: String? = null
+        val now = System.currentTimeMillis()
+        val spaces = persistentListOf(
+            SpaceEntity("personal", "Personal", "#F4725E", 0, now),
+            SpaceEntity("work", "Work", "#94A3B8", 1, now),
+        )
+        val openTabs = persistentListOf(
+            TabMetadataEntity(
+                id = "tab-ars",
+                spaceId = "work",
+                url = "https://arstechnica.com/gadgets/2026/focal-preview/",
+                domain = "arstechnica.com",
+                title = "Ars Technica · Mobile Optical Glass",
+                lastActiveEpochMs = now,
+                createdAtEpochMs = now - 5_000L,
+            ),
+        )
+        val bookmarks = persistentListOf(
+            BookmarkEntity(
+                id = "bm-ars-home",
+                spaceId = "personal",
+                title = "Ars Technica Homepage",
+                url = "https://arstechnica.com",
+                createdAtEpochMs = now,
+                updatedAtEpochMs = now,
+            ),
+        )
+        val history = persistentListOf(
+            HistoryEntryEntity(
+                id = "hist-1",
+                url = "https://arstechnica.com/science/",
+                domain = "arstechnica.com",
+                title = "Ars Science Desk",
+                visitedAtEpochMs = now - 60_000L,
+                visitCount = 4,
+            ),
+        )
+
+        composeRule.setContent {
+            FocalTheme(darkGlass = true, isPrivateAperture = false) {
+                SearchSheet(
+                    initialQuery = "",
+                    isPrivateAperture = false,
+                    onTogglePrivateAperture = {},
+                    onNavigateToUrl = { url, _ -> navigatedUrl = url },
+                    onDismiss = {},
+                    openTabs = openTabs,
+                    bookmarks = bookmarks,
+                    historyEntries = history,
+                    spaces = spaces,
+                    browserSettings = FocalBrowserSettings(searchEngine = SearchEnginePreset.KAGI),
+                    onSwitchToTab = { switchedTabId = it },
+                )
+            }
+        }
+
+        composeRule.waitForIdle()
+        composeRule.onNode(hasSetTextAction()).performTextInput("ars")
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithText("Switch").assertIsDisplayed()
+        composeRule.onNodeWithText("Ars Technica · Mobile Optical Glass").assertIsDisplayed()
+        val snap = composeRule.captureSnapshotPng("09_search_local_suggestions.png")
+        assertTrue(snap.length() > 1_000L)
+
+        composeRule.onNodeWithText("Ars Technica · Mobile Optical Glass").performClick()
+        composeRule.waitForIdle()
+        assertEquals("tab-ars", switchedTabId)
+
+        // Verify configured Kagi search engine is used for plain-text queries
+        composeRule.onNode(hasSetTextAction()).performTextClearance()
+        composeRule.onNode(hasSetTextAction()).performTextInput("focal optical browser")
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("Go").performClick()
+        composeRule.waitForIdle()
+        assertTrue(
+            "Expected Kagi search URL, got $navigatedUrl",
+            navigatedUrl?.startsWith("https://kagi.com/search?q=") == true,
+        )
+    }
+
+    @Test
+    fun findInPageBar_displaysMatchCount_andInvokesNavigationCallbacks() {
+        var prevClicks = 0
+        var nextClicks = 0
+        var closeClicks = 0
+        var lastQuery = "optical"
+
+        composeRule.setContent {
+            FocalTheme(darkGlass = true, isPrivateAperture = false) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(FocalTheme.colors.canvasBackground),
+                    contentAlignment = Alignment.BottomCenter,
+                ) {
+                    FindInPageBar(
+                        findState = FindInPageState(
+                            query = lastQuery,
+                            activeMatchOrdinal = 1,
+                            numberOfMatches = 7,
+                            isDoneCounting = true,
+                        ),
+                        onQueryChange = { lastQuery = it },
+                        onFindPrevious = { prevClicks++ },
+                        onFindNext = { nextClicks++ },
+                        onClose = { closeClicks++ },
+                    )
+                }
+            }
+        }
+
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("find_in_page_bar").assertIsDisplayed()
+        composeRule.onNodeWithText("2/7").assertIsDisplayed()
+
+        val snap = composeRule.captureSnapshotPng("10_find_in_page_bar.png")
+        assertTrue(snap.length() > 1_000L)
+
+        composeRule.onNodeWithContentDescription("Previous match").performClick()
+        composeRule.onNodeWithContentDescription("Next match").performClick()
+        composeRule.onNodeWithContentDescription("Close find").performClick()
+        composeRule.waitForIdle()
+
+        assertEquals(1, prevClicks)
+        assertEquals(1, nextClicks)
+        assertEquals(1, closeClicks)
+    }
+
+    @Test
+    fun linkPeekSheet_oauthBypass_andImageOnlySaveCard_renderCleanlyWithoutPreviewWebView() {
+        val adblock = NativeAdblockController(autoLoadNativeLibrary = false)
+        val oauthUrl = "https://accounts.google.com/o/oauth2/v2/auth?client_id=abc123"
+        val imageUrl = "https://images.example.com/hero/camera-lens.webp"
+        var savedImageUrl: String? = null
+        var openedDirectUrl: String? = null
+
+        composeRule.setContent {
+            var mode by remember { mutableStateOf("oauth") }
+            FocalTheme(darkGlass = true, isPrivateAperture = false) {
+                if (mode == "oauth") {
+                    LinkPeekSheet(
+                        rawUrl = oauthUrl,
+                        cleanedResult = adblock.cleanTrackingUrl(oauthUrl),
+                        adblockController = adblock,
+                        onOpenInBackgroundTab = {},
+                        onExpandFullTab = {
+                            openedDirectUrl = it
+                            mode = "image"
+                        },
+                        onDismiss = {},
+                    )
+                } else {
+                    LinkPeekSheet(
+                        rawUrl = imageUrl,
+                        cleanedResult = adblock.cleanTrackingUrl(imageUrl),
+                        adblockController = adblock,
+                        imageUrl = imageUrl,
+                        onOpenInBackgroundTab = {},
+                        onExpandFullTab = {},
+                        onSaveImage = { savedImageUrl = it },
+                        onDismiss = {},
+                    )
+                }
+            }
+        }
+
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("Direct Sign-In").assertIsDisplayed()
+        composeRule.onNodeWithText("Sign-in link — opens directly to keep your session intact").assertIsDisplayed()
+        val oauthSnap = composeRule.captureSnapshotPng("11a_link_peek_oauth_bypass.png")
+        assertTrue(oauthSnap.length() > 1_000L)
+
+        composeRule.onNodeWithText("Open").performClick()
+        composeRule.waitForIdle()
+        assertEquals(oauthUrl, openedDirectUrl)
+
+        composeRule.onNodeWithText("Save Image").assertIsDisplayed()
+        val imageSnap = composeRule.captureSnapshotPng("11b_link_peek_image_save.png")
+        assertTrue(imageSnap.length() > 1_000L)
+
+        composeRule.onNodeWithText("Save Image").performClick()
+        composeRule.waitForIdle()
+        assertEquals(imageUrl, savedImageUrl)
+    }
+
+    @Test
+    fun historySheet_groupsByDay_filtersLocally_andOpensSelectedEntry() {
+        val now = System.currentTimeMillis()
+        val dayMs = 24L * 60L * 60L * 1000L
+        var openedUrl: String? = null
+        val entries = persistentListOf(
+            HistoryEntryEntity(
+                id = "h1",
+                url = "https://github.com/oupadhyay/focal",
+                domain = "github.com",
+                title = "oupadhyay/focal · Android Browser",
+                visitedAtEpochMs = now - 60_000L,
+                visitCount = 5,
+            ),
+            HistoryEntryEntity(
+                id = "h2",
+                url = "https://arstechnica.com/gadgets/",
+                domain = "arstechnica.com",
+                title = "Ars Technica Gadgets",
+                visitedAtEpochMs = now - dayMs - 3_600_000L,
+                visitCount = 2,
+            ),
+            HistoryEntryEntity(
+                id = "h3",
+                url = "https://en.wikipedia.org/wiki/Optical_glass",
+                domain = "en.wikipedia.org",
+                title = "Optical glass — Wikipedia",
+                visitedAtEpochMs = now - 5L * dayMs,
+                visitCount = 1,
+            ),
+        )
+
+        composeRule.setContent {
+            FocalTheme(darkGlass = true, isPrivateAperture = false) {
+                HistorySheet(
+                    entries = entries,
+                    onOpenUrl = { openedUrl = it },
+                    onDeleteEntry = {},
+                    onClearAllHistory = {},
+                    onDismiss = {},
+                )
+            }
+        }
+
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("History").assertIsDisplayed()
+        composeRule.onNodeWithText("Today").assertIsDisplayed()
+        composeRule.onNodeWithText("Yesterday").assertIsDisplayed()
+        composeRule.onNodeWithText("Earlier").assertIsDisplayed()
+        val snap = composeRule.captureSnapshotPng("12_history_sheet.png")
+        assertTrue(snap.length() > 1_000L)
+
+        composeRule.onNodeWithText("oupadhyay/focal · Android Browser").performClick()
+        composeRule.waitForIdle()
+        assertEquals("https://github.com/oupadhyay/focal", openedUrl)
+    }
+
+    @Test
+    fun downloadsSheet_displaysSavedFiles_andWiresOpenAction() {
+        val now = System.currentTimeMillis()
+        var openedDownloadId: String? = null
+        val downloads = persistentListOf(
+            DownloadRecordEntity(
+                id = "dl-1",
+                url = "https://example.com/focal-spec.pdf",
+                fileName = "focal-spec.pdf",
+                mimeType = "application/pdf",
+                originDomain = "example.com",
+                downloadManagerId = 42L,
+                createdAtEpochMs = now - 120_000L,
+            ),
+            DownloadRecordEntity(
+                id = "dl-2",
+                url = "https://images.example.com/lens-wallpaper.png",
+                fileName = "lens-wallpaper.png",
+                mimeType = "image/png",
+                originDomain = "images.example.com",
+                downloadManagerId = 43L,
+                createdAtEpochMs = now - 3_600_000L,
+            ),
+        )
+
+        composeRule.setContent {
+            FocalTheme(darkGlass = true, isPrivateAperture = false) {
+                DownloadsSheet(
+                    downloads = downloads,
+                    onOpenDownload = { openedDownloadId = it.id },
+                    onShareDownload = {},
+                    onDeleteDownload = {},
+                    onClearAll = {},
+                    onDismiss = {},
+                )
+            }
+        }
+
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("Downloads").assertIsDisplayed()
+        composeRule.onNodeWithText("focal-spec.pdf").assertIsDisplayed()
+        composeRule.onNodeWithText("lens-wallpaper.png").assertIsDisplayed()
+        val snap = composeRule.captureSnapshotPng("13_downloads_sheet.png")
+        assertTrue(snap.length() > 1_000L)
+
+        composeRule.onNodeWithText("focal-spec.pdf").performClick()
+        composeRule.waitForIdle()
+        assertEquals("dl-1", openedDownloadId)
+    }
+
+    @Test
+    fun globalSettingsSheet_rendersSearchEngines_privacyToggles_andUpdateBanner() {
+        var latestSettings = FocalBrowserSettings()
+        var clearDataCount = 0
+        var installClicked = false
+
+        composeRule.setContent {
+            var currentSettings by remember { mutableStateOf(latestSettings) }
+            FocalTheme(darkGlass = true, isPrivateAperture = false) {
+                GlobalSettingsSheet(
+                    settings = currentSettings,
+                    appTheme = AppChromeTheme.DARK,
+                    currentVersionName = "0.1.62",
+                    totalBlockedTrackers = 128L,
+                    biometricAvailable = true,
+                    updateState = UpdateBannerState.Available(
+                        tagName = "v0.1.63",
+                        releaseName = "Focal 0.1.63",
+                        notes = "Faster tab switcher + Element Zapper polish",
+                    ),
+                    onUpdateSettings = {
+                        currentSettings = it
+                        latestSettings = it
+                    },
+                    onUpdateAppTheme = {},
+                    onClearBrowsingData = { clearDataCount++ },
+                    onCheckForUpdates = {},
+                    onInstallUpdate = { installClicked = true },
+                    onDismiss = {},
+                )
+            }
+        }
+
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("Settings").assertIsDisplayed()
+        composeRule.onNodeWithText("DuckDuckGo").assertIsDisplayed()
+        composeRule.onNodeWithText("Kagi").assertIsDisplayed()
+        val snap = composeRule.captureSnapshotPng("14_global_settings_sheet.png")
+        assertTrue(snap.length() > 1_000L)
+
+        composeRule.onNodeWithText("Kagi").performClick()
+        composeRule.waitForIdle()
+        assertEquals(SearchEnginePreset.KAGI, latestSettings.searchEngine)
+    }
+
+    @Test
+    fun tabSwitcher_displaysUndoCloseTabPill_andRestoresTabOnTap() {
+        var undoTapped = false
+        val now = System.currentTimeMillis()
+        val spaces = persistentListOf(
+            SpaceEntity("personal", "Personal", "#F4725E", 0, now),
+            SpaceEntity("work", "Work", "#94A3B8", 1, now),
+        )
+        val activeTabs = persistentListOf(
+            TabMetadataEntity(
+                id = "tab-1",
+                spaceId = "personal",
+                url = "https://github.com/oupadhyay/focal",
+                domain = "github.com",
+                title = "Focal Browser",
+                lastActiveEpochMs = now,
+                createdAtEpochMs = now,
+            ),
+        )
+
+        composeRule.setContent {
+            FocalTheme(darkGlass = true, isPrivateAperture = false) {
+                TabSwitcherSheet(
+                    activeTabs = activeTabs,
+                    archivedTabs = persistentListOf(),
+                    selectedTabId = "tab-1",
+                    spaces = spaces,
+                    activeSpaceId = "personal",
+                    tabCountBySpace = persistentMapOf("personal" to 1, "work" to 0),
+                    onSelectTab = {},
+                    onCloseTab = {},
+                    onRestoreArchivedTab = {},
+                    onNewSearch = {},
+                    onDone = {},
+                    lastClosedTabTitle = "Ars Technica",
+                    onUndoCloseTab = { undoTapped = true },
+                    onDismissUndoCloseTab = {},
+                )
+            }
+        }
+
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("Undo").assertIsDisplayed()
+        val snap = composeRule.captureSnapshotPng("15_tab_switcher_undo_pill.png")
+        assertTrue(snap.length() > 1_000L)
+
+        composeRule.onNodeWithText("Undo").performClick()
+        composeRule.waitForIdle()
+        assertTrue(undoTapped)
+    }
+
+    @Test
+    fun sitePermissionPromptSheet_rendersOriginAndResources_andDispatchesDecision() {
+        var decision: Boolean? = null
+
+        composeRule.setContent {
+            FocalTheme(darkGlass = true, isPrivateAperture = false) {
+                SitePermissionPromptSheet(
+                    origin = "meet.example.com",
+                    resources = listOf("Camera", "Microphone"),
+                    onAllow = { decision = true },
+                    onDeny = { decision = false },
+                )
+            }
+        }
+
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("Allow Camera & Microphone?").assertIsDisplayed()
+        composeRule.onNodeWithText("meet.example.com").assertIsDisplayed()
+        val snap = composeRule.captureSnapshotPng("16_site_permission_prompt.png")
+        assertTrue(snap.length() > 1_000L)
+
+        composeRule.onNodeWithText("Allow").performClick()
+        composeRule.waitForIdle()
+        assertEquals(true, decision)
     }
 
     @Test

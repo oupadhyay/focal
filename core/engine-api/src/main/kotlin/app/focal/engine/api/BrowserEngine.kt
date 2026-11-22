@@ -1,6 +1,7 @@
 package app.focal.engine.api
 
 import android.graphics.Bitmap
+import android.net.Uri
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -17,6 +18,7 @@ data class OriginOverrides(
     val readerUseSerif: Boolean? = null,
     val readerFontSizeSp: Int? = null,
     val readerLineHeight: Float? = null,
+    val hiddenCssSelectors: List<String> = emptyList(),
 )
 
 data class ReadableDocument(
@@ -62,6 +64,13 @@ data class PageTranslationStatus(
     val errorMessage: String? = null,
 )
 
+data class FindInPageState(
+    val query: String = "",
+    val activeMatchOrdinal: Int = 0,
+    val numberOfMatches: Int = 0,
+    val isDoneCounting: Boolean = true,
+)
+
 data class EngineSessionState(
     val sessionId: String,
     val isPrivate: Boolean = false,
@@ -83,6 +92,8 @@ data class EngineSessionState(
     val currentScaleFactor: Float = 1.0f,
     val activeMedia: ActiveMediaSessionInfo? = null,
     val activeOverrides: OriginOverrides? = null,
+    val findInPageState: FindInPageState = FindInPageState(),
+    val isElementZapperActive: Boolean = false,
 )
 
 data class EngineTelemetryState(
@@ -97,6 +108,7 @@ sealed interface EngineSessionEvent {
         val anchorTitle: String?,
         val touchXRatio: Float,
         val touchYRatio: Float,
+        val imageUrl: String? = null,
     ) : EngineSessionEvent
 
     data class ScrollDeltaChanged(
@@ -119,6 +131,23 @@ sealed interface EngineSessionEvent {
         val contentLength: Long,
         val userAgent: String? = null,
         val contentDisposition: String? = null,
+    ) : EngineSessionEvent
+
+    data class FileChooserRequested(
+        val mimeTypes: List<String>,
+        val allowMultiple: Boolean,
+        val onResult: (List<Uri>?) -> Unit,
+    ) : EngineSessionEvent
+
+    data class SitePermissionRequested(
+        val origin: String,
+        val resources: List<String>,
+        val onDecision: (Boolean) -> Unit,
+    ) : EngineSessionEvent
+
+    data class ElementZapped(
+        val origin: String,
+        val cssSelector: String,
     ) : EngineSessionEvent
 }
 
@@ -169,7 +198,14 @@ interface EngineSession {
     fun setMediaPlaying(playing: Boolean)
     fun requestElementFullscreenOrPip()
     fun findInPage(query: String)
+    fun findNext(forward: Boolean) {}
     fun clearFindInPage()
+
+    fun setGlobalPrivacyControl(enabled: Boolean) {}
+    fun setBottomChromeInsetPx(insetPx: Int) {}
+    fun setElementZapperActive(active: Boolean) {}
+    fun getHistoryBackPreview(): Bitmap? = null
+    fun getHistoryForwardPreview(): Bitmap? = null
 
     fun dispose()
 }

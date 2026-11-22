@@ -18,8 +18,10 @@ import android.webkit.URLUtil
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.PredictiveBackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.Animatable
@@ -78,13 +80,17 @@ import app.focal.ai.GroundedPageSummary
 import app.focal.ai.IndexedParagraph
 import app.focal.ai.LocalSummarizer
 import app.focal.database.BookmarkEntity
+import app.focal.database.DownloadRecordEntity
 import app.focal.database.FocalDatabase
+import app.focal.database.OriginHiddenSelectorsCodec
 import app.focal.database.OriginOverrideEntity
 import app.focal.database.TabMetadataEntity
 import app.focal.design.AdaptiveGlassController
 import app.focal.design.AppChromeTheme
 import app.focal.design.FocalAppearanceStore
+import app.focal.design.FocalBrowserSettings
 import app.focal.design.FocalMotion
+import app.focal.design.FocalSettingsStore
 import app.focal.design.FocalTheme
 import app.focal.design.GestureLeaseController
 import app.focal.design.GestureLeaseOwner
@@ -102,17 +108,22 @@ import app.focal.feature.browser.BrowserViewportScreen
 import app.focal.feature.browser.LinkPeekSheet
 import app.focal.feature.browser.PinchSummarySheet
 import app.focal.feature.media.FocalMediaBridge
+import app.focal.feature.reader.GlobalSettingsSheet
 import app.focal.feature.reader.PageMenuAndSiteOverridesSheet
 import app.focal.feature.reader.ReaderDefaultsStore
 import app.focal.feature.reader.ReaderModeView
 import app.focal.feature.reader.ReaderSitePreferencesResolver
+import app.focal.feature.reader.UpdateBannerState
 import app.focal.feature.search.DefaultSearchSquirclePins
 import app.focal.feature.search.QuickSquirclePin
 import app.focal.feature.search.SearchSheet
 import app.focal.feature.spaces.BookmarksSheet
 import app.focal.feature.spaces.BookmarksSheetUiState
+import app.focal.feature.spaces.DownloadsSheet
+import app.focal.feature.spaces.HistorySheet
 import app.focal.feature.tabs.TabSwitcherSheet
 import app.focal.sync.SyncRelaySessionManager
+import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.collections.immutable.toImmutableMap
 import kotlinx.coroutines.CancellationException
@@ -126,6 +137,7 @@ import java.util.UUID
 class MainActivity : ComponentActivity() {
 
     private var pendingExternalUri by mutableStateOf<String?>(null)
+    private var pendingLaunchMode by mutableStateOf<String?>(null)
     private var isInPipModeState by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -143,6 +155,7 @@ class MainActivity : ComponentActivity() {
 
         if (savedInstanceState == null) {
             pendingExternalUri = intent?.dataString
+            pendingLaunchMode = intent?.getStringExtra(FocalQuickLaunchWidget.EXTRA_LAUNCH_MODE)
         }
         isInPipModeState = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode
         val focalApp = application as FocalApplication
@@ -161,6 +174,8 @@ class MainActivity : ComponentActivity() {
                 isInPictureInPictureMode = isInPipModeState,
                 externalIntentUri = pendingExternalUri,
                 onExternalUriConsumed = { pendingExternalUri = null },
+                pendingLaunchMode = pendingLaunchMode,
+                onLaunchModeConsumed = { pendingLaunchMode = null },
                 onEnterSystemPip = ::enterBrowserPipMode,
             )
         }
@@ -170,6 +185,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         pendingExternalUri = intent.dataString
+        pendingLaunchMode = intent.getStringExtra(FocalQuickLaunchWidget.EXTRA_LAUNCH_MODE)
     }
 
     override fun onPictureInPictureModeChanged(
@@ -205,6 +221,8 @@ private fun FocalRootCoordinator(
     isInPictureInPictureMode: Boolean,
     externalIntentUri: String?,
     onExternalUriConsumed: () -> Unit,
+    pendingLaunchMode: String?,
+    onLaunchModeConsumed: () -> Unit,
     onEnterSystemPip: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -230,6 +248,7 @@ private fun FocalRootCoordinator(
     val overlaySheet by sessionVm.overlaySheet.collectAsState()
     val pendingNewTabInSearch by sessionVm.pendingNewTabInSearch.collectAsState()
     val pendingPairingRequest by sessionVm.pendingPairingRequest.collectAsState()
+    val lastClosedTab by sessionVm.lastClosedTab.collectAsState()
 
     // Room reactive streams wrapped in remember { toImmutableList() } (P2-1)
     val spaces by database.spaceDao().observeSpaces().collectAsState(initial = emptyList())
@@ -250,11 +269,20 @@ private fun FocalRootCoordinator(
         val retentionStart = System.currentTimeMillis() - TabMetadataEntity.ARCHIVE_RETENTION_MS
         database.tabMetadataDao().observeArchivedTabs(retentionStart)
     }.collectAsState(initial = emptyList())
+    val recentHistory by remember {
+        database.historyDao().observeRecentHistory(limit = 200)
+    }.collectAsState(initial = emptyList())
+    val recentDownloads by remember {
+        database.downloadRecordDao().observeRecentDownloads(limit = 100)
+    }.collectAsState(initial = emptyList())
 
     val immutableSpaces = remember(spaces) { spaces.toImmutableList() }
     val immutableAllBookmarks = remember(allBookmarks) { allBookmarks.toImmutableList() }
+    val immutableAllActiveTabs = remember(allActiveTabs) { allActiveTabs.toImmutableList() }
     val immutableActiveTabs = remember(activeTabsInSpace) { activeTabsInSpace.toImmutableList() }
     val immutableArchivedTabs = remember(archivedTabs) { archivedTabs.toImmutableList() }
+    val immutableHistory = remember(recentHistory) { recentHistory.toImmutableList() }
+    val immutableDownloads = remember(recentDownloads) { recentDownloads.toImmutableList() }
     val immutableTabPreviews = remember(tabPreviews) { tabPreviews.toImmutableMap() }
     val tabCountBySpace = remember(allActiveTabs) {
         allActiveTabs.groupingBy { it.spaceId }.eachCount().toImmutableMap()
@@ -275,14 +303,62 @@ private fun FocalRootCoordinator(
     val activeSession: EngineSession? = selectedTabId?.let { liveSessions[it] }
     val activeSessionState = activeSession?.state?.collectAsState()?.value
 
-    // Observe per-origin overrides (including sticky Reader Mode settings) for current domain
+    // Global browser settings (default search engine, GPC, biometric private lock, full scroll-hide)
+    val settingsStore = remember(context) { FocalSettingsStore(context) }
+    var browserSettings by remember(settingsStore) {
+        mutableStateOf(settingsStore.read())
+    }
+    val updateBrowserSettings: (FocalBrowserSettings) -> Unit = { updated ->
+        browserSettings = updated
+        settingsStore.write(updated)
+    }
+    LaunchedEffect(browserSettings.globalPrivacyControlEnabled) {
+        sessionVm.setGlobalPrivacyControl(browserSettings.globalPrivacyControlEnabled)
+    }
+
+    val biometricAvailable = remember(context) {
+        FocalBiometricLock.isDeviceAuthenticationAvailable(context)
+    }
+    val appVersionName = remember(context) {
+        FocalReleaseUpdater.currentAppVersionName(context)
+    }
+    var updateBannerState by remember { mutableStateOf<UpdateBannerState>(UpdateBannerState.Idle) }
+    var availableReleaseInfo by remember { mutableStateOf<FocalReleaseInfo?>(null) }
+
+    val requestPrivateAperture: (Boolean, () -> Unit) -> Unit = { enablePrivate, onApproved ->
+        if (!enablePrivate || isPrivateAperture || !browserSettings.biometricPrivateLockEnabled) {
+            onApproved()
+        } else {
+            FocalBiometricLock.authenticatePrivateAperture(
+                activity = activity,
+                onAuthenticated = onApproved,
+                onCancelledOrFailed = {},
+            )
+        }
+    }
+
+    // Observe per-origin overrides (including sticky Reader Mode settings & Element Zapper CSS rules)
     val currentOrigin = activeSessionState?.domain.orEmpty()
     val savedOverrideEntity by remember(currentOrigin) {
         database.originOverrideDao().observeOverrideForOrigin(currentOrigin)
     }.collectAsState(initial = null)
+    var privateOverridesByOrigin by remember(isPrivateAperture) {
+        mutableStateOf<Map<String, OriginOverrides>>(emptyMap())
+    }
 
-    val effectiveOverrides = remember(currentOrigin, savedOverrideEntity) {
-        savedOverrideEntity?.toEngineOverrides() ?: OriginOverrides(origin = currentOrigin)
+    val effectiveOverrides = remember(
+        currentOrigin,
+        savedOverrideEntity,
+        isPrivateAperture,
+        privateOverridesByOrigin,
+    ) {
+        if (isPrivateAperture) {
+            privateOverridesByOrigin[currentOrigin]
+                ?: savedOverrideEntity?.toEngineOverrides()
+                ?: OriginOverrides(origin = currentOrigin)
+        } else {
+            savedOverrideEntity?.toEngineOverrides() ?: OriginOverrides(origin = currentOrigin)
+        }
     }
 
     val readerDefaultsStore = remember(context) { ReaderDefaultsStore(context) }
@@ -315,12 +391,63 @@ private fun FocalRootCoordinator(
     val persistSiteOverrides: (OriginOverrides) -> Unit = { updated ->
         activeSession?.setSiteOverrides(updated)
         // Never write visited domain names to SQLite during Private Aperture ◎ sessions
-        if (!isPrivateAperture && updated.origin.isNotBlank()) {
+        if (isPrivateAperture) {
+            if (updated.origin.isNotBlank()) {
+                privateOverridesByOrigin = privateOverridesByOrigin + (updated.origin to updated)
+            }
+        } else if (updated.origin.isNotBlank()) {
             scope.launch(Dispatchers.IO) {
                 database.originOverrideDao().upsertOverride(
                     updated.toEntity(updatedAtEpochMs = System.currentTimeMillis()),
                 )
             }
+        }
+    }
+
+    // Find in Page active state (auto-dismissed when switching tabs)
+    var isFindInPageOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(selectedTabId) {
+        isFindInPageOpen = false
+    }
+
+    // Native File Upload Picker plumbing for WebChromeClient.onShowFileChooser
+    var pendingFileChooserCallback by remember { mutableStateOf<((List<Uri>?) -> Unit)?>(null) }
+    val completePendingFileChooser: (List<Uri>?) -> Unit = { uris ->
+        val callback = pendingFileChooserCallback
+        pendingFileChooserCallback = null
+        callback?.invoke(uris)
+    }
+    val openSingleDocumentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        completePendingFileChooser(uri?.let(::listOf))
+    }
+    val openMultipleDocumentsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris ->
+        completePendingFileChooser(uris.takeIf { it.isNotEmpty() })
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            pendingFileChooserCallback?.invoke(null)
+            pendingFileChooserCallback = null
+        }
+    }
+
+    // Native Site Permission Prompt Sheet (Camera, Microphone, Location, Protected Media)
+    var pendingSitePermission by remember {
+        mutableStateOf<EngineSessionEvent.SitePermissionRequested?>(null)
+    }
+    val resolvePendingSitePermission: (Boolean) -> Unit = { allow ->
+        val pending = pendingSitePermission
+        pendingSitePermission = null
+        pending?.onDecision?.invoke(allow)
+    }
+    DisposableEffect(activeSession) {
+        onDispose {
+            val pending = pendingSitePermission
+            pendingSitePermission = null
+            pending?.onDecision?.invoke(false)
         }
     }
 
@@ -424,6 +551,23 @@ private fun FocalRootCoordinator(
         }
     }
 
+    // Handle Home-Screen Quick-Launch Widget & App Shortcut deep launch modes
+    val latestRequestPrivateAperture by rememberUpdatedState(requestPrivateAperture)
+    LaunchedEffect(pendingLaunchMode) {
+        val mode = pendingLaunchMode ?: return@LaunchedEffect
+        onLaunchModeConsumed()
+        when (mode) {
+            FocalQuickLaunchWidget.LAUNCH_MODE_SEARCH -> {
+                sessionVm.openSearchSheet(forNewTab = false, privateMode = false)
+            }
+            FocalQuickLaunchWidget.LAUNCH_MODE_PRIVATE -> {
+                latestRequestPrivateAperture(true) {
+                    sessionVm.openSearchSheet(forNewTab = true, privateMode = true)
+                }
+            }
+        }
+    }
+
     val hasLoadedWebUrl = activeSession != null &&
         !activeSessionState?.url.isNullOrBlank() &&
         activeSessionState?.url != "about:blank"
@@ -453,6 +597,8 @@ private fun FocalRootCoordinator(
     val latestOverlaySheet by rememberUpdatedState(overlaySheet)
     val latestIsInPip by rememberUpdatedState(isInPictureInPictureMode)
     val latestHasLoadedWebUrl by rememberUpdatedState(hasLoadedWebUrl)
+    val latestEffectiveOverrides by rememberUpdatedState(effectiveOverrides)
+    val latestPersistSiteOverrides by rememberUpdatedState(persistSiteOverrides)
 
     val computeCleanWebSampleRect: () -> Rect? = {
         val rootInsets = ViewCompat.getRootWindowInsets(view)
@@ -507,7 +653,7 @@ private fun FocalRootCoordinator(
         }
     }
 
-    // Sync active EngineSession UI events (Link Peek, Scroll Luminance, Navigation, PageLoaded, Downloads)
+    // Sync active EngineSession UI events (Link Peek, Scroll Luminance, Navigation, PageLoaded, Downloads, Uploads, Permissions, Zapper)
     LaunchedEffect(activeSession) {
         val session = activeSession ?: return@LaunchedEffect
         val hideDeltaPx = with(density) { 18.dp.roundToPx() }
@@ -516,7 +662,12 @@ private fun FocalRootCoordinator(
         session.events.collect { event ->
             when (event) {
                 is EngineSessionEvent.AnchorLongPressed -> {
-                    sessionVm.setOverlaySheet(ActiveOverlaySheet.LinkPeek(event.rawUrl))
+                    sessionVm.setOverlaySheet(
+                        ActiveOverlaySheet.LinkPeek(
+                            rawUrl = event.rawUrl,
+                            imageUrl = event.imageUrl,
+                        ),
+                    )
                 }
                 is EngineSessionEvent.ScrollDeltaChanged -> {
                     if (event.deltaY > hideDeltaPx) {
@@ -540,6 +691,11 @@ private fun FocalRootCoordinator(
                     scheduleSettledGlassSamples(longArrayOf(180L, 550L))
                 }
                 is EngineSessionEvent.PageLoaded -> {
+                    sessionVm.recordHistoryVisit(
+                        url = event.url,
+                        title = session.state.value.title,
+                        isPrivate = session.isPrivate,
+                    )
                     // Re-sample after DOM/CSS load and late SPA hydration (e.g., Next.js/Tailwind themes)
                     scheduleSettledGlassSamples(longArrayOf(80L, 420L, 1_000L))
                     val loadedTabId = sessionVm.selectedTabId.value
@@ -553,11 +709,54 @@ private fun FocalRootCoordinator(
                     }
                 }
                 is EngineSessionEvent.DownloadRequested -> {
-                    enqueueSafeBrowserDownload(
+                    val record = enqueueSafeBrowserDownload(
                         context = context,
                         event = event,
                         isPrivateSession = session.isPrivate,
                     )
+                    if (!session.isPrivate && record != null) {
+                        scope.launch(Dispatchers.IO) {
+                            database.downloadRecordDao().upsert(record)
+                        }
+                    }
+                }
+                is EngineSessionEvent.FileChooserRequested -> {
+                    pendingFileChooserCallback?.invoke(null)
+                    pendingFileChooserCallback = event.onResult
+                    val mimeArray = event.mimeTypes
+                        .map { it.trim() }
+                        .filter { it.isNotBlank() }
+                        .ifEmpty { listOf("*/*") }
+                        .toTypedArray()
+                    runCatching {
+                        if (event.allowMultiple) {
+                            openMultipleDocumentsLauncher.launch(mimeArray)
+                        } else {
+                            openSingleDocumentLauncher.launch(mimeArray)
+                        }
+                    }.onFailure {
+                        completePendingFileChooser(null)
+                    }
+                }
+                is EngineSessionEvent.SitePermissionRequested -> {
+                    pendingSitePermission?.onDecision?.invoke(false)
+                    pendingSitePermission = event
+                }
+                is EngineSessionEvent.ElementZapped -> {
+                    val selector = event.cssSelector.trim()
+                    if (selector.isNotEmpty()) {
+                        val base = latestEffectiveOverrides
+                        val targetOrigin = event.origin.ifBlank { base.origin }
+                        if (targetOrigin.isNotBlank()) {
+                            val updatedSelectors = (base.hiddenCssSelectors + selector).distinct()
+                            latestPersistSiteOverrides(
+                                base.copy(
+                                    origin = targetOrigin,
+                                    hiddenCssSelectors = updatedSelectors,
+                                ),
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -568,7 +767,10 @@ private fun FocalRootCoordinator(
 
     // Android 14–16 Predictive Back Handler: shrinks & translates active sheet or web page 1:1 with finger (P1-5)
     val canInterceptBack = pendingPairingRequest != null ||
+        pendingSitePermission != null ||
         overlaySheet != ActiveOverlaySheet.None ||
+        isFindInPageOpen ||
+        (activeSessionState?.isElementZapperActive == true) ||
         (activeSessionState?.canGoBack == true)
     PredictiveBackHandler(enabled = canInterceptBack) { backFlow ->
         val backToken = gestureLeaseController.preemptForSystem(GestureLeaseOwner.PREDICTIVE_BACK)
@@ -580,6 +782,7 @@ private fun FocalRootCoordinator(
             predictiveBackProgressState.floatValue = 0f
             when {
                 pendingPairingRequest != null -> sessionVm.dismissPendingPairing()
+                pendingSitePermission != null -> resolvePendingSitePermission(false)
                 overlaySheet == ActiveOverlaySheet.TabSwitcher -> {
                     sessionVm.dismissTabSwitcher(immutableActiveTabs)
                 }
@@ -593,6 +796,13 @@ private fun FocalRootCoordinator(
                         }
                     }
                     sessionVm.setOverlaySheet(ActiveOverlaySheet.None)
+                }
+                isFindInPageOpen -> {
+                    isFindInPageOpen = false
+                    activeSession?.clearFindInPage()
+                }
+                activeSessionState?.isElementZapperActive == true -> {
+                    activeSession.setElementZapperActive(false)
                 }
                 else -> activeSession?.goBack()
             }
@@ -627,6 +837,42 @@ private fun FocalRootCoordinator(
 
     val summarizerBackendBadge = remember(localSummarizer, overlaySheet) {
         localSummarizer.detectActiveBackend().badgeLabel
+    }
+
+    val historyBackPreview = remember(
+        activeSession?.sessionId,
+        activeSessionState?.url,
+        activeSessionState?.canGoBack,
+    ) {
+        if (activeSessionState?.canGoBack == true) {
+            activeSession?.getHistoryBackPreview()
+        } else {
+            null
+        }
+    }
+
+    val totalBlockedTrackers = remember(allActiveTabs, privateTabs, activeSessionState?.blockedTrackersInSession) {
+        val persistedSum = allActiveTabs.sumOf { it.blockedTrackersCount.toLong() } +
+            privateTabs.sumOf { it.blockedTrackersCount.toLong() }
+        val activeSessionCount = activeSessionState?.blockedTrackersInSession ?: 0L
+        maxOf(persistedSum, activeSessionCount)
+    }
+
+    val saveImageToDownloads: (String) -> Unit = { imageUrl ->
+        val record = enqueueSafeBrowserDownload(
+            context = context,
+            event = EngineSessionEvent.DownloadRequested(
+                url = imageUrl,
+                mimeType = inferImageMimeType(imageUrl),
+                contentLength = -1L,
+            ),
+            isPrivateSession = isPrivateAperture,
+        )
+        if (!isPrivateAperture && record != null) {
+            scope.launch(Dispatchers.IO) {
+                database.downloadRecordDao().upsert(record)
+            }
+        }
     }
 
     FocalTheme(
@@ -664,7 +910,9 @@ private fun FocalRootCoordinator(
                     }
                 },
                 onOpenNewPrivateTab = {
-                    sessionVm.openSearchSheet(forNewTab = true, privateMode = true)
+                    requestPrivateAperture(true) {
+                        sessionVm.openSearchSheet(forNewTab = true, privateMode = true)
+                    }
                 },
                 onStepToAdjacentTab = { delta ->
                     sessionVm.stepToAdjacentTab(delta, immutableActiveTabs)
@@ -740,6 +988,26 @@ private fun FocalRootCoordinator(
                 onDismissMediaMiniPlayer = {
                     FocalMediaBridge.dismissMiniPlayer()
                 },
+                fullHideBottomBarOnScroll = browserSettings.fullHideBottomBarOnScroll,
+                isFindInPageOpen = isFindInPageOpen,
+                onFindQueryChange = { query ->
+                    activeSession?.findInPage(query)
+                },
+                onFindNext = { forward ->
+                    activeSession?.findNext(forward)
+                },
+                onCloseFindInPage = {
+                    isFindInPageOpen = false
+                    activeSession?.clearFindInPage()
+                },
+                onExitElementZapper = {
+                    activeSession?.setElementZapperActive(false)
+                },
+                onBottomChromeInsetChanged = { insetPx ->
+                    activeSession?.setBottomChromeInsetPx(insetPx)
+                },
+                historyBackPreview = historyBackPreview,
+                predictiveBackSwipeEdgeState = predictiveBackSwipeEdgeState,
             )
 
             // Active Floating Sheet Layer (suppressed during PiP; coupled 1:1 with Predictive Back)
@@ -779,7 +1047,7 @@ private fun FocalRootCoordinator(
                             contentKey = { sheet ->
                                 when (sheet) {
                                     is ActiveOverlaySheet.Reader -> "reader:${sheet.document.url}"
-                                    is ActiveOverlaySheet.LinkPeek -> "link:${sheet.rawUrl}"
+                                    is ActiveOverlaySheet.LinkPeek -> "link:${sheet.rawUrl}:${sheet.imageUrl.orEmpty()}"
                                     else -> sheet::class.simpleName.orEmpty()
                                 }
                             },
@@ -833,7 +1101,11 @@ private fun FocalRootCoordinator(
                                     isPrivateAperture = isPrivateAperture,
                                     pins = searchPins,
                                     continuityHandoff = syncUiState.incomingHandoff,
-                                    onTogglePrivateAperture = { sessionVm.setPrivateAperture(it) },
+                                    onTogglePrivateAperture = { priv ->
+                                        requestPrivateAperture(priv) {
+                                            sessionVm.setPrivateAperture(priv)
+                                        }
+                                    },
                                     onNavigateToUrl = { targetUrl, priv ->
                                         sessionVm.openUrlInTab(
                                             url = targetUrl,
@@ -845,6 +1117,14 @@ private fun FocalRootCoordinator(
                                         sessionVm.setOverlaySheet(ActiveOverlaySheet.None)
                                     },
                                     animateEntrance = hasLeftInitialSearch,
+                                    openTabs = if (isPrivateAperture) privateTabs else immutableAllActiveTabs,
+                                    bookmarks = immutableAllBookmarks,
+                                    historyEntries = if (isPrivateAperture) persistentListOf() else immutableHistory,
+                                    spaces = immutableSpaces,
+                                    browserSettings = browserSettings,
+                                    onSwitchToTab = { tabId ->
+                                        sessionVm.selectTab(tabId, allActiveTabs)
+                                    },
                                 )
                             }
 
@@ -903,6 +1183,9 @@ private fun FocalRootCoordinator(
                             }
 
                             ActiveOverlaySheet.TabSwitcher -> {
+                                val undoClosedTitle = lastClosedTab?.let { rec ->
+                                    rec.meta.title.ifBlank { rec.meta.domain.ifBlank { rec.meta.url } }
+                                }
                                 TabSwitcherSheet(
                                     activeTabs = immutableActiveTabs,
                                     archivedTabs = immutableArchivedTabs,
@@ -917,7 +1200,9 @@ private fun FocalRootCoordinator(
                                         sessionVm.selectSpace(nextSpaceId)
                                     },
                                     onTogglePrivateMode = { priv ->
-                                        sessionVm.setPrivateAperture(priv)
+                                        requestPrivateAperture(priv) {
+                                            sessionVm.setPrivateAperture(priv)
+                                        }
                                     },
                                     onSelectTab = { tabId ->
                                         sessionVm.selectTab(tabId, immutableActiveTabs)
@@ -943,10 +1228,19 @@ private fun FocalRootCoordinator(
                                         sessionVm.setOverlaySheet(ActiveOverlaySheet.Bookmarks)
                                     },
                                     onNewSearch = { priv ->
-                                        sessionVm.openSearchSheet(forNewTab = true, privateMode = priv)
+                                        requestPrivateAperture(priv) {
+                                            sessionVm.openSearchSheet(forNewTab = true, privateMode = priv)
+                                        }
                                     },
                                     onDone = {
                                         sessionVm.dismissTabSwitcher(immutableActiveTabs)
+                                    },
+                                    lastClosedTabTitle = undoClosedTitle,
+                                    onUndoCloseTab = {
+                                        sessionVm.undoCloseTab()
+                                    },
+                                    onDismissUndoCloseTab = {
+                                        sessionVm.dismissUndoCloseTab()
                                     },
                                 )
                             }
@@ -1049,6 +1343,29 @@ private fun FocalRootCoordinator(
                                         sessionVm.setOverlaySheet(ActiveOverlaySheet.None)
                                         translateActivePage()
                                     },
+                                    onFindInPage = {
+                                        sessionVm.setOverlaySheet(ActiveOverlaySheet.None)
+                                        isFindInPageOpen = true
+                                    },
+                                    onToggleElementZapper = {
+                                        val nextActive = activeSessionState?.isElementZapperActive != true
+                                        sessionVm.setOverlaySheet(ActiveOverlaySheet.None)
+                                        activeSession?.setElementZapperActive(nextActive)
+                                    },
+                                    onOpenHistory = {
+                                        sessionVm.setOverlaySheet(ActiveOverlaySheet.History)
+                                    },
+                                    onOpenDownloads = {
+                                        sessionVm.setOverlaySheet(ActiveOverlaySheet.Downloads)
+                                    },
+                                    onOpenGlobalSettings = {
+                                        sessionVm.setOverlaySheet(ActiveOverlaySheet.GlobalSettings)
+                                    },
+                                    onResetHiddenElements = {
+                                        persistSiteOverrides(
+                                            effectiveOverrides.copy(hiddenCssSelectors = emptyList()),
+                                        )
+                                    },
                                     onUpdateSiteOverrides = { updated ->
                                         if (updated.autoReaderMode && rawUrl.isNotBlank()) {
                                             dismissedAutoReaderUrls = dismissedAutoReaderUrls - rawUrl
@@ -1058,6 +1375,133 @@ private fun FocalRootCoordinator(
                                     onUpdateAppTheme = { nextTheme ->
                                         appChromeTheme = nextTheme
                                         appearanceStore.writeTheme(nextTheme)
+                                    },
+                                    onDismiss = {
+                                        sessionVm.setOverlaySheet(ActiveOverlaySheet.None)
+                                    },
+                                )
+                            }
+
+                            ActiveOverlaySheet.History -> {
+                                HistorySheet(
+                                    entries = immutableHistory,
+                                    onOpenUrl = { url ->
+                                        sessionVm.openUrlInTab(
+                                            url = url,
+                                            privateMode = isPrivateAperture,
+                                            openInBackground = false,
+                                            forceNewTab = false,
+                                        )
+                                    },
+                                    onDeleteEntry = { entryId ->
+                                        scope.launch(Dispatchers.IO) {
+                                            database.historyDao().deleteById(entryId)
+                                        }
+                                    },
+                                    onClearAllHistory = {
+                                        scope.launch(Dispatchers.IO) {
+                                            database.historyDao().clearAll()
+                                        }
+                                    },
+                                    onDismiss = {
+                                        sessionVm.setOverlaySheet(ActiveOverlaySheet.None)
+                                    },
+                                )
+                            }
+
+                            ActiveOverlaySheet.Downloads -> {
+                                DownloadsSheet(
+                                    downloads = immutableDownloads,
+                                    onOpenDownload = { record ->
+                                        val openedLocally = openDownloadedFileOrFallback(context, record)
+                                        if (!openedLocally && record.url.isNotBlank()) {
+                                            sessionVm.openUrlInTab(
+                                                url = record.url,
+                                                privateMode = isPrivateAperture,
+                                                openInBackground = false,
+                                                forceNewTab = true,
+                                            )
+                                        }
+                                    },
+                                    onShareDownload = { record ->
+                                        shareDownloadedFileOrUrl(context, record)
+                                    },
+                                    onDeleteDownload = { downloadId ->
+                                        scope.launch(Dispatchers.IO) {
+                                            database.downloadRecordDao().deleteById(downloadId)
+                                        }
+                                    },
+                                    onClearAll = {
+                                        scope.launch(Dispatchers.IO) {
+                                            database.downloadRecordDao().clearAll()
+                                        }
+                                    },
+                                    onDismiss = {
+                                        sessionVm.setOverlaySheet(ActiveOverlaySheet.None)
+                                    },
+                                )
+                            }
+
+                            ActiveOverlaySheet.GlobalSettings -> {
+                                GlobalSettingsSheet(
+                                    settings = browserSettings,
+                                    appTheme = appChromeTheme,
+                                    currentVersionName = appVersionName,
+                                    totalBlockedTrackers = totalBlockedTrackers,
+                                    biometricAvailable = biometricAvailable,
+                                    updateState = updateBannerState,
+                                    onUpdateSettings = updateBrowserSettings,
+                                    onUpdateAppTheme = { nextTheme ->
+                                        appChromeTheme = nextTheme
+                                        appearanceStore.writeTheme(nextTheme)
+                                    },
+                                    onClearBrowsingData = {
+                                        sessionVm.clearBrowsingData(context)
+                                    },
+                                    onCheckForUpdates = {
+                                        updateBannerState = UpdateBannerState.Checking
+                                        scope.launch {
+                                            when (val result = FocalReleaseUpdater.checkLatestRelease(context)) {
+                                                is ReleaseCheckResult.UpToDate -> {
+                                                    availableReleaseInfo = null
+                                                    updateBannerState = UpdateBannerState.UpToDate(result.currentVersion)
+                                                }
+                                                is ReleaseCheckResult.UpdateAvailable -> {
+                                                    availableReleaseInfo = result.release
+                                                    updateBannerState = UpdateBannerState.Available(
+                                                        tagName = result.release.tagName,
+                                                        releaseName = result.release.releaseName,
+                                                        notes = result.release.notes,
+                                                        isDownloading = false,
+                                                    )
+                                                }
+                                                is ReleaseCheckResult.Failed -> {
+                                                    updateBannerState = UpdateBannerState.Error(result.message)
+                                                }
+                                            }
+                                        }
+                                    },
+                                    onInstallUpdate = {
+                                        val release = availableReleaseInfo ?: return@GlobalSettingsSheet
+                                        updateBannerState = UpdateBannerState.Available(
+                                            tagName = release.tagName,
+                                            releaseName = release.releaseName,
+                                            notes = release.notes,
+                                            isDownloading = true,
+                                        )
+                                        scope.launch {
+                                            val started = FocalReleaseUpdater.downloadAndPromptInstall(context, release)
+                                            updateBannerState = if (started) {
+                                                UpdateBannerState.Available(
+                                                    tagName = release.tagName,
+                                                    releaseName = release.releaseName,
+                                                    notes = release.notes,
+                                                    isDownloading = false,
+                                                )
+                                            } else {
+                                                UpdateBannerState.Error("Failed to download release APK")
+                                            }
+                                        }
                                     },
                                     onDismiss = {
                                         sessionVm.setOverlaySheet(ActiveOverlaySheet.None)
@@ -1137,6 +1581,7 @@ private fun FocalRootCoordinator(
                                     rawUrl = currentOverlay.rawUrl,
                                     cleanedResult = cleaned,
                                     adblockController = adblockController,
+                                    imageUrl = currentOverlay.imageUrl,
                                     onOpenInBackgroundTab = { cleanUrl ->
                                         sessionVm.openUrlInTab(
                                             url = cleanUrl,
@@ -1154,12 +1599,50 @@ private fun FocalRootCoordinator(
                                             forceNewTab = false,
                                         )
                                     },
+                                    onOpenInPrivateTab = { cleanUrl ->
+                                        requestPrivateAperture(true) {
+                                            sessionVm.openUrlInTab(
+                                                url = cleanUrl,
+                                                privateMode = true,
+                                                openInBackground = false,
+                                                forceNewTab = true,
+                                            )
+                                        }
+                                    },
+                                    onCopyLink = { targetUrl ->
+                                        val cm = context.getSystemService(ClipboardManager::class.java)
+                                        cm?.setPrimaryClip(ClipData.newPlainText("Clean URL", targetUrl))
+                                        sessionVm.setOverlaySheet(ActiveOverlaySheet.None)
+                                    },
+                                    onShareLink = { targetUrl ->
+                                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                            type = "text/plain"
+                                            putExtra(Intent.EXTRA_TEXT, targetUrl)
+                                        }
+                                        context.startActivity(Intent.createChooser(shareIntent, null))
+                                        sessionVm.setOverlaySheet(ActiveOverlaySheet.None)
+                                    },
+                                    onSaveImage = { imgUrl ->
+                                        saveImageToDownloads(imgUrl)
+                                        sessionVm.setOverlaySheet(ActiveOverlaySheet.None)
+                                    },
                                     onDismiss = {
                                         sessionVm.setOverlaySheet(ActiveOverlaySheet.None)
                                     },
                                 )
                             }
                         }
+                        }
+
+                        // Native Site Permission Confirmation Sheet (Camera, Mic, Location, Protected Media)
+                        val permissionReq = pendingSitePermission
+                        if (permissionReq != null) {
+                            SitePermissionPromptSheet(
+                                origin = permissionReq.origin,
+                                resources = permissionReq.resources,
+                                onAllow = { resolvePendingSitePermission(true) },
+                                onDeny = { resolvePendingSitePermission(false) },
+                            )
                         }
 
                         // Explicit SAS & Relay Host Confirmation Sheet for focal-pair:// intents (P0-6)
@@ -1348,12 +1831,12 @@ private fun enqueueSafeBrowserDownload(
     context: Context,
     event: EngineSessionEvent.DownloadRequested,
     isPrivateSession: Boolean,
-) {
+): DownloadRecordEntity? {
     val rawUrl = event.url.trim()
     if (!rawUrl.startsWith("https://", ignoreCase = true) && !rawUrl.startsWith("http://", ignoreCase = true)) {
-        return
+        return null
     }
-    try {
+    return try {
         val uri = Uri.parse(rawUrl)
         val fileName = URLUtil.guessFileName(
             rawUrl,
@@ -1377,9 +1860,84 @@ private fun enqueueSafeBrowserDownload(
                 request.addRequestHeader("Cookie", cookie)
             }
         }
-        context.getSystemService(DownloadManager::class.java)?.enqueue(request)
+        val downloadId = context.getSystemService(DownloadManager::class.java)?.enqueue(request) ?: -1L
+        DownloadRecordEntity(
+            id = "dl-${UUID.randomUUID()}",
+            url = rawUrl,
+            fileName = fileName,
+            mimeType = event.mimeType?.takeIf { it.isNotBlank() },
+            originDomain = uri.host?.removePrefix("www.").orEmpty(),
+            downloadManagerId = downloadId,
+            createdAtEpochMs = System.currentTimeMillis(),
+        )
     } catch (_: Throwable) {
         // Ignore malformed download URIs or missing DownloadManager on stripped ROMs
+        null
+    }
+}
+
+private fun inferImageMimeType(url: String): String? {
+    val path = runCatching { Uri.parse(url).path.orEmpty().lowercase(Locale.ROOT) }.getOrDefault("")
+    return when {
+        path.endsWith(".png") -> "image/png"
+        path.endsWith(".webp") -> "image/webp"
+        path.endsWith(".gif") -> "image/gif"
+        path.endsWith(".svg") -> "image/svg+xml"
+        path.endsWith(".avif") -> "image/avif"
+        path.endsWith(".jpg") || path.endsWith(".jpeg") -> "image/jpeg"
+        else -> null
+    }
+}
+
+private fun openDownloadedFileOrFallback(
+    context: Context,
+    record: DownloadRecordEntity,
+): Boolean {
+    val dm = context.getSystemService(DownloadManager::class.java)
+    if (dm != null && record.downloadManagerId >= 0L) {
+        val localUri = runCatching { dm.getUriForDownloadedFile(record.downloadManagerId) }.getOrNull()
+        if (localUri != null) {
+            val mime = record.mimeType
+                ?: runCatching { dm.getMimeTypeForDownloadedFile(record.downloadManagerId) }.getOrNull()
+                ?: "*/*"
+            val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(localUri, mime)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            if (runCatching { context.startActivity(viewIntent) }.isSuccess) {
+                return true
+            }
+        }
+    }
+    return runCatching {
+        context.startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS))
+    }.isSuccess
+}
+
+private fun shareDownloadedFileOrUrl(
+    context: Context,
+    record: DownloadRecordEntity,
+) {
+    val dm = context.getSystemService(DownloadManager::class.java)
+    val localUri = if (dm != null && record.downloadManagerId >= 0L) {
+        runCatching { dm.getUriForDownloadedFile(record.downloadManagerId) }.getOrNull()
+    } else {
+        null
+    }
+    val shareIntent = if (localUri != null) {
+        Intent(Intent.ACTION_SEND).apply {
+            type = record.mimeType ?: "*/*"
+            putExtra(Intent.EXTRA_STREAM, localUri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+    } else {
+        Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, record.url.ifBlank { record.fileName })
+        }
+    }
+    runCatching {
+        context.startActivity(Intent.createChooser(shareIntent, null))
     }
 }
 
@@ -1396,6 +1954,7 @@ private fun OriginOverrideEntity.toEngineOverrides(): OriginOverrides = OriginOv
     readerUseSerif = readerUseSerif,
     readerFontSizeSp = readerFontSizeSp,
     readerLineHeight = readerLineHeight,
+    hiddenCssSelectors = OriginHiddenSelectorsCodec.decode(hiddenCssSelectorsJson),
 )
 
 private fun OriginOverrides.toEntity(updatedAtEpochMs: Long): OriginOverrideEntity = OriginOverrideEntity(
@@ -1412,4 +1971,5 @@ private fun OriginOverrides.toEntity(updatedAtEpochMs: Long): OriginOverrideEnti
     readerFontSizeSp = readerFontSizeSp,
     readerLineHeight = readerLineHeight,
     updatedAtEpochMs = updatedAtEpochMs,
+    hiddenCssSelectorsJson = OriginHiddenSelectorsCodec.encode(hiddenCssSelectors),
 )

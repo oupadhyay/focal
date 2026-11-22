@@ -477,4 +477,142 @@ object FocalGlyphs {
             lineTo(18.6f, 7.6f)
         }
     }
+
+    val ChevronUp: ImageVector by lazy {
+        strokeIcon("FocalChevronUp", strokeWidth = 1.9f) {
+            moveTo(6.4f, 14.8f)
+            lineTo(12f, 9.2f)
+            lineTo(17.6f, 14.8f)
+        }
+    }
+
+    val Download: ImageVector by lazy {
+        strokeIcon("FocalDownload", strokeWidth = 1.85f) {
+            moveTo(12f, 4.6f)
+            lineTo(12f, 14.8f)
+            moveTo(8.2f, 11.2f)
+            lineTo(12f, 15.0f)
+            lineTo(15.8f, 11.2f)
+            moveTo(5.4f, 18.6f)
+            lineTo(18.6f, 18.6f)
+        }
+    }
+
+    val Sliders: ImageVector by lazy {
+        strokeIcon("FocalSliders", strokeWidth = 1.85f) {
+            // Top slider row
+            moveTo(4.6f, 7.4f)
+            lineTo(9.2f, 7.4f)
+            moveTo(13.6f, 7.4f)
+            lineTo(19.4f, 7.4f)
+            moveTo(11.4f, 5.4f)
+            lineTo(11.4f, 9.4f)
+            // Middle slider row
+            moveTo(4.6f, 12.0f)
+            lineTo(14.0f, 12.0f)
+            moveTo(18.2f, 12.0f)
+            lineTo(19.4f, 12.0f)
+            moveTo(16.1f, 10.0f)
+            lineTo(16.1f, 14.0f)
+            // Bottom slider row
+            moveTo(4.6f, 16.6f)
+            lineTo(7.0f, 16.6f)
+            moveTo(11.4f, 16.6f)
+            lineTo(19.4f, 16.6f)
+            moveTo(9.2f, 14.6f)
+            lineTo(9.2f, 18.6f)
+        }
+    }
+
+    val Trash: ImageVector by lazy {
+        strokeIcon("FocalTrash", strokeWidth = 1.85f) {
+            moveTo(5.0f, 7.2f)
+            lineTo(19.0f, 7.2f)
+            moveTo(9.4f, 7.2f)
+            lineTo(9.8f, 5.0f)
+            lineTo(14.2f, 5.0f)
+            lineTo(14.6f, 7.2f)
+            moveTo(6.8f, 7.2f)
+            lineTo(7.8f, 18.6f)
+            curveTo(7.9f, 19.3f, 8.4f, 19.8f, 9.2f, 19.8f)
+            lineTo(14.8f, 19.8f)
+            curveTo(15.6f, 19.8f, 16.1f, 19.3f, 16.2f, 18.6f)
+            lineTo(17.2f, 7.2f)
+            moveTo(10.3f, 10.8f)
+            lineTo(10.6f, 16.4f)
+            moveTo(13.7f, 10.8f)
+            lineTo(13.4f, 16.4f)
+        }
+    }
+
+    val Undo: ImageVector by lazy {
+        strokeIcon("FocalUndo", strokeWidth = 1.85f) {
+            moveTo(8.4f, 6.2f)
+            lineTo(4.8f, 9.6f)
+            lineTo(8.4f, 13.0f)
+            moveTo(5.2f, 9.6f)
+            lineTo(13.6f, 9.6f)
+            curveTo(16.8f, 9.6f, 19.0f, 11.7f, 19.0f, 14.5f)
+            curveTo(19.0f, 17.2f, 16.8f, 19.0f, 13.8f, 19.0f)
+            lineTo(9.6f, 19.0f)
+        }
+    }
+
+    val EyeOff: ImageVector by lazy {
+        strokeIcon("FocalEyeOff", strokeWidth = 1.85f) {
+            moveTo(4.4f, 4.4f)
+            lineTo(19.6f, 19.6f)
+            moveTo(9.8f, 6.8f)
+            curveTo(10.5f, 6.6f, 11.2f, 6.5f, 12.0f, 6.5f)
+            curveTo(16.3f, 6.5f, 19.4f, 10.2f, 20.2f, 12.0f)
+            curveTo(19.8f, 12.9f, 18.9f, 14.3f, 17.5f, 15.5f)
+            moveTo(14.5f, 17.1f)
+            curveTo(13.7f, 17.4f, 12.9f, 17.5f, 12.0f, 17.5f)
+            curveTo(7.7f, 17.5f, 4.6f, 13.8f, 3.8f, 12.0f)
+            curveTo(4.4f, 10.7f, 5.7f, 9.0f, 7.6f, 7.8f)
+        }
+    }
+
+    val Image: ImageVector by lazy {
+        strokeIcon("FocalImage", strokeWidth = 1.85f) {
+            // Rounded picture frame
+            moveTo(6.4f, 5.0f)
+            lineTo(17.6f, 5.0f)
+            curveTo(18.6f, 5.0f, 19.4f, 5.8f, 19.4f, 6.8f)
+            lineTo(19.4f, 17.2f)
+            curveTo(19.4f, 18.2f, 18.6f, 19.0f, 17.6f, 19.0f)
+            lineTo(6.4f, 19.0f)
+            curveTo(5.4f, 19.0f, 4.6f, 18.2f, 4.6f, 17.2f)
+            lineTo(4.6f, 6.8f)
+            curveTo(4.6f, 5.8f, 5.4f, 5.0f, 6.4f, 5.0f)
+            close()
+            // Landscape peaks
+            moveTo(5.2f, 16.4f)
+            lineTo(9.8f, 11.8f)
+            lineTo(13.4f, 15.4f)
+            moveTo(12.2f, 14.2f)
+            lineTo(14.8f, 11.6f)
+            lineTo(18.8f, 15.8f)
+            // Sun dot
+            moveTo(9.0f, 8.8f)
+            lineTo(9.05f, 8.8f)
+        }
+    }
+
+    val Fingerprint: ImageVector by lazy {
+        strokeIcon("FocalFingerprint", strokeWidth = 1.8f) {
+            moveTo(7.0f, 10.2f)
+            curveTo(7.0f, 7.2f, 9.2f, 5.0f, 12.0f, 5.0f)
+            curveTo(14.8f, 5.0f, 17.0f, 7.2f, 17.0f, 10.2f)
+            curveTo(17.0f, 12.8f, 16.6f, 15.2f, 15.6f, 17.4f)
+            moveTo(9.4f, 10.4f)
+            curveTo(9.4f, 8.7f, 10.5f, 7.5f, 12.0f, 7.5f)
+            curveTo(13.5f, 7.5f, 14.6f, 8.7f, 14.6f, 10.4f)
+            curveTo(14.6f, 13.0f, 14.0f, 15.6f, 12.6f, 18.4f)
+            moveTo(12.0f, 10.4f)
+            curveTo(12.0f, 12.8f, 11.3f, 15.2f, 9.8f, 17.8f)
+            moveTo(6.8f, 13.4f)
+            curveTo(6.8f, 14.8f, 6.4f, 16.0f, 5.8f, 17.0f)
+        }
+    }
 }

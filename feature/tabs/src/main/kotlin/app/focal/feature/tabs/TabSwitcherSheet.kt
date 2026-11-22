@@ -9,6 +9,8 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -148,6 +150,9 @@ fun TabSwitcherSheet(
     onOpenBookmarks: () -> Unit = {},
     onNewSearch: (isPrivate: Boolean) -> Unit,
     onDone: () -> Unit,
+    lastClosedTabTitle: String? = null,
+    onUndoCloseTab: (() -> Unit)? = null,
+    onDismissUndoCloseTab: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val colors = FocalTheme.colors
@@ -164,6 +169,10 @@ fun TabSwitcherSheet(
     val spaceDropTargets = remember { mutableStateMapOf<String, Rect>() }
     var activeTabDrag by remember { mutableStateOf<ActiveTabDragState?>(null) }
     var movedBanner by remember { mutableStateOf<TabMovedBanner?>(null) }
+    var displayedClosedTabTitle by remember { mutableStateOf(lastClosedTabTitle) }
+    if (lastClosedTabTitle != null) {
+        displayedClosedTabTitle = lastClosedTabTitle
+    }
 
     val dropSlopHorizontalPx = with(density) { 8.dp.toPx() }
     val dropSlopVerticalPx = with(density) { 22.dp.toPx() }
@@ -178,6 +187,7 @@ fun TabSwitcherSheet(
     val latestSpaces = rememberUpdatedState(spaces)
     val latestOnMoveTabToSpace = rememberUpdatedState(onMoveTabToSpace)
     val latestIsDraggingTab = rememberUpdatedState(activeTabDrag != null)
+    val latestOnDismissUndoCloseTab = rememberUpdatedState(onDismissUndoCloseTab)
 
     LaunchedEffect(activeSpaceId, isPrivateAperture) {
         activeTabDrag = null
@@ -187,6 +197,13 @@ fun TabSwitcherSheet(
         if (movedBanner != null) {
             delay(2_400L)
             movedBanner = null
+        }
+    }
+
+    LaunchedEffect(lastClosedTabTitle) {
+        if (lastClosedTabTitle != null) {
+            delay(4_500L)
+            latestOnDismissUndoCloseTab.value()
         }
     }
 
@@ -924,6 +941,83 @@ fun TabSwitcherSheet(
                         ) {
                             Text(
                                 text = "View",
+                                style = typography.captionMetadata.copy(fontWeight = FontWeight.SemiBold),
+                                color = colors.inkOnPillActive,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4b. Floating Undo Close Tab Pill above the bottom dock
+        AnimatedVisibility(
+            visible = lastClosedTabTitle != null &&
+                onUndoCloseTab != null &&
+                activeTabDrag == null &&
+                movedBanner == null,
+            enter = fadeIn(animationSpec = tween(160)) +
+                scaleIn(
+                    initialScale = 0.92f,
+                    animationSpec = FocalMotion.smartPillSpring(),
+                ),
+            exit = fadeOut(animationSpec = tween(160)) +
+                scaleOut(
+                    targetScale = 0.94f,
+                    animationSpec = FocalMotion.smartPillSpring(),
+                ),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 86.dp)
+                .zIndex(225f),
+        ) {
+            val closedTitle = displayedClosedTabTitle
+            if (closedTitle != null) {
+                SmokedGlassBox(
+                    shape = CircleShape,
+                    glassTintState = dockGlassTint,
+                    borderSpecular = colors.borderSpecular,
+                    modifier = Modifier
+                        .testTag("undo_close_tab_pill")
+                        .shadow(
+                            elevation = 16.dp,
+                            shape = CircleShape,
+                            ambientColor = Color.Black.copy(alpha = 0.4f),
+                            spotColor = Color.Black.copy(alpha = 0.5f),
+                        ),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(
+                            imageVector = FocalGlyphs.Undo,
+                            contentDescription = null,
+                            tint = colors.inkSecondary,
+                            modifier = Modifier.size(15.dp),
+                        )
+                        Text(
+                            text = "Closed · ${closedTitle.trim().ifBlank { "Tab" }}",
+                            style = typography.controlPillLabel,
+                            color = colors.inkPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        Box(
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .background(colors.surfacePillActive)
+                                .clickable {
+                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    onUndoCloseTab?.invoke()
+                                }
+                                .padding(horizontal = 10.dp, vertical = 4.dp),
+                        ) {
+                            Text(
+                                text = "Undo",
                                 style = typography.captionMetadata.copy(fontWeight = FontWeight.SemiBold),
                                 color = colors.inkOnPillActive,
                             )

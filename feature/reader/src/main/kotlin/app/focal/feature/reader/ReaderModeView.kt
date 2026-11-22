@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
@@ -389,6 +388,12 @@ fun PageMenuAndSiteOverridesSheet(
     onOpenBookmarks: () -> Unit = {},
     onOpenReaderMode: () -> Unit,
     onTranslatePage: () -> Unit = {},
+    onFindInPage: () -> Unit = {},
+    onToggleElementZapper: () -> Unit = {},
+    onOpenHistory: () -> Unit = {},
+    onOpenDownloads: () -> Unit = {},
+    onOpenGlobalSettings: () -> Unit = {},
+    onResetHiddenElements: () -> Unit = {},
     onUpdateSiteOverrides: (OriginOverrides) -> Unit,
     onUpdateAppTheme: (AppChromeTheme) -> Unit = {},
     onDismiss: () -> Unit,
@@ -411,7 +416,8 @@ fun PageMenuAndSiteOverridesSheet(
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black.copy(alpha = 0.52f))
-            .clickable(onClick = onDismiss),
+            .clickable(onClick = onDismiss)
+            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top)),
         contentAlignment = Alignment.BottomCenter,
     ) {
         SmokedGlassBox(
@@ -420,9 +426,8 @@ fun PageMenuAndSiteOverridesSheet(
             borderSpecular = colors.borderSpecular,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 10.dp)
+                .padding(horizontal = 10.dp, vertical = 10.dp)
                 .navigationBarsPadding()
-                .padding(bottom = 10.dp)
                 .focalSheetEntrance(riseDp = 18.dp)
                 .shadow(
                     elevation = 24.dp,
@@ -538,6 +543,9 @@ fun PageMenuAndSiteOverridesSheet(
 
                 AnimatedContent(
                     targetState = activeTab,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false),
                     transitionSpec = {
                         val toSettings = targetState == PageMenuTab.SITE_OVERRIDES
                         val slideDistanceDivisor = 10
@@ -576,7 +584,12 @@ fun PageMenuAndSiteOverridesSheet(
                     label = "FocalPageMenuSubtab",
                 ) { tab ->
                     if (tab == PageMenuTab.MENU) {
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
                             // 3 Borderless Tonal Quick Action Squircles (Share · Copy · Bookmark)
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -605,7 +618,7 @@ fun PageMenuAndSiteOverridesSheet(
                                 )
                             }
 
-                            // Single Grouped Card with 0.5dp Inset Dividers (YAB / Lens style)
+                            // Primary Grouped Card with 0.5dp Inset Dividers (YAB / Lens style)
                             FocalGroupedCard {
                                 FocalMenuRow(
                                     title = "Bookmarks",
@@ -676,12 +689,59 @@ fun PageMenuAndSiteOverridesSheet(
                                     onClick = { activeTab = PageMenuTab.SITE_OVERRIDES },
                                 )
                             }
+
+                            // Utility & Browser Tools Card
+                            FocalGroupedCard {
+                                FocalMenuRow(
+                                    title = "Find in Page",
+                                    icon = FocalGlyphs.Search,
+                                    enabled = hasActivePage,
+                                    showChevron = true,
+                                    onClick = onFindInPage,
+                                )
+                                FocalHairlineDivider()
+                                FocalMenuRow(
+                                    title = "Hide Elements",
+                                    icon = FocalGlyphs.EyeOff,
+                                    trailingLabel = if (overrides.hiddenCssSelectors.isNotEmpty()) {
+                                        "${overrides.hiddenCssSelectors.size} hidden"
+                                    } else {
+                                        null
+                                    },
+                                    enabled = hasActivePage,
+                                    showChevron = true,
+                                    onClick = onToggleElementZapper,
+                                )
+                                FocalHairlineDivider()
+                                FocalMenuRow(
+                                    title = "History",
+                                    icon = FocalGlyphs.Clock,
+                                    enabled = true,
+                                    showChevron = true,
+                                    onClick = onOpenHistory,
+                                )
+                                FocalHairlineDivider()
+                                FocalMenuRow(
+                                    title = "Downloads",
+                                    icon = FocalGlyphs.Download,
+                                    enabled = true,
+                                    showChevron = true,
+                                    onClick = onOpenDownloads,
+                                )
+                                FocalHairlineDivider()
+                                FocalMenuRow(
+                                    title = "Settings",
+                                    icon = FocalGlyphs.Sliders,
+                                    enabled = true,
+                                    showChevron = true,
+                                    onClick = onOpenGlobalSettings,
+                                )
+                            }
                         }
                     } else {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .heightIn(max = 460.dp)
                                 .verticalScroll(rememberScrollState()),
                             verticalArrangement = Arrangement.spacedBy(10.dp),
                         ) {
@@ -836,6 +896,29 @@ fun PageMenuAndSiteOverridesSheet(
                                         }
                                     },
                                 )
+                                if (overrides.hiddenCssSelectors.isNotEmpty()) {
+                                    FocalHairlineDivider()
+                                    FocalMenuRow(
+                                        title = "Hidden Elements",
+                                        icon = FocalGlyphs.EyeOff,
+                                        trailingContent = {
+                                            Box(
+                                                modifier = Modifier
+                                                    .clip(CircleShape)
+                                                    .background(colors.inkPrimary.copy(alpha = 0.08f))
+                                                    .clickable(onClick = onResetHiddenElements)
+                                                    .padding(horizontal = 11.dp, vertical = 6.dp),
+                                                contentAlignment = Alignment.Center,
+                                            ) {
+                                                Text(
+                                                    text = "Reset (${overrides.hiddenCssSelectors.size})",
+                                                    style = typography.controlPillLabel,
+                                                    color = colors.inkPrimary,
+                                                )
+                                            }
+                                        },
+                                    )
+                                }
                             }
 
                             // Global App Chrome Theme Card (Tab Switcher, Bookmarks & Menus — defaults to Dark)

@@ -13,8 +13,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         BookmarkEntity::class,
         TabMetadataEntity::class,
         OriginOverrideEntity::class,
+        HistoryEntryEntity::class,
+        DownloadRecordEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class FocalDatabase : RoomDatabase() {
@@ -22,6 +24,8 @@ abstract class FocalDatabase : RoomDatabase() {
     abstract fun bookmarkDao(): BookmarkDao
     abstract fun tabMetadataDao(): TabMetadataDao
     abstract fun originOverrideDao(): OriginOverrideDao
+    abstract fun historyDao(): HistoryDao
+    abstract fun downloadRecordDao(): DownloadRecordDao
 
     companion object {
         private const val DB_NAME = "focal_browser.db"
@@ -50,6 +54,55 @@ abstract class FocalDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Non-destructive migration adding browsing history (`history_entries`), download records
+         * (`download_records`), and per-origin Element Zapper selectors
+         * (`origin_overrides.hiddenCssSelectorsJson`) without losing existing user data.
+         */
+        val MIGRATION_2_3: Migration = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `history_entries` (
+                        `id` TEXT NOT NULL,
+                        `url` TEXT NOT NULL,
+                        `domain` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `visitedAtEpochMs` INTEGER NOT NULL,
+                        `visitCount` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_history_entries_visitedAtEpochMs` ON `history_entries` (`visitedAtEpochMs`)",
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_history_entries_url` ON `history_entries` (`url`)",
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `download_records` (
+                        `id` TEXT NOT NULL,
+                        `url` TEXT NOT NULL,
+                        `fileName` TEXT NOT NULL,
+                        `mimeType` TEXT,
+                        `originDomain` TEXT NOT NULL,
+                        `downloadManagerId` INTEGER NOT NULL,
+                        `createdAtEpochMs` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_download_records_createdAtEpochMs` ON `download_records` (`createdAtEpochMs`)",
+                )
+                db.execSQL(
+                    "ALTER TABLE origin_overrides ADD COLUMN hiddenCssSelectorsJson TEXT",
+                )
+            }
+        }
+
         @Volatile
         private var instance: FocalDatabase? = null
 
@@ -60,7 +113,7 @@ abstract class FocalDatabase : RoomDatabase() {
                     FocalDatabase::class.java,
                     DB_NAME,
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .fallbackToDestructiveMigration()
                     .build()
                     .also { instance = it }

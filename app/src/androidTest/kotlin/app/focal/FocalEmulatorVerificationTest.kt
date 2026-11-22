@@ -310,6 +310,80 @@ class FocalEmulatorVerificationTest {
             composeRule.onAllNodesWithText("New Folder").fetchSemanticsNodes().isEmpty()
         }
         composeRule.onNodeWithText("example.com").assertIsDisplayed()
+
+        // 9. Open Local Browsing History via Page Menu (verifies Room v3 HistoryDao logged example.com)
+        composeRule.onNodeWithContentDescription("Page Menu").performClick()
+        composeRule.waitUntil(timeoutMillis = 8_000L) {
+            composeRule.onAllNodesWithText("History").fetchSemanticsNodes().isNotEmpty() &&
+                composeRule.onAllNodesWithText("Settings").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithText("Find in Page").assertIsDisplayed()
+        composeRule.onNodeWithText("Hide Elements").assertIsDisplayed()
+        composeRule.onNodeWithText("History").assertIsDisplayed()
+        composeRule.onNodeWithText("Downloads").assertIsDisplayed()
+        composeRule.onNodeWithText("Settings").assertIsDisplayed()
+
+        composeRule.onNodeWithText("History").performClick()
+        composeRule.waitUntil(timeoutMillis = 8_000L) {
+            composeRule.onAllNodesWithText("Today").fetchSemanticsNodes().isNotEmpty() &&
+                composeRule.onAllNodesWithText("example.com").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithText("Today").assertIsDisplayed()
+        SystemClock.sleep(300L)
+        captureEmulatorScreenshot("07e_emulator_history_sheet.png")
+
+        composeRule.runOnIdle {
+            composeRule.activity.onBackPressedDispatcher.onBackPressed()
+        }
+        composeRule.waitUntil(timeoutMillis = 8_000L) {
+            composeRule.onAllNodesWithText("Today").fetchSemanticsNodes().isEmpty()
+        }
+
+        // 10. Open Global Settings via Page Menu (Search Engine picker, GPC, Scroll-Hide, Opt-In Updates)
+        composeRule.onNodeWithContentDescription("Page Menu").performClick()
+        composeRule.waitUntil(timeoutMillis = 8_000L) {
+            composeRule.onAllNodesWithText("Settings").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithText("Settings").performClick()
+        composeRule.waitUntil(timeoutMillis = 8_000L) {
+            composeRule.onAllNodesWithText("Global Privacy Control").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithText("DuckDuckGo").assertIsDisplayed()
+        composeRule.onNodeWithText("Kagi").assertIsDisplayed()
+        composeRule.onNodeWithText("Global Privacy Control").assertIsDisplayed()
+        composeRule.onNodeWithText("Hide Bar on Scroll").assertIsDisplayed()
+        SystemClock.sleep(300L)
+        captureEmulatorScreenshot("07f_emulator_global_settings.png")
+
+        composeRule.runOnIdle {
+            composeRule.activity.onBackPressedDispatcher.onBackPressed()
+        }
+        composeRule.waitUntil(timeoutMillis = 8_000L) {
+            composeRule.onAllNodesWithText("Global Privacy Control").fetchSemanticsNodes().isEmpty()
+        }
+
+        // 11. Open Find in Page over live example.com WebView, search "Domain", and close cleanly
+        composeRule.onNodeWithContentDescription("Page Menu").performClick()
+        composeRule.waitUntil(timeoutMillis = 8_000L) {
+            composeRule.onAllNodesWithText("Find in Page").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithText("Find in Page").performClick()
+        composeRule.waitUntil(timeoutMillis = 8_000L) {
+            runCatching {
+                composeRule.onNodeWithTag("find_in_page_bar").assertIsDisplayed()
+                true
+            }.getOrDefault(false)
+        }
+        composeRule.onNode(hasSetTextAction()).performTextInput("Domain")
+        SystemClock.sleep(500L)
+        composeRule.waitForIdle()
+        captureEmulatorScreenshot("07g_emulator_find_in_page.png")
+
+        composeRule.onNodeWithContentDescription("Close find").performClick()
+        composeRule.waitUntil(timeoutMillis = 8_000L) {
+            composeRule.onAllNodesWithText("example.com").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithText("example.com").assertIsDisplayed()
     }
 
     private fun captureEmulatorScreenshot(fileName: String) {

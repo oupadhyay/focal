@@ -2,6 +2,7 @@ package app.focal.feature.search
 
 import android.os.SystemClock
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -10,6 +11,7 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +19,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -53,25 +56,36 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import app.focal.database.BookmarkEntity
+import app.focal.database.HistoryEntryEntity
+import app.focal.database.SpaceEntity
+import app.focal.database.TabMetadataEntity
+import app.focal.design.FocalBrowserSettings
 import app.focal.design.FocalFaviconTile
 import app.focal.design.FocalGeometry
 import app.focal.design.FocalGlyphs
+import app.focal.design.FocalGroupedCard
+import app.focal.design.FocalHairlineDivider
 import app.focal.design.FocalMotion
 import app.focal.design.FocalTheme
 import app.focal.design.SiteFavicon
+import app.focal.design.SpaceAmbientPalette
 import app.focal.design.consumeClicks
 import app.focal.design.focalSheetEntrance
 import app.focal.design.shaders.SmokedGlassBox
@@ -116,6 +130,12 @@ fun SearchSheet(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
     animateEntrance: Boolean = true,
+    openTabs: ImmutableList<TabMetadataEntity> = persistentListOf(),
+    bookmarks: ImmutableList<BookmarkEntity> = persistentListOf(),
+    historyEntries: ImmutableList<HistoryEntryEntity> = persistentListOf(),
+    spaces: ImmutableList<SpaceEntity> = persistentListOf(),
+    browserSettings: FocalBrowserSettings = FocalBrowserSettings(),
+    onSwitchToTab: (tabId: String) -> Unit = {},
 ) {
     val colors = FocalTheme.colors
     val typography = FocalTheme.typography
@@ -130,6 +150,7 @@ fun SearchSheet(
     }
     val focusRequester = remember { FocusRequester() }
     val displayedPins = remember(pins) { pins.take(5).toImmutableList() }
+    val spacesById = remember(spaces) { spaces.associateBy { it.id } }
 
     var activeSite by remember { mutableStateOf<SiteSearchEngine?>(null) }
     var textFieldValue by remember(initialQuery) {
@@ -144,6 +165,54 @@ fun SearchSheet(
     val inlineAnswer = remember(textFieldValue.text, activeSite) {
         if (activeSite != null) null else InlineFieldEvaluator.evaluate(textFieldValue.text)
     }
+    val localSuggestionResult = remember(
+        textFieldValue.text,
+        activeSite,
+        inlineAnswer,
+        openTabs,
+        bookmarks,
+        historyEntries,
+        spacesById,
+    ) {
+        if (activeSite != null || inlineAnswer != null) {
+            LocalSuggestionResult.Empty
+        } else {
+            LocalSearchSuggester.suggest(
+                query = textFieldValue.text,
+                openTabs = openTabs,
+                bookmarks = bookmarks,
+                history = historyEntries,
+                spacesById = spacesById,
+                maxResults = 4,
+            )
+        }
+    }
+    val hasLiveSuggestions =
+        localSuggestionResult.suggestions.isNotEmpty() || localSuggestionResult.inlineAutocomplete != null
+    val lastNonEmptySuggestions = remember { SuggestionSnapshotHolder() }
+    if (hasLiveSuggestions) {
+        lastNonEmptySuggestions.value = localSuggestionResult
+    }
+    val showQuickPins = displayedPins.isNotEmpty() && !hasLiveSuggestions && inlineAnswer == null
+
+    val submitCurrentQuery: () -> Unit = {
+        val rawQuery = textFieldValue.text
+        val trimmed = rawQuery.trim()
+        val resolved = detector.resolveDestinationUrl(
+            rawQuery = rawQuery,
+            activeSite = activeSite,
+            defaultSearchUrlTemplate = PLAIN_SEARCH_SENTINEL,
+        )
+        val targetUrl = when (resolved) {
+            "about:blank" -> "about:blank"
+            PLAIN_SEARCH_SENTINEL -> browserSettings.buildSearchUrl(trimmed)
+            else -> resolved
+        }
+        if (targetUrl != "about:blank") {
+            onNavigateToUrl(targetUrl, isPrivateAperture)
+        }
+    }
+
     var copiedAnswerText by remember(inlineAnswer?.copyValue) { mutableStateOf<String?>(null) }
     LaunchedEffect(copiedAnswerText) {
         if (copiedAnswerText != null) {
@@ -245,8 +314,20 @@ fun SearchSheet(
                     }
                 }
 
-                // 5 Borderless Tonal Squircle Favicon Tiles
-                if (displayedPins.isNotEmpty()) {
+                // 5 Borderless Tonal Squircle Favicon Tiles (hidden gracefully when live suggestions or inline answer appear)
+                AnimatedVisibility(
+                    visible = showQuickPins,
+                    enter = fadeIn(animationSpec = tween(150)) +
+                        expandVertically(
+                            expandFrom = Alignment.Bottom,
+                            animationSpec = FocalMotion.smartPillSpring(),
+                        ),
+                    exit = fadeOut(animationSpec = tween(110)) +
+                        shrinkVertically(
+                            shrinkTowards = Alignment.Bottom,
+                            animationSpec = FocalMotion.smartPillSpring(),
+                        ),
+                ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(7.dp),
@@ -266,12 +347,12 @@ fun SearchSheet(
                 // Zero-Network Inline Answer Row (Calculator · Units · World Clock)
                 AnimatedVisibility(
                     visible = inlineAnswer != null,
-                    enter = fadeIn(animationSpec = androidx.compose.animation.core.tween(150)) +
+                    enter = fadeIn(animationSpec = tween(150)) +
                         expandVertically(
                             expandFrom = Alignment.Bottom,
                             animationSpec = FocalMotion.smartPillSpring(),
                         ),
-                    exit = fadeOut(animationSpec = androidx.compose.animation.core.tween(110)) +
+                    exit = fadeOut(animationSpec = tween(110)) +
                         shrinkVertically(
                             shrinkTowards = Alignment.Bottom,
                             animationSpec = FocalMotion.smartPillSpring(),
@@ -366,6 +447,39 @@ fun SearchSheet(
                     }
                 }
 
+                // Zero-Network Local Suggestions & Inline URL Autocomplete Card
+                AnimatedVisibility(
+                    visible = hasLiveSuggestions,
+                    enter = fadeIn(animationSpec = tween(150)) +
+                        expandVertically(
+                            expandFrom = Alignment.Bottom,
+                            animationSpec = FocalMotion.smartPillSpring(),
+                        ),
+                    exit = fadeOut(animationSpec = tween(110)) +
+                        shrinkVertically(
+                            shrinkTowards = Alignment.Bottom,
+                            animationSpec = FocalMotion.smartPillSpring(),
+                        ),
+                ) {
+                    val snapshot = if (hasLiveSuggestions) {
+                        localSuggestionResult
+                    } else {
+                        lastNonEmptySuggestions.value
+                    }
+                    LocalSuggestionsCard(
+                        result = snapshot,
+                        allowNetworkFetch = !isPrivateAperture,
+                        onOpenUrl = { targetUrl ->
+                            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onNavigateToUrl(targetUrl, isPrivateAperture)
+                        },
+                        onSwitchToTab = { tabId ->
+                            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onSwitchToTab(tabId)
+                        },
+                    )
+                }
+
                 // Quiet Private Aperture Status Indicator (only shown when Private mode is armed)
                 if (isPrivateAperture) {
                     Row(
@@ -418,11 +532,11 @@ fun SearchSheet(
                     // Critically-damped Site Search Chip (`[GitHub ×]`) — crisp reveal without overshoot
                     AnimatedVisibility(
                         visible = activeSite != null,
-                        enter = fadeIn(animationSpec = androidx.compose.animation.core.tween(140)) + scaleIn(
+                        enter = fadeIn(animationSpec = tween(140)) + scaleIn(
                             initialScale = 0.90f,
                             animationSpec = FocalMotion.siteChipSpring(),
                         ),
-                        exit = fadeOut(animationSpec = androidx.compose.animation.core.tween(100)) + scaleOut(
+                        exit = fadeOut(animationSpec = tween(100)) + scaleOut(
                             targetScale = 0.92f,
                             animationSpec = FocalMotion.siteChipSpring(),
                         ),
@@ -515,15 +629,7 @@ fun SearchSheet(
                                 imeAction = ImeAction.Go,
                             ),
                             keyboardActions = KeyboardActions(
-                                onGo = {
-                                    val targetUrl = detector.resolveDestinationUrl(
-                                        rawQuery = textFieldValue.text,
-                                        activeSite = activeSite,
-                                    )
-                                    if (targetUrl != "about:blank") {
-                                        onNavigateToUrl(targetUrl, isPrivateAperture)
-                                    }
-                                },
+                                onGo = { submitCurrentQuery() },
                             ),
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -557,15 +663,7 @@ fun SearchSheet(
                             modifier = Modifier
                                 .clip(CircleShape)
                                 .background(colors.surfacePillActive)
-                                .clickable {
-                                    val targetUrl = detector.resolveDestinationUrl(
-                                        rawQuery = textFieldValue.text,
-                                        activeSite = activeSite,
-                                    )
-                                    if (targetUrl != "about:blank") {
-                                        onNavigateToUrl(targetUrl, isPrivateAperture)
-                                    }
-                                }
+                                .clickable { submitCurrentQuery() }
                                 .padding(horizontal = 12.dp, vertical = 6.dp),
                             contentAlignment = Alignment.Center,
                         ) {
@@ -607,3 +705,228 @@ fun SearchSheet(
         }
     }
 }
+
+private const val PLAIN_SEARCH_SENTINEL = "__FOCAL_PLAIN_SEARCH_SENTINEL__"
+
+private class SuggestionSnapshotHolder(
+    var value: LocalSuggestionResult = LocalSuggestionResult.Empty,
+)
+
+@Composable
+private fun LocalSuggestionsCard(
+    result: LocalSuggestionResult,
+    allowNetworkFetch: Boolean,
+    onOpenUrl: (String) -> Unit,
+    onSwitchToTab: (String) -> Unit,
+) {
+    val autocomplete = result.inlineAutocomplete
+    val maxSuggestionRows = if (autocomplete != null) 3 else 4
+    val visibleSuggestions = result.suggestions.take(maxSuggestionRows)
+    if (autocomplete == null && visibleSuggestions.isEmpty()) return
+
+    FocalGroupedCard {
+        if (autocomplete != null) {
+            InlineAutocompleteRow(
+                autocomplete = autocomplete,
+                allowNetworkFetch = allowNetworkFetch,
+                onClick = { onOpenUrl(autocomplete.targetUrl) },
+            )
+            if (visibleSuggestions.isNotEmpty()) {
+                FocalHairlineDivider(insetStart = 49.dp)
+            }
+        }
+
+        visibleSuggestions.forEachIndexed { index, suggestion ->
+            if (index > 0) {
+                FocalHairlineDivider(insetStart = 49.dp)
+            }
+            LocalSuggestionRow(
+                suggestion = suggestion,
+                allowNetworkFetch = allowNetworkFetch,
+                onClick = {
+                    when (suggestion) {
+                        is LocalSearchSuggestion.SwitchToTab -> onSwitchToTab(suggestion.tabId)
+                        is LocalSearchSuggestion.BookmarkMatch -> onOpenUrl(suggestion.url)
+                        is LocalSearchSuggestion.HistoryMatch -> onOpenUrl(suggestion.url)
+                    }
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun InlineAutocompleteRow(
+    autocomplete: InlineUrlAutocomplete,
+    allowNetworkFetch: Boolean,
+    onClick: () -> Unit,
+) {
+    val colors = FocalTheme.colors
+    val typography = FocalTheme.typography
+    val matchedPrefix = autocomplete.displayHost.removeSuffix(autocomplete.completionSuffix)
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 44.dp)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(11.dp),
+    ) {
+        SiteFavicon(
+            urlOrDomain = autocomplete.targetUrl,
+            allowNetworkFetch = allowNetworkFetch,
+            size = 24.dp,
+            cornerRadius = 7.dp,
+        )
+        Text(
+            text = buildAnnotatedString {
+                withStyle(SpanStyle(color = colors.inkPrimary, fontWeight = FontWeight.SemiBold)) {
+                    append(matchedPrefix)
+                }
+                withStyle(SpanStyle(color = colors.inkSecondary, fontWeight = FontWeight.Normal)) {
+                    append(autocomplete.completionSuffix)
+                }
+            },
+            style = typography.urlDomainPill,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        Icon(
+            imageVector = FocalGlyphs.ExternalArrow,
+            contentDescription = "Open ${autocomplete.displayHost}",
+            tint = colors.inkSecondary,
+            modifier = Modifier.size(16.dp),
+        )
+    }
+}
+
+@Composable
+private fun LocalSuggestionRow(
+    suggestion: LocalSearchSuggestion,
+    allowNetworkFetch: Boolean,
+    onClick: () -> Unit,
+) {
+    val colors = FocalTheme.colors
+    val typography = FocalTheme.typography
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(11.dp),
+    ) {
+        SiteFavicon(
+            urlOrDomain = suggestion.url,
+            allowNetworkFetch = allowNetworkFetch,
+            size = 24.dp,
+            cornerRadius = 7.dp,
+        )
+
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(1.dp),
+        ) {
+            Text(
+                text = suggestion.title.ifBlank { suggestion.domain },
+                style = typography.urlDomainPill,
+                color = colors.inkPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+
+            when (suggestion) {
+                is LocalSearchSuggestion.SwitchToTab -> {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        Text(
+                            text = suggestion.domain,
+                            style = typography.captionMetadata,
+                            color = colors.inkSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        if (!suggestion.spaceName.isNullOrBlank()) {
+                            val spaceDotColor = remember(suggestion.spaceName, suggestion.spaceAmbientHex) {
+                                SpaceAmbientPalette.fromKeyOrHex(
+                                    keyOrId = suggestion.spaceName,
+                                    fallbackHex = suggestion.spaceAmbientHex,
+                                ).dotColor
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(5.dp)
+                                    .clip(CircleShape)
+                                    .background(spaceDotColor),
+                            )
+                            Text(
+                                text = suggestion.spaceName,
+                                style = typography.captionMetadata,
+                                color = colors.inkFaint,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+
+                is LocalSearchSuggestion.BookmarkMatch,
+                is LocalSearchSuggestion.HistoryMatch,
+                -> {
+                    Text(
+                        text = suggestion.domain,
+                        style = typography.captionMetadata,
+                        color = colors.inkSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+
+        when (suggestion) {
+            is LocalSearchSuggestion.SwitchToTab -> {
+                Box(
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .background(colors.inkPrimary.copy(alpha = 0.10f))
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = "Switch",
+                        style = typography.controlPillLabel,
+                        color = colors.inkPrimary,
+                    )
+                }
+            }
+
+            is LocalSearchSuggestion.BookmarkMatch -> {
+                Icon(
+                    imageVector = FocalGlyphs.Bookmark,
+                    contentDescription = "Bookmark",
+                    tint = colors.inkSecondary,
+                    modifier = Modifier.size(15.dp),
+                )
+            }
+
+            is LocalSearchSuggestion.HistoryMatch -> {
+                Icon(
+                    imageVector = FocalGlyphs.Clock,
+                    contentDescription = "History",
+                    tint = colors.inkFaint,
+                    modifier = Modifier.size(15.dp),
+                )
+            }
+        }
+    }
+}
+

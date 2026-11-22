@@ -1,15 +1,20 @@
 package app.focal
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
+import android.webkit.CookieManager
+import android.webkit.WebStorage
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import app.focal.database.BookmarkEntity
 import app.focal.database.FocalDatabase
+import app.focal.database.HistoryEntryEntity
 import app.focal.database.SpaceEntity
 import app.focal.database.TabMetadataEntity
+import app.focal.design.TabThumbnailDiskCache
 import app.focal.engine.api.BrowserEngine
 import app.focal.engine.api.EngineSession
 import app.focal.engine.api.ReadableDocument
@@ -35,6 +40,7 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.util.UUID
@@ -47,10 +53,19 @@ sealed interface ActiveOverlaySheet {
     data object Bookmarks : ActiveOverlaySheet
     data object TabSwitcher : ActiveOverlaySheet
     data object PageMenu : ActiveOverlaySheet
+    data object History : ActiveOverlaySheet
+    data object Downloads : ActiveOverlaySheet
+    data object GlobalSettings : ActiveOverlaySheet
     data class Reader(val document: ReadableDocument) : ActiveOverlaySheet
     data object PinchSummary : ActiveOverlaySheet
-    data class LinkPeek(val rawUrl: String) : ActiveOverlaySheet
+    data class LinkPeek(val rawUrl: String, val imageUrl: String? = null) : ActiveOverlaySheet
 }
+
+@Immutable
+data class ClosedTabRecord(
+    val meta: TabMetadataEntity,
+    val isPrivate: Boolean,
+)
 
 @Immutable
 data class PendingPairingRequest(
@@ -70,7 +85,8 @@ private data class TabPersistenceProjection(
 /**
  * Configuration-surviving ViewModel managing Focal's live [EngineSession] pool,
  * isolated in-memory Private Aperture (`◎`) tabs, debounced Room tab persistence,
- * live WebView preview thumbnails for the YAB-style tab deck, automatic disposal
+ * disk-cached WebView preview thumbnails for the YAB-style tab deck, Undo Close Tab,
+ * local browsing history, Global Privacy Control propagation, automatic disposal
  * of 24h auto-archived tabs, multi-tab media routing, and explicit SAS-verified
  * E2EE pairing & Spaces/Presence continuity.
  */
@@ -79,6 +95,7 @@ class BrowserSessionViewModel(
     private val browserEngine: BrowserEngine,
     private val database: FocalDatabase,
     private val syncManager: SyncRelaySessionManager,
+    private val thumbnailDiskCache: TabThumbnailDiskCache? = null,
 ) : ViewModel() {
 
     private val sessionLock = Any()
@@ -121,6 +138,12 @@ class BrowserSessionViewModel(
     private val _pendingPairingRequest = MutableStateFlow<PendingPairingRequest?>(null)
     val pendingPairingRequest: StateFlow<PendingPairingRequest?> = _pendingPairingRequest.asStateFlow()
 
+    private val _lastClosedTab = MutableStateFlow<ClosedTabRecord?>(null)
+    val lastClosedTab: StateFlow<ClosedTabRecord?> = _lastClosedTab.asStateFlow()
+
+    @Volatile
+    private var globalPrivacyControlEnabled: Boolean = true
+
     @Volatile
     private var suppressSnapshotEchoUntilMs: Long = 0L
 
@@ -129,6 +152,7 @@ class BrowserSessionViewModel(
 
     init {
         bindMultiTabMediaHandlers()
+        hydrateDiskCachedThumbnails()
         observeArchivedTabsForLiveDisposal()
         observeIncomingSpacesSnapshots()
         observeOutboundPresenceTabs()
@@ -144,6 +168,36 @@ class BrowserSessionViewModel(
         }
         FocalMediaBridge.onRequestPipForTab = { tabId ->
             getSession(tabId)?.requestElementFullscreenOrPip()
+        }
+    }
+
+    /**
+     * Hydrates disk-cached JPEG previews for active non-private tabs on cold launch
+     * and prunes stale thumbnail files from closed/archived tabs off the main thread.
+     */
+    private fun hydrateDiskCachedThumbnails() {
+        val cache = thumbnailDiskCache ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val activeTabs = runCatching {
+                database.tabMetadataDao().observeAllActiveTabs().first()
+            }.getOrDefault(emptyList())
+            val activeIds = activeTabs.map { it.id }
+            val loaded = cache.loadAllForTabs(activeIds)
+            cache.pruneExcept(activeIds.toSet())
+            if (loaded.isNotEmpty()) {
+                synchronized(previewLock) {
+                    for ((tabId, bmp) in loaded) {
+                        if (!previewMap.containsKey(tabId)) {
+                            previewMap[tabId] = bmp
+                        }
+                    }
+                    while (previewMap.size > MAX_CACHED_TAB_PREVIEWS) {
+                        val eldestKey = previewMap.entries.firstOrNull()?.key ?: break
+                        previewMap.remove(eldestKey)
+                    }
+                    _tabPreviews.value = LinkedHashMap(previewMap)
+                }
+            }
         }
     }
 
@@ -166,6 +220,9 @@ class BrowserSessionViewModel(
                     sessionJobs.remove(archivedId)?.cancel()
                     removeSessionInternal(archivedId)?.dispose()
                     removePreviewBitmap(archivedId)
+                    thumbnailDiskCache?.let { cache ->
+                        viewModelScope.launch(Dispatchers.IO) { cache.delete(archivedId) }
+                    }
                     FocalMediaBridge.clearIfOwnedBy(archivedId)
 
                     if (_selectedTabId.value == archivedId) {
@@ -316,7 +373,9 @@ class BrowserSessionViewModel(
     }
 
     fun openTabSwitcher() {
-        capturePreviewForTab(_selectedTabId.value)
+        val currentSelId = _selectedTabId.value
+        getSession(currentSelId)?.setElementZapperActive(false)
+        capturePreviewForTab(currentSelId)
         _pendingNewTabInSearch.value = false
         _overlaySheet.value = ActiveOverlaySheet.TabSwitcher
     }
@@ -327,6 +386,13 @@ class BrowserSessionViewModel(
         session.capturePreviewBitmap(maxWidthPx = 540) { bmp ->
             if (bmp != null) {
                 putPreviewBitmap(tabId, bmp)
+                if (!session.isPrivate) {
+                    thumbnailDiskCache?.let { cache ->
+                        viewModelScope.launch(Dispatchers.IO) {
+                            cache.save(tabId = tabId, bitmap = bmp, isPrivate = false)
+                        }
+                    }
+                }
             }
         }
     }
@@ -450,9 +516,11 @@ class BrowserSessionViewModel(
             currentSelSession.isPrivate == privateMode
 
         val tabId = if (reuseCurrentTab) {
+            currentSelSession?.setElementZapperActive(false)
             currentSelId!!
         } else {
             if (!openInBackground && currentSelId != null) {
+                currentSelSession?.setElementZapperActive(false)
                 capturePreviewForTab(currentSelId)
             }
             UUID.randomUUID().toString()
@@ -504,6 +572,7 @@ class BrowserSessionViewModel(
     fun selectTab(tabId: String, activeSpaceTabs: List<TabMetadataEntity>) {
         val currentSelId = _selectedTabId.value
         if (currentSelId != null && currentSelId != tabId) {
+            getSession(currentSelId)?.setElementZapperActive(false)
             capturePreviewForTab(currentSelId)
         }
         val now = System.currentTimeMillis()
@@ -575,6 +644,45 @@ class BrowserSessionViewModel(
     }
 
     fun closeTab(tabId: String, activeSpaceTabs: List<TabMetadataEntity>) {
+        val existingPrivateMeta = synchronized(privateTabLock) { privateTabMap[tabId] }
+        val existingRegularMeta = activeSpaceTabs.firstOrNull { it.id == tabId }
+        val liveSessionBeforeDispose = getSession(tabId)
+        val liveState = liveSessionBeforeDispose?.state?.value
+        val isClosingPrivate = existingPrivateMeta != null || liveSessionBeforeDispose?.isPrivate == true
+        val existingSpaceId = tabSpaceIds[tabId]
+            ?: existingPrivateMeta?.spaceId
+            ?: existingRegularMeta?.spaceId
+            ?: _activeSpaceId.value
+
+        val snapshotUrl = liveState?.url?.takeIf { it.isNotBlank() && it != "about:blank" }
+            ?: existingPrivateMeta?.url?.takeIf { it.isNotBlank() && it != "about:blank" }
+            ?: existingRegularMeta?.url?.takeIf { it.isNotBlank() && it != "about:blank" }
+
+        if (snapshotUrl != null) {
+            val now = System.currentTimeMillis()
+            val baseMeta = existingPrivateMeta ?: existingRegularMeta
+            val snapshotDomain = liveState?.domain?.takeIf { it.isNotBlank() }
+                ?: baseMeta?.domain?.takeIf { it.isNotBlank() }
+                ?: extractCleanDomain(snapshotUrl)
+            val snapshotTitle = liveState?.title?.takeIf { it.isNotBlank() }
+                ?: baseMeta?.title?.takeIf { it.isNotBlank() }
+                ?: snapshotDomain.ifBlank { snapshotUrl }
+            _lastClosedTab.value = ClosedTabRecord(
+                meta = TabMetadataEntity(
+                    id = tabId,
+                    spaceId = existingSpaceId,
+                    url = snapshotUrl,
+                    domain = snapshotDomain,
+                    title = snapshotTitle,
+                    lastActiveEpochMs = now,
+                    createdAtEpochMs = baseMeta?.createdAtEpochMs ?: now,
+                    hasUnsentFormDraft = baseMeta?.hasUnsentFormDraft ?: false,
+                    blockedTrackersCount = baseMeta?.blockedTrackersCount ?: 0,
+                ),
+                isPrivate = isClosingPrivate,
+            )
+        }
+
         sessionJobs.remove(tabId)?.cancel()
         tabSpaceIds.remove(tabId)
         val disposedSession = removeSessionInternal(tabId)
@@ -597,12 +705,128 @@ class BrowserSessionViewModel(
             persistedNonPrivateTabIds.remove(tabId)
             viewModelScope.launch(Dispatchers.IO) {
                 database.tabMetadataDao().deleteTab(tabId)
+                thumbnailDiskCache?.delete(tabId)
             }
             if (_selectedTabId.value == tabId) {
                 val nextId = activeSpaceTabs.firstOrNull { it.id != tabId }?.id
                 _selectedTabId.value = nextId
                 FocalMediaBridge.onSelectedTabChanged(nextId)
             }
+        }
+    }
+
+    fun undoCloseTab() {
+        val record = _lastClosedTab.value ?: return
+        _lastClosedTab.value = null
+        val meta = record.meta
+        val now = System.currentTimeMillis()
+        val session = getOrCreateRegisteredSession(
+            tabId = meta.id,
+            isPrivate = record.isPrivate,
+            spaceId = meta.spaceId,
+            createdAtEpochMs = meta.createdAtEpochMs,
+        )
+        session.loadUrl(meta.url)
+
+        if (record.isPrivate) {
+            upsertPrivateTabInMemory(
+                tabId = meta.id,
+                spaceId = meta.spaceId,
+                url = meta.url,
+                domain = meta.domain,
+                title = meta.title,
+                nowEpochMs = now,
+                hasUnsentFormDraft = meta.hasUnsentFormDraft,
+                blockedTrackersCount = meta.blockedTrackersCount,
+            )
+            _isPrivateAperture.value = true
+        } else {
+            persistedNonPrivateTabIds.add(meta.id)
+            _activeSpaceId.value = meta.spaceId
+            _isPrivateAperture.value = false
+            viewModelScope.launch(Dispatchers.IO) {
+                database.tabMetadataDao().upsertTab(
+                    meta.copy(
+                        lastActiveEpochMs = now,
+                        isArchived = false,
+                        archivedAtEpochMs = null,
+                    ),
+                )
+            }
+        }
+        _selectedTabId.value = meta.id
+        FocalMediaBridge.onSelectedTabChanged(meta.id)
+    }
+
+    fun dismissUndoCloseTab() {
+        _lastClosedTab.value = null
+    }
+
+    fun setGlobalPrivacyControl(enabled: Boolean) {
+        globalPrivacyControlEnabled = enabled
+        val sessions = synchronized(sessionLock) { sessionMap.values.toList() }
+        for (session in sessions) {
+            session.setGlobalPrivacyControl(enabled)
+        }
+    }
+
+    /**
+     * Records a completed non-private page visit in local Room history.
+     * Strictly no-op for Private Aperture (`◎`) tabs or non-HTTP(S) URLs.
+     */
+    fun recordHistoryVisit(
+        url: String,
+        title: String,
+        isPrivate: Boolean,
+    ) {
+        if (isPrivate) return
+        val cleanUrl = url.trim()
+        if (cleanUrl.isBlank() || cleanUrl == "about:blank") return
+        val isHttp = cleanUrl.startsWith("https://", ignoreCase = true) ||
+            cleanUrl.startsWith("http://", ignoreCase = true)
+        if (!isHttp) return
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val existing = database.historyDao().getByUrl(cleanUrl)
+            val domain = extractCleanDomain(cleanUrl)
+            val resolvedTitle = title.trim()
+                .ifBlank { existing?.title?.takeIf { it.isNotBlank() } ?: domain.ifBlank { cleanUrl } }
+            val now = System.currentTimeMillis()
+            database.historyDao().upsert(
+                HistoryEntryEntity(
+                    id = existing?.id ?: "hist-${UUID.randomUUID()}",
+                    url = cleanUrl,
+                    domain = domain,
+                    title = resolvedTitle,
+                    visitedAtEpochMs = now,
+                    visitCount = (existing?.visitCount ?: 0) + 1,
+                ),
+            )
+        }
+    }
+
+    /**
+     * Wipes local browsing history, disk-cached tab thumbnails, WebView cookies/site storage,
+     * and Private Aperture ephemeral data.
+     */
+    fun clearBrowsingData(context: Context) {
+        _lastClosedTab.value = null
+        synchronized(previewLock) {
+            previewMap.clear()
+            _tabPreviews.value = emptyMap()
+        }
+        browserEngine.clearEphemeralData()
+        runCatching {
+            val cm = CookieManager.getInstance()
+            cm.removeAllCookies(null)
+            cm.flush()
+        }
+        runCatching {
+            WebStorage.getInstance().deleteAllData()
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            database.historyDao().clearAll()
+            thumbnailDiskCache?.clearAll()
         }
     }
 
@@ -645,6 +869,9 @@ class BrowserSessionViewModel(
     }
 
     fun closeAllPrivateTabs(fallbackRegularTabs: List<TabMetadataEntity>) {
+        if (_lastClosedTab.value?.isPrivate == true) {
+            _lastClosedTab.value = null
+        }
         val privateSessionIds = synchronized(sessionLock) {
             sessionMap.filterValues { it.isPrivate }.keys.toList()
         }
@@ -682,6 +909,7 @@ class BrowserSessionViewModel(
         synchronized(sessionLock) {
             sessionMap[tabId]?.let { return it }
             val created = browserEngine.createSession(isPrivate = isPrivate, spaceId = spaceId)
+            created.setGlobalPrivacyControl(globalPrivacyControlEnabled)
             sessionMap[tabId] = created
             tabSpaceIds[tabId] = spaceId
             _liveSessions.value = LinkedHashMap(sessionMap)
@@ -907,6 +1135,7 @@ class BrowserSessionViewModel(
                         browserEngine = app.browserEngine,
                         database = app.database,
                         syncManager = app.syncManager,
+                        thumbnailDiskCache = TabThumbnailDiskCache(app),
                     ) as T
                 }
             }
