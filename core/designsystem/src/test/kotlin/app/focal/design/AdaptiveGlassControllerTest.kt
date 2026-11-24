@@ -101,4 +101,19 @@ class AdaptiveGlassControllerTest {
             ),
         )
     }
+
+    @Test
+    fun medianSurfaceArgb_recoversTruePageBackgroundIgnoringTextOutliers() {
+        // Dark Google AI Mode canvas (#1F1F23) with 20% light text (#E8EAED)
+        val darkCanvas = 0xFF1F1F23.toInt()
+        val textPixel = 0xFFE8EAED.toInt()
+        val pixels = IntArray(256) { idx -> if (idx < 50) textPixel else darkCanvas }
+        val r = IntArray(256)
+        val g = IntArray(256)
+        val b = IntArray(256)
+        assertEquals(
+            darkCanvas,
+            AdaptiveGlassController.computeMedianSurfaceArgb(pixels, pixels.size, r, g, b),
+        )
+    }
 }

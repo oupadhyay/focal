@@ -1576,7 +1576,9 @@ class WebViewSession internal constructor(
         val target = view ?: return
         val currentUrl = target.url ?: _state.value.url
         if (currentUrl.isBlank() || currentUrl.equals("about:blank", ignoreCase = true)) return
-        target.evaluateJavascript(ElementZapperScripts.buildBottomInsetCssScript(insetPx), null)
+        val density = target.resources?.displayMetrics?.density?.coerceAtLeast(1f) ?: 1f
+        val cssPx = if (insetPx <= 0) 0 else kotlin.math.round(insetPx / density).toInt()
+        target.evaluateJavascript(ElementZapperScripts.buildBottomInsetCssScript(cssPx), null)
     }
 
     private fun cancelPendingFileChooser() {

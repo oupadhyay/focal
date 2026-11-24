@@ -12,36 +12,49 @@ enum class SearchEnginePreset(
     val id: String,
     val displayName: String,
     val urlTemplate: String,
+    val homeUrl: String,
 ) {
     DUCKDUCKGO(
         id = "duckduckgo",
         displayName = "DuckDuckGo",
         urlTemplate = "https://duckduckgo.com/?q=%s",
+        homeUrl = "https://duckduckgo.com",
     ),
     GOOGLE(
         id = "google",
         displayName = "Google",
         urlTemplate = "https://www.google.com/search?q=%s",
+        homeUrl = "https://www.google.com",
+    ),
+    GOOGLE_AI(
+        id = "google_ai",
+        displayName = "Google AI",
+        urlTemplate = "https://www.google.com/search?udm=50&q=%s",
+        homeUrl = "https://www.google.com",
     ),
     KAGI(
         id = "kagi",
         displayName = "Kagi",
         urlTemplate = "https://kagi.com/search?q=%s",
+        homeUrl = "https://kagi.com",
     ),
     BRAVE(
         id = "brave",
         displayName = "Brave",
         urlTemplate = "https://search.brave.com/search?q=%s",
+        homeUrl = "https://search.brave.com",
     ),
     PERPLEXITY(
         id = "perplexity",
         displayName = "Perplexity",
         urlTemplate = "https://www.perplexity.ai/search?q=%s",
+        homeUrl = "https://www.perplexity.ai",
     ),
     CUSTOM(
         id = "custom",
         displayName = "Custom",
         urlTemplate = "https://duckduckgo.com/?q=%s",
+        homeUrl = "",
     ),
     ;
 

@@ -1,7 +1,10 @@
 package app.focal.feature.browser
 
 import android.graphics.Bitmap
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -14,6 +17,9 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
@@ -49,6 +55,7 @@ import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -78,8 +85,9 @@ import java.util.Locale
  * Strict 120Hz & Android Predictive Back guarantees:
  * 1. Left & right `24.dp` screen edges have **zero horizontal drag interceptors**, leaving
  *    `WindowInsets.systemGestures` 100% clear for Android 14–16 `PredictiveBackHandler`.
- * 2. The underlying [WebEngineSurface] fills `Modifier.fillMaxSize()` and **never resizes**
- *    during scroll (`0.0ms` layout pass).
+ * 2. The underlying [WebEngineSurface] reserves discrete bottom clearance above Focal's docked
+ *    bottom bar (and above `WindowInsets.ime` when typing in web inputs like Google AI Mode),
+ *    never resizing per-frame during 120Hz scroll.
  * 3. All gesture state (`pinchProgressState`, `scrubOffsetPxState`, `bottomChromeTranslationY`)
  *    is read strictly inside `Modifier.graphicsLayer {}`.
  */
@@ -117,6 +125,8 @@ fun BrowserViewportScreen(
     onFocusMediaTab: (() -> Unit)? = null,
     onDismissMediaMiniPlayer: (() -> Unit)? = null,
     fullHideBottomBarOnScroll: Boolean = true,
+    isBottomBarHidden: Boolean = false,
+    adaptiveSurfaceColor: Color? = null,
     isFindInPageOpen: Boolean = false,
     onFindQueryChange: (String) -> Unit = {},
     onFindNext: (Boolean) -> Unit = {},
@@ -129,6 +139,7 @@ fun BrowserViewportScreen(
 ) {
     val colors = FocalTheme.colors
     val typography = FocalTheme.typography
+    val density = LocalDensity.current
     val sessionState by activeSession?.state?.collectAsState()
         ?: remember { androidx.compose.runtime.mutableStateOf(EngineSessionState(sessionId = "empty")) }
 
@@ -153,27 +164,46 @@ fun BrowserViewportScreen(
         derivedStateOf { !isOverlaySheetOpen && bottomBarScrollHideFraction.floatValue < 0.5f }
     }
 
-    // Bottom Chrome Viewport Clearance Reporting (`WebViewSession.setBottomChromeInsetPx`)
+    // Discrete bottom clearance for WebEngineSurface:
+    // - Keeps fixed/sticky composers (Google AI Mode, ChatGPT, Claude, YouTube, footers) strictly
+    //   above Focal's 48.dp floating bar + 12.dp bottom margin + 4.dp breathing room (`64.dp`).
+    // - Steps the floating bar aside and clears `WindowInsets.ime` when typing into web fields.
+    // - Uses the discrete `isBottomBarHidden` boolean (never per-frame scroll floats) for 120Hz smoothness.
     var measuredDockHeightPx by remember { mutableIntStateOf(0) }
-    val isDockScrolledOff by remember(bottomBarScrollHideFraction, fullHideBottomBarOnScroll) {
-        derivedStateOf {
-            fullHideBottomBarOnScroll && bottomBarScrollHideFraction.floatValue >= 0.5f
-        }
+    val navBottomPx = WindowInsets.navigationBars.getBottom(density)
+    val imeBottomPx = WindowInsets.ime.getBottom(density)
+    val imeThresholdPx = with(density) { 48.dp.roundToPx() }
+    val isWebImeOpen = hasLoadedWebUrl &&
+        !isOverlaySheetOpen &&
+        !isFindInPageOpen &&
+        !isInPictureInPictureMode &&
+        imeBottomPx > navBottomPx + imeThresholdPx
+
+    val webViewportBottomPaddingDp = when {
+        isInPictureInPictureMode -> 0.dp
+        isFindInPageOpen -> with(density) { maxOf(imeBottomPx, navBottomPx).toDp() } + 66.dp
+        isWebImeOpen -> with(density) { imeBottomPx.toDp() }
+        fullHideBottomBarOnScroll && isBottomBarHidden -> with(density) { navBottomPx.toDp() }
+        else -> with(density) { navBottomPx.toDp() } + 64.dp
     }
-    val effectiveBottomInsetPx = if (
-        isInPictureInPictureMode ||
-        isOverlaySheetOpen ||
-        isFindInPageOpen ||
-        isDockScrolledOff
-    ) {
-        0
-    } else {
-        measuredDockHeightPx
-    }
+
+    // Keep CSS body margin at 0 since WebEngineSurface natively clears the bottom bar & IME
     val latestOnBottomChromeInsetChanged = rememberUpdatedState(onBottomChromeInsetChanged)
-    LaunchedEffect(activeSession?.sessionId, effectiveBottomInsetPx) {
-        latestOnBottomChromeInsetChanged.value(effectiveBottomInsetPx)
+    LaunchedEffect(activeSession?.sessionId, measuredDockHeightPx > 0) {
+        latestOnBottomChromeInsetChanged.value(0)
     }
+
+    // Seamless page-matched backdrop behind the floating bottom bar (adapts smoothly to dark/light sites)
+    val targetWebBackdropColor = if (hasLoadedWebUrl) {
+        adaptiveSurfaceColor ?: if (adaptiveBottomBarDarkGlass) Color(0xFF0A0A0A) else Color(0xFFF6F6F8)
+    } else {
+        colors.canvasBackground
+    }
+    val animatedWebBackdropColor by animateColorAsState(
+        targetValue = targetWebBackdropColor,
+        animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
+        label = "FocalWebViewportBackdropColor",
+    )
 
     // Interactive Edge-Swipe Back Snapshot Preview (memoized ImageBitmap, zero recomposition during swipe)
     val historyBackImageBitmap = remember(historyBackPreview) {
@@ -209,6 +239,7 @@ fun BrowserViewportScreen(
                     .windowInsetsPadding(
                         WindowInsets.safeDrawing.only(WindowInsetsSides.Top),
                     )
+                    .padding(bottom = webViewportBottomPaddingDp)
                     .graphicsLayer {
                         val backP = predictiveBackProgressState.floatValue.coerceIn(0f, 1f)
                         val previewScale = 0.96f + backP * 0.04f
@@ -267,20 +298,27 @@ fun BrowserViewportScreen(
                 },
         ) {
             if (hasLoadedWebUrl && activeSession != null) {
-                WebEngineSurface(
-                    session = activeSession,
+                Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .then(
                             if (isInPictureInPictureMode) {
                                 Modifier
                             } else {
-                                Modifier.windowInsetsPadding(
-                                    WindowInsets.safeDrawing.only(WindowInsetsSides.Top),
-                                )
+                                Modifier
+                                    .windowInsetsPadding(
+                                        WindowInsets.safeDrawing.only(WindowInsetsSides.Top),
+                                    )
+                                    .padding(bottom = webViewportBottomPaddingDp)
                             },
-                        ),
-                )
+                        )
+                        .testTag("web_engine_viewport_host"),
+                ) {
+                    WebEngineSurface(
+                        session = activeSession,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             } else {
                 Box(
                     modifier = Modifier
@@ -361,8 +399,23 @@ fun BrowserViewportScreen(
             }
         }
 
+        // Layer 1.8: Seamless page-matched backdrop strictly within the bottom dock clearance band
+        // (keeps top app chrome canvas dark on light web pages while giving the floating bottom bar
+        // a continuous page-matched seat directly beneath WebEngineSurface).
+        if (hasLoadedWebUrl && !isInPictureInPictureMode && webViewportBottomPaddingDp > 0.dp) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(webViewportBottomPaddingDp)
+                    .background(animatedWebBackdropColor)
+                    .testTag("web_bottom_dock_backdrop"),
+            )
+        }
+
         // Layer 2: Floating Lower Dock — adapts ONLY bottom bar elements to light/dark web pages
-        if (!isInPictureInPictureMode && !isFindInPageOpen && overlayDimProgress < 0.99f) {
+        // Steps aside cleanly while typing in web page inputs (e.g., Google AI Mode composer)
+        if (!isInPictureInPictureMode && !isFindInPageOpen && !isWebImeOpen && overlayDimProgress < 0.99f) {
             val effectiveBackdropLayer = if (hasLoadedWebUrl) null else backdropGraphicsLayer
             val dockDarkGlass = if (hasLoadedWebUrl) adaptiveBottomBarDarkGlass else colors.isDarkGlass
             FocalTheme(

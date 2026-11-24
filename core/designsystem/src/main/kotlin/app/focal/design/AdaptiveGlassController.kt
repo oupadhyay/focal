@@ -22,6 +22,7 @@ data class GlassLuminanceState(
     val isDarkGlass: Boolean = true,
     val medianLuminance: Float = 0.08f,
     val lightStatusBarIcons: Boolean = true,
+    val sampledSurfaceArgb: Int? = null,
 )
 
 /**
@@ -166,6 +167,35 @@ class AdaptiveGlassController(
                 0.5f * (scratchLuma[mid - 1] + scratchLuma[mid])
             }
         }
+
+        /**
+         * Computes component-wise median opaque `ARGB` across [pixelCount] pixels using
+         * pre-allocated scratch buffers, ignoring thin text/link outliers to recover the page's
+         * true background surface color for seamless bottom-dock seating.
+         */
+        fun computeMedianSurfaceArgb(
+            pixels: IntArray,
+            pixelCount: Int,
+            scratchR: IntArray,
+            scratchG: IntArray,
+            scratchB: IntArray,
+        ): Int {
+            if (pixelCount <= 0) return 0xFF0A0A0A.toInt()
+            for (i in 0 until pixelCount) {
+                val argb = pixels[i]
+                scratchR[i] = (argb ushr 16) and 0xFF
+                scratchG[i] = (argb ushr 8) and 0xFF
+                scratchB[i] = argb and 0xFF
+            }
+            scratchR.sort(0, pixelCount)
+            scratchG.sort(0, pixelCount)
+            scratchB.sort(0, pixelCount)
+            val mid = pixelCount ushr 1
+            val r = scratchR[mid]
+            val g = scratchG[mid]
+            val b = scratchB[mid]
+            return (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+        }
     }
 
     private data class PendingSampleRequest(
@@ -178,6 +208,7 @@ class AdaptiveGlassController(
             isDarkGlass = initialDarkGlass,
             medianLuminance = if (initialDarkGlass) 0.08f else 0.92f,
             lightStatusBarIcons = initialDarkGlass,
+            sampledSurfaceArgb = null,
         ),
     )
     val state: StateFlow<GlassLuminanceState> = _state.asStateFlow()
@@ -197,6 +228,9 @@ class AdaptiveGlassController(
     )
     private val pixelBuffer = IntArray(SAMPLE_GRID_SIZE * SAMPLE_GRID_SIZE)
     private val lumaScratch = FloatArray(SAMPLE_GRID_SIZE * SAMPLE_GRID_SIZE)
+    private val redScratch = IntArray(SAMPLE_GRID_SIZE * SAMPLE_GRID_SIZE)
+    private val greenScratch = IntArray(SAMPLE_GRID_SIZE * SAMPLE_GRID_SIZE)
+    private val blueScratch = IntArray(SAMPLE_GRID_SIZE * SAMPLE_GRID_SIZE)
     private val inFlight = AtomicBoolean(false)
     private val closed = AtomicBoolean(false)
     private val pendingPrioritySample = AtomicReference<PendingSampleRequest?>(null)
@@ -248,19 +282,24 @@ class AdaptiveGlassController(
             isDarkGlass = true,
             medianLuminance = 0.08f,
             lightStatusBarIcons = true,
+            sampledSurfaceArgb = null,
         )
     }
 
     /**
      * Direct luminance update (used by unit tests or synthetic reader surfaces).
      */
-    fun updateFromMeasuredLuminance(medianLuminance: Float) {
+    fun updateFromMeasuredLuminance(
+        medianLuminance: Float,
+        sampledSurfaceArgb: Int? = _state.value.sampledSurfaceArgb,
+    ) {
         val prev = _state.value
         val nextDark = evaluateDarkGlassWithHysteresis(prev.isDarkGlass, medianLuminance)
         _state.value = GlassLuminanceState(
             isDarkGlass = nextDark,
             medianLuminance = medianLuminance.coerceIn(0f, 1f),
             lightStatusBarIcons = nextDark,
+            sampledSurfaceArgb = sampledSurfaceArgb,
         )
     }
 
@@ -305,7 +344,17 @@ class AdaptiveGlassController(
                                 pixelCount = pixelBuffer.size,
                                 scratchLuma = lumaScratch,
                             )
-                            updateFromMeasuredLuminance(median)
+                            val surfaceArgb = computeMedianSurfaceArgb(
+                                pixels = pixelBuffer,
+                                pixelCount = pixelBuffer.size,
+                                scratchR = redScratch,
+                                scratchG = greenScratch,
+                                scratchB = blueScratch,
+                            )
+                            updateFromMeasuredLuminance(
+                                medianLuminance = median,
+                                sampledSurfaceArgb = surfaceArgb,
+                            )
                         }
                     } finally {
                         inFlight.set(false)

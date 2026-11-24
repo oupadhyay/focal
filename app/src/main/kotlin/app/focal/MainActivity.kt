@@ -989,6 +989,8 @@ private fun FocalRootCoordinator(
                     FocalMediaBridge.dismissMiniPlayer()
                 },
                 fullHideBottomBarOnScroll = browserSettings.fullHideBottomBarOnScroll,
+                isBottomBarHidden = bottomBarHiddenTarget,
+                adaptiveSurfaceColor = glassState.sampledSurfaceArgb?.let(::Color),
                 isFindInPageOpen = isFindInPageOpen,
                 onFindQueryChange = { query ->
                     activeSession?.findInPage(query)
@@ -1124,6 +1126,12 @@ private fun FocalRootCoordinator(
                                     browserSettings = browserSettings,
                                     onSwitchToTab = { tabId ->
                                         sessionVm.selectTab(tabId, allActiveTabs)
+                                    },
+                                    onSelectSearchEngine = { preset ->
+                                        updateBrowserSettings(browserSettings.copy(searchEngine = preset))
+                                    },
+                                    onOpenGlobalSettings = {
+                                        sessionVm.setOverlaySheet(ActiveOverlaySheet.GlobalSettings)
                                     },
                                 )
                             }

@@ -45,6 +45,10 @@ class FocalSettingsStoreTest {
             FocalBrowserSettings(searchEngine = SearchEnginePreset.GOOGLE).buildSearchUrl(query),
         )
         assertEquals(
+            "https://www.google.com/search?udm=50&q=$encoded",
+            FocalBrowserSettings(searchEngine = SearchEnginePreset.GOOGLE_AI).buildSearchUrl(query),
+        )
+        assertEquals(
             "https://kagi.com/search?q=$encoded",
             FocalBrowserSettings(searchEngine = SearchEnginePreset.KAGI).buildSearchUrl(query),
         )

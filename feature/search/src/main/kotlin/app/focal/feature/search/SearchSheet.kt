@@ -15,6 +15,8 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -60,6 +62,9 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
@@ -84,6 +89,7 @@ import app.focal.design.FocalGroupedCard
 import app.focal.design.FocalHairlineDivider
 import app.focal.design.FocalMotion
 import app.focal.design.FocalTheme
+import app.focal.design.SearchEnginePreset
 import app.focal.design.SiteFavicon
 import app.focal.design.SpaceAmbientPalette
 import app.focal.design.consumeClicks
@@ -117,8 +123,11 @@ val DefaultSearchSquirclePins: ImmutableList<QuickSquirclePin> = persistentListO
  * - Zero permanent command/bang hint clutter in or above the search bar.
  * - Double-Space Site Search (`GitHub␣␣`, `GH␣␣`, `git␣␣`, `YouTube␣␣`, `YT␣␣`, `Wiki␣␣`, etc. +
  *   user pinned sites) with `135.dp` radial contextual glow clipped inside the input pill.
+ * - 1-tap inline Default Search Engine switcher (`DuckDuckGo`, `Google`, `Google AI`, `Kagi`,
+ *   `Brave`, `Perplexity`, `Custom`) directly on the left of the search pill.
  * - Borderless tonal Favicon Squircles + crisp optical vector glyphs.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SearchSheet(
     initialQuery: String,
@@ -136,6 +145,8 @@ fun SearchSheet(
     spaces: ImmutableList<SpaceEntity> = persistentListOf(),
     browserSettings: FocalBrowserSettings = FocalBrowserSettings(),
     onSwitchToTab: (tabId: String) -> Unit = {},
+    onSelectSearchEngine: ((SearchEnginePreset) -> Unit)? = null,
+    onOpenGlobalSettings: (() -> Unit)? = null,
 ) {
     val colors = FocalTheme.colors
     val typography = FocalTheme.typography
@@ -153,6 +164,7 @@ fun SearchSheet(
     val spacesById = remember(spaces) { spaces.associateBy { it.id } }
 
     var activeSite by remember { mutableStateOf<SiteSearchEngine?>(null) }
+    var showSearchEnginePicker by remember { mutableStateOf(false) }
     var textFieldValue by remember(initialQuery) {
         mutableStateOf(
             TextFieldValue(
@@ -193,7 +205,10 @@ fun SearchSheet(
     if (hasLiveSuggestions) {
         lastNonEmptySuggestions.value = localSuggestionResult
     }
-    val showQuickPins = displayedPins.isNotEmpty() && !hasLiveSuggestions && inlineAnswer == null
+    val showQuickPins = displayedPins.isNotEmpty() &&
+        !hasLiveSuggestions &&
+        inlineAnswer == null &&
+        !showSearchEnginePicker
 
     val submitCurrentQuery: () -> Unit = {
         val rawQuery = textFieldValue.text
@@ -236,16 +251,21 @@ fun SearchSheet(
     )
 
     Box(
-        modifier = modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.52f))
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = onDismiss,
-            ),
+        modifier = modifier.fillMaxSize(),
         contentAlignment = Alignment.BottomCenter,
     ) {
+        // Dedicated scrim sibling so clickable() never merges SearchSheet descendant semantics
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.52f))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onDismiss,
+                ),
+        )
+
         SmokedGlassBox(
             shape = FocalGeometry.SheetOuterShape,
             glassTintState = effectiveSheetTint,
@@ -505,6 +525,88 @@ fun SearchSheet(
                     }
                 }
 
+                // 1-Tap Inline Default Search Engine Switcher (expands when tapping the search engine icon)
+                AnimatedVisibility(
+                    visible = showSearchEnginePicker && activeSite == null,
+                    enter = fadeIn(animationSpec = tween(150)) +
+                        expandVertically(
+                            expandFrom = Alignment.Bottom,
+                            animationSpec = FocalMotion.smartPillSpring(),
+                        ),
+                    exit = fadeOut(animationSpec = tween(110)) +
+                        shrinkVertically(
+                            shrinkTowards = Alignment.Bottom,
+                            animationSpec = FocalMotion.smartPillSpring(),
+                        ),
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("search_engine_picker_strip"),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            text = "Default Search Engine",
+                            style = typography.captionMetadata,
+                            color = colors.inkSecondary,
+                            modifier = Modifier.padding(horizontal = 4.dp),
+                        )
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            SearchEnginePreset.entries.forEach { preset ->
+                                val selected = browserSettings.searchEngine == preset
+                                Row(
+                                    modifier = Modifier
+                                        .clip(CircleShape)
+                                        .background(
+                                            if (selected) {
+                                                colors.surfacePillActive
+                                            } else {
+                                                colors.surfacePillSubtle
+                                            },
+                                        )
+                                        .clickable {
+                                            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                            onSelectSearchEngine?.invoke(preset)
+                                            showSearchEnginePicker = false
+                                            if (preset == SearchEnginePreset.CUSTOM) {
+                                                onOpenGlobalSettings?.invoke()
+                                            }
+                                        }
+                                        .padding(horizontal = 11.dp, vertical = 7.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    if (preset.homeUrl.isNotBlank()) {
+                                        SiteFavicon(
+                                            urlOrDomain = preset.homeUrl,
+                                            allowNetworkFetch = !isPrivateAperture,
+                                            size = 15.dp,
+                                            cornerRadius = 4.dp,
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = FocalGlyphs.Sliders,
+                                            contentDescription = null,
+                                            tint = if (selected) colors.inkOnPillActive else colors.inkSecondary,
+                                            modifier = Modifier.size(14.dp),
+                                        )
+                                    }
+                                    Text(
+                                        text = preset.displayName,
+                                        style = typography.controlPillLabel,
+                                        color = if (selected) colors.inkOnPillActive else colors.inkPrimary,
+                                        maxLines = 1,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Concentric Main Search Input Pill (with strictly-clipped 135.dp left contextual site glow)
                 val siteGlowColor = activeSite?.colors?.radialInputGlow ?: Color.Transparent
                 Row(
@@ -525,9 +627,9 @@ fun SearchSheet(
                                 )
                             }
                         }
-                        .padding(start = 13.dp, end = 9.dp),
+                        .padding(start = 10.dp, end = 9.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     // Critically-damped Site Search Chip (`[GitHub ×]`) — crisp reveal without overshoot
                     AnimatedVisibility(
@@ -576,12 +678,58 @@ fun SearchSheet(
                     }
 
                     if (activeSite == null) {
-                        Icon(
-                            imageVector = FocalGlyphs.Search,
-                            contentDescription = null,
-                            tint = colors.inkSecondary,
-                            modifier = Modifier.size(17.dp),
-                        )
+                        val activeEngine = browserSettings.searchEngine
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(
+                                    if (showSearchEnginePicker) {
+                                        colors.inkPrimary.copy(alpha = 0.12f)
+                                    } else {
+                                        Color.Transparent
+                                    },
+                                )
+                                .testTag("search_engine_switcher_button")
+                                .semantics {
+                                    contentDescription = "Search engine: ${activeEngine.displayName}"
+                                }
+                                .clickable {
+                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    showSearchEnginePicker = !showSearchEnginePicker
+                                }
+                                .padding(horizontal = 5.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            if (activeEngine.homeUrl.isNotBlank()) {
+                                SiteFavicon(
+                                    urlOrDomain = activeEngine.homeUrl,
+                                    allowNetworkFetch = !isPrivateAperture,
+                                    size = 18.dp,
+                                    cornerRadius = 5.dp,
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = FocalGlyphs.Search,
+                                    contentDescription = null,
+                                    tint = colors.inkSecondary,
+                                    modifier = Modifier.size(17.dp),
+                                )
+                            }
+                            if (activeEngine == SearchEnginePreset.GOOGLE_AI) {
+                                Text(
+                                    text = "AI",
+                                    style = typography.captionMetadata.copy(fontWeight = FontWeight.SemiBold),
+                                    color = colors.inkPrimary,
+                                )
+                            }
+                            Icon(
+                                imageVector = if (showSearchEnginePicker) FocalGlyphs.ChevronUp else FocalGlyphs.ChevronDown,
+                                contentDescription = null,
+                                tint = colors.inkFaint,
+                                modifier = Modifier.size(11.dp),
+                            )
+                        }
                     }
 
                     // Core Input Field with Backspace unwrap + Double-Space detection
@@ -602,6 +750,9 @@ fun SearchSheet(
                         BasicTextField(
                             value = textFieldValue,
                             onValueChange = { nextFieldValue ->
+                                if (nextFieldValue.text != textFieldValue.text && showSearchEnginePicker) {
+                                    showSearchEnginePicker = false
+                                }
                                 val transition = detector.onQueryChanged(
                                     previousQuery = textFieldValue.text,
                                     newQuery = nextFieldValue.text,
@@ -611,6 +762,7 @@ fun SearchSheet(
                                 if (transition.chipJustActivated) {
                                     haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                     activeSite = transition.activeSite
+                                    showSearchEnginePicker = false
                                     textFieldValue = TextFieldValue(
                                         text = transition.updatedQuery,
                                         selection = TextRange(transition.updatedQuery.length),

@@ -144,6 +144,21 @@ class FocalEmulatorVerificationTest {
             composeRule.onAllNodesWithText("GitHub").fetchSemanticsNodes().isNotEmpty()
         }
 
+        // 2b. Verify 1-tap inline Default Search Engine switcher right inside Search Sheet
+        composeRule.onNodeWithTag("search_engine_switcher_button").performClick()
+        composeRule.waitUntil(timeoutMillis = 8_000L) {
+            composeRule.onAllNodesWithText("Google AI").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithText("Default Search Engine").assertIsDisplayed()
+        composeRule.onNodeWithText("Google").assertIsDisplayed()
+        composeRule.onNodeWithText("Google AI").assertIsDisplayed()
+        SystemClock.sleep(250L)
+        captureEmulatorScreenshot("03b_emulator_search_engine_picker.png")
+        composeRule.onNodeWithText("Google AI").performClick()
+        composeRule.waitUntil(timeoutMillis = 8_000L) {
+            composeRule.onAllNodesWithText("Default Search Engine").fetchSemanticsNodes().isEmpty()
+        }
+
         // 3. Verify double-space "git  " activates [GitHub x] chip
         composeRule.onNode(hasSetTextAction()).performTextInput("git  ")
         composeRule.waitUntil(timeoutMillis = 8_000L) {
@@ -199,6 +214,14 @@ class FocalEmulatorVerificationTest {
         SystemClock.sleep(3_000L)
         composeRule.waitForIdle()
         composeRule.onNodeWithText("example.com").assertIsDisplayed()
+        val webViewportBounds = composeRule.onNodeWithTag("web_engine_viewport_host")
+            .fetchSemanticsNode().boundsInRoot
+        val bottomBarTabsBounds = composeRule.onNodeWithContentDescription("Open Tabs")
+            .fetchSemanticsNode().boundsInRoot
+        assertTrue(
+            "WebView bottom (${webViewportBounds.bottom}) must sit cleanly above bottom bar top (${bottomBarTabsBounds.top})",
+            webViewportBounds.bottom <= bottomBarTabsBounds.top + 2f,
+        )
         captureEmulatorScreenshot("05_emulator_live_webview.png")
 
         // 6. Open Page Menu (Actions + Bookmarks + on-device Translate Page row + Site Settings subtab)

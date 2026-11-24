@@ -1208,6 +1208,127 @@ class FocalComposeUiHarnessTest {
     }
 
     @Test
+    fun searchSheet_inlineSearchEngineSwitcher_selectsGoogleAiAndBuildsUdm50Url() {
+        var navigatedUrl: String? = null
+        var openedGlobalSettings = false
+
+        composeRule.setContent {
+            var settings by remember { mutableStateOf(FocalBrowserSettings()) }
+            FocalTheme(darkGlass = true, isPrivateAperture = false) {
+                SearchSheet(
+                    initialQuery = "",
+                    isPrivateAperture = false,
+                    onTogglePrivateAperture = {},
+                    onNavigateToUrl = { url, _ -> navigatedUrl = url },
+                    onDismiss = {},
+                    browserSettings = settings,
+                    onSelectSearchEngine = { preset ->
+                        settings = settings.copy(searchEngine = preset)
+                    },
+                    onOpenGlobalSettings = { openedGlobalSettings = true },
+                )
+            }
+        }
+
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("search_engine_switcher_button").assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("search_engine_picker_strip").assertIsDisplayed()
+        composeRule.onNodeWithText("Default Search Engine").assertIsDisplayed()
+        composeRule.onNodeWithText("DuckDuckGo").assertIsDisplayed()
+        composeRule.onNodeWithText("Google").assertIsDisplayed()
+        composeRule.onNodeWithText("Google AI").assertIsDisplayed()
+        composeRule.onNodeWithText("Kagi").assertIsDisplayed()
+        composeRule.onNodeWithText("Brave").assertIsDisplayed()
+        composeRule.onNodeWithText("Perplexity").assertIsDisplayed()
+        composeRule.onNodeWithText("Custom").assertIsDisplayed()
+
+        val pickerSnap = composeRule.captureSnapshotPng("09b_search_engine_picker.png")
+        assertTrue(pickerSnap.length() > 1_000L)
+
+        composeRule.onNodeWithText("Google AI").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNode(hasSetTextAction()).performTextInput("pepto bismol")
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("Go").performClick()
+        composeRule.waitForIdle()
+
+        assertEquals("https://www.google.com/search?udm=50&q=pepto+bismol", navigatedUrl)
+        assertEquals(false, openedGlobalSettings)
+    }
+
+    @Test
+    fun browserViewport_loadedWebPage_reservesBottomClearanceAboveFloatingDock() {
+        val fakeSession = FakeLoadedEngineSession(
+            url = "https://www.google.com/search?udm=50&q=ai+mode",
+            domain = "google.com",
+            title = "Google AI Mode",
+        )
+        var barHiddenState by mutableStateOf(false)
+
+        composeRule.setContent {
+            val pinch = remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
+            val pinchY = remember { androidx.compose.runtime.mutableFloatStateOf(0.5f) }
+            val backProg = remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
+            val scrollHide = remember { androidx.compose.runtime.mutableFloatStateOf(if (barHiddenState) 1f else 0f) }
+
+            FocalTheme(darkGlass = true, isPrivateAperture = true) {
+                app.focal.feature.browser.BrowserViewportScreen(
+                    activeSession = fakeSession,
+                    tabCount = 1,
+                    isPrivateAperture = true,
+                    adaptiveBottomBarDarkGlass = true,
+                    adaptiveSurfaceColor = androidx.compose.ui.graphics.Color(0xFF1F1F23),
+                    continuityHandoff = null,
+                    mediaMiniPlayerInfo = null,
+                    pinchProgressState = pinch,
+                    pinchCenterYState = pinchY,
+                    predictiveBackProgressState = backProg,
+                    bottomBarScrollHideFraction = scrollHide,
+                    fullHideBottomBarOnScroll = true,
+                    isBottomBarHidden = barHiddenState,
+                    onOpenSearchSheet = {},
+                    onOpenTabSwitcher = {},
+                    onCloseCurrentTab = {},
+                    onOpenNewPrivateTab = {},
+                    onStepToAdjacentTab = {},
+                    onOpenPageMenu = {},
+                    onOpenReaderMode = {},
+                    onPinchSnapSummarize = {},
+                    onPinchSnapCancelled = {},
+                    onOpenContinuityHandoff = {},
+                    onToggleMediaPlayPause = {},
+                    onCycleMediaPlaybackRate = {},
+                    onEnterPictureInPicture = {},
+                )
+            }
+        }
+
+        composeRule.waitForIdle()
+        val dockedViewportBounds = composeRule.onNodeWithTag("web_engine_viewport_host")
+            .fetchSemanticsNode().boundsInRoot
+        val bottomBarTabsBounds = composeRule.onNodeWithContentDescription("Open Tabs")
+            .fetchSemanticsNode().boundsInRoot
+
+        assertTrue(
+            "WebView bottom (${dockedViewportBounds.bottom}) must sit strictly above floating bottom bar top (${bottomBarTabsBounds.top}) so Google AI Mode composer is never covered",
+            dockedViewportBounds.bottom <= bottomBarTabsBounds.top + 1f,
+        )
+
+        // When scrolled down and fullHideBottomBarOnScroll hides the bar, WebView expands down cleanly
+        barHiddenState = true
+        composeRule.waitForIdle()
+        val expandedViewportBounds = composeRule.onNodeWithTag("web_engine_viewport_host")
+            .fetchSemanticsNode().boundsInRoot
+        assertTrue(
+            "WebView bottom should expand down when bottom bar is hidden (${expandedViewportBounds.bottom} > ${dockedViewportBounds.bottom})",
+            expandedViewportBounds.bottom > dockedViewportBounds.bottom + 100f,
+        )
+    }
+
+    @Test
     @Config(sdk = [34], application = FocalApplication::class, qualifiers = "w412dp-h915dp-xxhdpi")
     fun mainActivity_coldLaunch_mountsCalmCanvasWithoutCrash() {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
