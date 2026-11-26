@@ -24,3 +24,14 @@ captures/
 # OS / Editor
 .DS_Store
 Thumbs.db
+
+# Local secrets & private signing keys (keep public dev CI keystore tracked)
+.env
+.env.*
+*.jks
+*.keystore
+!app/focal-dev.keystore
+*.p12
+*.pem
+*.log
+

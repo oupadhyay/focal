@@ -1,35 +1,89 @@
 # Focal Browser
 
-**Focal** is a native Android (`Kotlin` + `Jetpack Compose` + `AGSL` + `Rust`) mobile browser engineered to feel calmer, cleaner, and measurably smoother than Chrome at `120Hz`—combining **optical tactile minimalism**, **built-in `adblock-rust` ad & tracker blocking**, **100% on-device grounded AI summarization**, and **zero-account E2EE desktop continuity (`Focal Bridge`)**.
+**Focal** is a fast, privacy-first native Android browser built with **Kotlin**, **Jetpack Compose**, **AGSL RuntimeShaders**, and **Rust** (`adblock-rust` over JNI) — designed around **Achromatic Optical Smoked Glass**, `120Hz` physics-driven gestures, built-in ad & tracker blocking, on-device summarization, zero-account E2EE desktop sync, and seamless **in-app self-updates**.
+
+> [Privacy Policy & Network Manifest](PRIVACY.md) · [Security Policy](SECURITY.md) · [Credits & Licenses](CREDITS.md) · [Apache-2.0 License](LICENSE)
 
 ---
 
-## Locked v1 Product & Design Decisions
+## Highlights
 
-- **Platform & Engine**: Native Android (`Kotlin 2.x` + `Jetpack Compose` + `AGSL RuntimeShaders`) running over a clean `BrowserEngine` abstraction (`androidx.webkit` Zygote-prewarmed System WebView in v1 for `< 220ms` cold start & `~20 MB` APK, with a modular seam for `Mozilla GeckoView`).
-- **Built-In Adblocking**: Brave's `adblock-rust` compiled via `cargo-ndk` over zero-allocation JNI (`~0.18ms` per subresource) + `DocumentStartJavaScript` pre-paint cosmetic hiding + `"Where Does This Go"` tracker-parameter stripping.
-- **Visual Materiality & Color**: **Lens-style Achromatic Optical Smoked Glass** — luminance-adaptive dark obsidian and light alabaster frosted glass with **zero brand chrome color**; chromatic color blooms exclusively from contextual content (Double-Space site chips like `IMDb`, or ambient Space backdrops like `Personal` / `Work` / `Reading`).
-- **Typography**:
-  - **Headings & Focus Text**: [`Allo Variable`](design/fonts/allo_variable.ttf) (`'ROND' 0` crisp neo-grotesk, `'opsz' 14..32`, `'tnum'`, `'ss01'`, `'zero'` — SIL OFL 1.1 by Josh Puckett).
-  - **Body Copy**: [`Switzer Variable`](design/fonts/switzer_variable.ttf) (`wght 400..500` — ITF Free Commercial License).
-- **Navigation & Android Gesture Harmony**:
-  - **3-part floating bottom bar**: `[Tabs]` · `[Search / Domain Pill]` · `[··· Menu]`.
-  - **Tap center pill** -> Search-first sheet (`im␣␣` Double-Space site pills + Private Aperture `◎`).
-  - **Horizontal scrub on bar** -> Instant 120Hz tab switching.
-  - **Vertical swipe-up on bar** -> Spaces & Bookmarks sheet.
-  - **Left/Right `24dp` screen edges** -> 100% clear for Android 16 native **Predictive Back**.
-- **100% On-Device Pinch-to-Summarize**: Two-finger inward pinch warps the webpage via an **AGSL Hourglass Pinch Shader** before dissolving into a locally generated summary (`Android AICore Gemini Nano` or opt-in local `LiteRT-LM Gemma 3 1B int4`), with tap-to-highlight DOM source grounding. Zero page text ever leaves the phone.
-- **Zero-Account Cross-Device Continuity (`Focal Bridge`)**: 256-bit CSPRNG QR pairing (`focal-pair://v1?secret=...`) with explicit 4-part SAS verification + `HKDF-SHA256` key derivation + `AES-256-GCM` authenticated envelopes (`AAD = roomId`, per-sender monotonic anti-replay) over a stateless TLS WebSocket relay + lightweight **MV3 Desktop Browser Extension** (`Chrome`, `Helium`, `Brave`, `Zen`, `Firefox` on macOS, Windows, Linux).
+- **Achromatic Optical Smoked Glass UI (`120Hz`)**: Luminance-adaptive frosted dark obsidian & light alabaster chrome driven by off-thread `PixelCopy` surface sampling — zero loud brand chrome, with color blooming strictly from content and active Spaces.
+- **Physics-Driven Tab & Bar Gestures**:
+  - Continuous-`focus` GPU momentum/spring tab switcher deck — flick across multiple tabs smoothly, catch mid-fling with your thumb, swipe up to close, or long-press and drag tabs between Spaces.
+  - Bottom-anchored 3-part floating dock (`[Tabs]` · `[Search / Domain Pill]` · `[··· Menu]`) with `VelocityTracker` horizontal pill flicks to switch tabs and vertical swipe-up for Spaces & Bookmarks, leaving left/right `24dp` edges clear for native Android Predictive Back.
+- **Search-First Launch & Inline Intelligence**:
+  - Opens directly into a zero-jump Search-First sheet above your keyboard with Double-Space site chips (`im␣␣`, `gh␣␣`, `hn␣␣`, `wk␣␣`), instant offline math/unit/date evaluation, local bookmark/history suggestions, and a 1-tap inline Default Search Engine switcher (`DuckDuckGo`, `Google`, `Google AI`, `Kagi`, `Brave`, `Perplexity`, `Custom`).
+- **Built-In Native Rust Ad & Tracker Blocker**:
+  - Brave's [`adblock-rust`](https://github.com/brave/adblock-rust) compiled via `cargo-ndk` (`opt-level = 3`, zero-copy JNI) with pre-paint cosmetic hiding, interactive **Element Zapper**, automatic tracking-parameter stripping, and `Sec-GPC: 1` (Global Privacy Control) enabled by default.
+- **Private Aperture (`◎`)**:
+  - Isolated ephemeral WebView profile (`focal_ephemeral`) with zero SQLite history/tab writes, zero disk thumbnail/favicon caching, zero background update checks, and optional biometric/device-credential lock.
+- **Reader Mode, On-Device AI & Translation**:
+  - Clean distraction-free Reader Mode (`Allo Variable` + `Switzer Variable`), two-finger **Hourglass Pinch** on-device summarization with tap-to-highlight source grounding, and optional offline in-place page translation.
+- **Media Continuity & Zero-Account E2EE Desktop Bridge**:
+  - Swipeable background media mini-player with `Media3` lockscreen controls & Picture-in-Picture, plus QR-paired `HKDF-SHA256` + `AES-256-GCM` Spaces & open-tab continuity via the companion MV3 desktop extension (`desktop-extension/`) and stateless WebSocket relay (`sync-relay/`).
+- **Native In-App Self-Updates**:
+  - Quiet daily check against GitHub Releases (toggleable in **Settings → Focal Updates**, strictly disabled in Private Aperture `◎`), live download progress bar, `SHA256SUMS.txt` + signing-certificate verification, and native Android `PackageInstaller.Session` self-installation — no manual APK hunting required.
 
 ---
 
-## Repository Blueprint
+## Download & In-App Updates
 
-| Path | Contents |
+1. Download the latest `focal-arm64-v8a.apk` (most modern Android phones) or `focal-x86_64.apk` from [**GitHub Releases**](https://github.com/oupadhyay/focal/releases/latest) and install it once.
+2. Going forward, Focal checks GitHub Releases quietly once a day (or on-demand via `··· → Settings → Check for Updates`) and displays a compact Smoked Glass update pill when a new version is ready.
+3. Tap **Update** — Focal streams the signed APK, verifies its SHA-256 checksum & signing certificate, and installs the upgrade directly via Android's native `PackageInstaller` (after a one-time **"Allow from this source"** grant on Android).
+
+---
+
+## Repository Structure
+
+| Path | Description |
 | :--- | :--- |
-| [`docs/01-lens-and-mobile-browser-teardown.md`](docs/01-lens-and-mobile-browser-teardown.md) | Frame-by-frame teardown of **Lens Browser v1.2** (`@__maximos`) + comparative matrix against **Arc Search**, **Quiche**, **Crest**, **YAB**, **Brim**, **Wider**, and **Brave/Cromite**. |
-| [`docs/02-design-system-and-screens.md`](docs/02-design-system-and-screens.md) | Locked **Achromatic Optical Smoked Glass** tokens, Jetpack Compose `Allo Crisp` + `Switzer` typography definitions, and UX specs for all **9 v1 screens**. |
-| [`docs/03-android-120hz-tech-stack.md`](docs/03-android-120hz-tech-stack.md) | Multi-module Gradle layout, `BrowserEngine` API, `adblock-rust` JNI pipeline, local `AICore` / `LiteRT-LM` grounded summarization, `MediaSession` mini-player, and `HKDF-SHA256` + `AES-256-GCM` E2EE continuity protocol. |
-| [`docs/04-animations-gestures-and-agsl-shaders.md`](docs/04-animations-gestures-and-agsl-shaders.md) | Production **AGSL RuntimeShader** code (`HourglassPinchShader`, `SmokedGlassShader`), multi-axis bottom-bar gesture disambiguation, Predictive Back integration, and `120Hz` spring physics table. |
-| [`design/prototype/index.html`](design/prototype/index.html) | Self-contained interactive **9-Screen Focal Prototype & Motion Studio** with embedded `Allo Crisp` + `Switzer` `.woff2` fonts and live Hourglass Pinch displacement animation. |
-| [`design/fonts/`](design/fonts/) | Android-ready variable font binaries (`allo_variable.ttf` + `switzer_variable.ttf`) and license attributions ready for `app/src/main/res/font/`. |
+| [`app/`](app/) | Main Android application (`MainActivity`, `BrowserSessionViewModel`, `FocalReleaseUpdater`, `PackageInstaller` receiver, home-screen widget, ART Baseline Profile, Robolectric UI harness & API 34 emulator instrumentation tests). |
+| [`core/adblock-rust/`](core/adblock-rust/) | Native Rust `adblock-rust` crate + zero-copy JNI bridge (`libfocal_adblock.so`) and URL tracker cleaner. |
+| [`core/engine-api/`](core/engine-api/) & [`core/engine-webview/`](core/engine-webview/) | Pluggable `BrowserEngine` abstraction + `androidx.webkit` System WebView implementation (BFCache, Speculative Loading, Element Zapper, DOM translation, ephemeral Private Aperture profile). |
+| [`core/designsystem/`](core/designsystem/) | Optical Smoked Glass theme tokens, `AdaptiveGlassController`, AGSL `RuntimeShader`s (`SmokedGlassShader`, `HourglassPinchShader`), `Allo` + `Switzer` typography, favicon & `RGB_565` thumbnail caches, and settings store. |
+| [`core/database/`](core/database/) | Room v4 SQLite schema (`spaces`, `tab_metadata`, `bookmarks`, `origin_overrides`, `history_entries`, `downloads`) with composite indices and migrations. |
+| [`core/ai-summarizer/`](core/ai-summarizer/) | 100% on-device summarization (`AICore` / local fallback) + DOM paragraph grounding. |
+| [`core/sync-e2ee/`](core/sync-e2ee/) | Zero-account QR pairing, SAS verification, `HKDF-SHA256` + `AES-256-GCM` E2EE crypto, and `AndroidKeyStore` session manager. |
+| [`feature/`](feature/) | Modular Compose UI features: `browser`, `search`, `tabs`, `spaces`, `reader`, and `media`. |
+| [`desktop-extension/`](desktop-extension/) | Companion Manifest V3 desktop browser extension (`Focal Bridge`) for Chrome, Brave, Helium, Firefox, and Zen. |
+| [`sync-relay/`](sync-relay/) | Stateless zero-knowledge Cloudflare Worker + Durable Object WebSocket relay. |
+| [`docs/`](docs/) & [`design/`](design/) | Architecture notes, AGSL shader documentation, font licenses, and interactive design prototype. |
+
+---
+
+## Building From Source
+
+### Prerequisites
+- **JDK 17**, **Gradle 8.11.1**, **Android SDK (API 35)**, and **Android NDK**
+- **Rust stable** + `cargo-ndk` (`rustup target add aarch64-linux-android x86_64-linux-android`)
+- **Node.js 24 LTS** (for `desktop-extension/` and `sync-relay/`)
+
+### 1. Build Native Rust Adblock Engine (`libfocal_adblock.so`)
+```bash
+cd core/adblock-rust/rust
+cargo test --locked
+cargo ndk -t arm64-v8a -t x86_64 -o ../src/main/jniLibs build --release --locked
+```
+
+### 2. Build & Test Android App
+```bash
+gradle :app:assembleRelease :app:assembleDebug testDebugUnitTest --no-daemon
+```
+Signed APKs are emitted under `app/build/outputs/apk/release/` (`app-arm64-v8a-release.apk` and `app-x86_64-release.apk`).
+
+### 3. Build & Test Desktop Extension & Sync Relay
+```bash
+(cd desktop-extension && npm ci && npm test)
+(cd sync-relay && npm ci && npm test)
+```
+
+---
+
+## Privacy, Security & Licensing
+
+- **Privacy**: Zero telemetry, zero accounts, and full outbound network transparency — see [`PRIVACY.md`](PRIVACY.md).
+- **Security**: E2EE protocol details, in-app update verification, and dev keystore transparency — see [`SECURITY.md`](SECURITY.md).
+- **Credits & Third-Party Licenses**: Full acknowledgments for Lens Browser, YAB, Brave `adblock-rust`, `Allo Variable` (SIL OFL 1.1), `Switzer Variable` (ITF FFL), and all open-source libraries — see [`CREDITS.md`](CREDITS.md).
+- **License**: Focal's original source code is licensed under the **[Apache License 2.0](LICENSE)**.

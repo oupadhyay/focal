@@ -31,7 +31,7 @@ if [ -f /etc/ssl/certs/ca-certificates.crt ] && command -v keytool >/dev/null 2>
     for _pem in "$_cert_tmp_dir"/cert-*.pem; do
       [ -f "$_pem" ] || continue
       keytool -importcert -noprompt -trustcacerts \
-        -alias "agy-ca-$(basename "$_pem" .pem)" \
+        -alias "local-ca-$(basename "$_pem" .pem)" \
         -file "$_pem" \
         -keystore "$HOME/.certs/cacerts.p12.tmp" \
         -storetype PKCS12 \

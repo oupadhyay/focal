@@ -27,13 +27,13 @@ Focal adopts **Lens-like Achromatic Optical Smoked Glass**:
 
 ## 2. Locked Typography System: **Allo Crisp** + **Switzer**
 
-Both variable font binaries are bundled in [`design/fonts/`](../design/fonts/) ready for `app/src/main/res/font/`:
+Both variable font binaries live in [`core/designsystem/src/main/res/font/`](../core/designsystem/src/main/res/font/) (with license texts in [`design/fonts/`](../design/fonts/)):
 - **Headings, Display & Focus Text (`Allo Variable` — SIL OFL 1.1)**:
-  - File: [`allo_variable.ttf`](../design/fonts/allo_variable.ttf)
+  - File: [`allo_variable.ttf`](../core/designsystem/src/main/res/font/allo_variable.ttf)
   - Axes locked to **Crisp Neo-Grotesk**: `'ROND' 0f`, optical size `'opsz' 24f..32f` for headings and `'opsz' 14f..16f` for focus UI (active search query, URL domain pill, tab badge numerals, speed badge `1.25×`).
   - OpenType features: `'tnum' 1, 'calt' 1, 'ss01' 1, 'zero' 1` — enforces tabular numbers (zero jitter during tab countdowns or benchmarks) and clear `I / l / 1 / 0 / O` disambiguation in URLs to prevent homograph/phishing spoofing.
-- **Body & Dense Reading Copy (`Switzer Variable` — ITF Free Commercial License)**:
-  - File: [`switzer_variable.ttf`](../design/fonts/switzer_variable.ttf)
+- **Body & Dense Reading Copy (`Switzer Variable` — ITF Free Font License)**:
+  - File: [`switzer_variable.ttf`](../core/designsystem/src/main/res/font/switzer_variable.ttf)
   - Weights `400` (Regular) and `500` (Medium), tight Swiss neo-grotesk proportions for effortless scanning in summaries, Reader mode sans option, Link Peek previews, and settings descriptions.
 
 ### Jetpack Compose `Typography` Implementation
