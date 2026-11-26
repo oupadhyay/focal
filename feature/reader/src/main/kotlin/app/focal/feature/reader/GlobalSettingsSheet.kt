@@ -14,8 +14,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.only
@@ -85,7 +87,7 @@ import kotlinx.coroutines.launch
 import java.util.Locale
 
 /**
- * Decoupled UI state for Focal's opt-in manual GitHub Releases update checker.
+ * Decoupled UI state for Focal's native in-app GitHub Releases self-updater.
  */
 @Immutable
 sealed interface UpdateBannerState {
@@ -96,8 +98,18 @@ sealed interface UpdateBannerState {
         val tagName: String,
         val releaseName: String,
         val notes: String,
+        val sizeBytes: Long = 0L,
         val isDownloading: Boolean = false,
     ) : UpdateBannerState
+    data class Downloading(
+        val tagName: String,
+        val progress: Float,
+        val downloadedBytes: Long,
+        val totalBytes: Long,
+    ) : UpdateBannerState
+    data class Verifying(val tagName: String) : UpdateBannerState
+    data class PermissionRequired(val tagName: String) : UpdateBannerState
+    data class Installing(val tagName: String) : UpdateBannerState
     data class Error(val message: String) : UpdateBannerState
 }
 
@@ -106,7 +118,7 @@ sealed interface UpdateBannerState {
  *
  * Groups Search Engine presets & custom URL template, Appearance & Chrome controls,
  * Privacy & Security toggles (GPC, Private Aperture biometric lock, Clear Browsing Data),
- * and opt-in manual GitHub Releases updates inside borderless [FocalGroupedCard] containers.
+ * and native in-app GitHub Releases self-updates inside borderless [FocalGroupedCard] containers.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -122,6 +134,8 @@ fun GlobalSettingsSheet(
     onClearBrowsingData: () -> Unit,
     onCheckForUpdates: () -> Unit,
     onInstallUpdate: () -> Unit,
+    onCancelUpdate: () -> Unit = {},
+    onGrantInstallPermission: () -> Unit = {},
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -736,6 +750,10 @@ fun GlobalSettingsSheet(
 
                                         is UpdateBannerState.UpToDate,
                                         is UpdateBannerState.Available,
+                                        is UpdateBannerState.Downloading,
+                                        is UpdateBannerState.Verifying,
+                                        is UpdateBannerState.PermissionRequired,
+                                        is UpdateBannerState.Installing,
                                         is UpdateBannerState.Error,
                                         -> Unit
                                     }
@@ -798,16 +816,24 @@ fun GlobalSettingsSheet(
                                                     overflow = TextOverflow.Ellipsis,
                                                     modifier = Modifier.weight(1f),
                                                 )
-                                                if (
-                                                    updateState.releaseName.isNotBlank() &&
-                                                    !updateState.releaseName.equals(
-                                                        updateState.tagName,
-                                                        ignoreCase = true,
-                                                    )
-                                                ) {
+                                                val metaLabel = remember(updateState.releaseName, updateState.tagName, updateState.sizeBytes) {
+                                                    when {
+                                                        updateState.sizeBytes > 0L -> String.format(
+                                                            Locale.US,
+                                                            "%.1f MB",
+                                                            updateState.sizeBytes / (1024.0 * 1024.0),
+                                                        )
+                                                        updateState.releaseName.isNotBlank() &&
+                                                            !updateState.releaseName.equals(updateState.tagName, ignoreCase = true) -> {
+                                                            updateState.releaseName
+                                                        }
+                                                        else -> ""
+                                                    }
+                                                }
+                                                if (metaLabel.isNotBlank()) {
                                                     Spacer(Modifier.width(8.dp))
                                                     Text(
-                                                        text = updateState.releaseName,
+                                                        text = metaLabel,
                                                         style = typography.captionMetadata,
                                                         color = colors.inkSecondary,
                                                         maxLines = 1,
@@ -842,7 +868,7 @@ fun GlobalSettingsSheet(
                                                     label = if (updateState.isDownloading) {
                                                         "Downloading…"
                                                     } else {
-                                                        "Download & Install"
+                                                        "Update Now"
                                                     },
                                                     active = true,
                                                     enabled = !updateState.isDownloading,
@@ -850,6 +876,117 @@ fun GlobalSettingsSheet(
                                                 )
                                             }
                                         }
+                                    }
+
+                                    is UpdateBannerState.Downloading -> {
+                                        FocalHairlineDivider(insetStart = 0.dp)
+                                        val clampedProgress = updateState.progress.coerceIn(0f, 1f)
+                                        val percent = (clampedProgress * 100f).toInt()
+                                        val progressLabel = remember(updateState.downloadedBytes, updateState.totalBytes, percent) {
+                                            val dlMb = updateState.downloadedBytes / (1024.0 * 1024.0)
+                                            if (updateState.totalBytes > 0L) {
+                                                val totalMb = updateState.totalBytes / (1024.0 * 1024.0)
+                                                String.format(Locale.US, "%.1f / %.1f MB · %d%%", dlMb, totalMb, percent)
+                                            } else {
+                                                String.format(Locale.US, "%.1f MB", dlMb)
+                                            }
+                                        }
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .testTag("settings_update_downloading"),
+                                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically,
+                                            ) {
+                                                Column(
+                                                    modifier = Modifier.weight(1f),
+                                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                                ) {
+                                                    Text(
+                                                        text = "Downloading ${updateState.tagName}",
+                                                        style = typography.cardTitle,
+                                                        color = colors.inkPrimary,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                    )
+                                                    Text(
+                                                        text = progressLabel,
+                                                        style = typography.captionMetadata,
+                                                        color = colors.inkSecondary,
+                                                        maxLines = 1,
+                                                    )
+                                                }
+                                                Spacer(Modifier.width(10.dp))
+                                                SettingsPillButton(
+                                                    label = "Cancel",
+                                                    active = false,
+                                                    onClick = onCancelUpdate,
+                                                )
+                                            }
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(5.dp)
+                                                    .clip(CircleShape)
+                                                    .background(colors.surfacePillSubtle),
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth(clampedProgress.coerceAtLeast(0.03f))
+                                                        .fillMaxHeight()
+                                                        .clip(CircleShape)
+                                                        .background(colors.inkPrimary),
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    is UpdateBannerState.Verifying -> {
+                                        FocalHairlineDivider(insetStart = 0.dp)
+                                        Text(
+                                            text = "Verifying ${updateState.tagName} signature & SHA-256…",
+                                            style = typography.captionMetadata.copy(fontWeight = FontWeight.Medium),
+                                            color = colors.inkSecondary,
+                                        )
+                                    }
+
+                                    is UpdateBannerState.PermissionRequired -> {
+                                        FocalHairlineDivider(insetStart = 0.dp)
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .testTag("settings_update_permission_required"),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Text(
+                                                text = "Allow Focal to install updates once in Android Settings",
+                                                style = typography.captionMetadata,
+                                                color = colors.inkSecondary,
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.weight(1f),
+                                            )
+                                            Spacer(Modifier.width(10.dp))
+                                            SettingsPillButton(
+                                                label = "Allow Installs",
+                                                active = true,
+                                                onClick = onGrantInstallPermission,
+                                            )
+                                        }
+                                    }
+
+                                    is UpdateBannerState.Installing -> {
+                                        FocalHairlineDivider(insetStart = 0.dp)
+                                        Text(
+                                            text = "Installing ${updateState.tagName}…",
+                                            style = typography.captionMetadata.copy(fontWeight = FontWeight.Medium),
+                                            color = colors.inkPrimary,
+                                        )
                                     }
 
                                     is UpdateBannerState.Error -> {
@@ -875,6 +1012,54 @@ fun GlobalSettingsSheet(
                                             )
                                         }
                                     }
+                                }
+
+                                FocalHairlineDivider(insetStart = 0.dp)
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable(
+                                            interactionSource = remember { MutableInteractionSource() },
+                                            indication = null,
+                                            onClick = {
+                                                onUpdateSettings(
+                                                    settings.copy(
+                                                        autoCheckUpdatesEnabled = !settings.autoCheckUpdatesEnabled,
+                                                    ),
+                                                )
+                                            },
+                                        )
+                                        .padding(vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                ) {
+                                    Column(
+                                        modifier = Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                                    ) {
+                                        Text(
+                                            text = "Auto-Check for Updates",
+                                            style = typography.cardTitle,
+                                            color = colors.inkPrimary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            text = "Checks GitHub Releases daily",
+                                            style = typography.captionMetadata,
+                                            color = colors.inkSecondary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                    Spacer(Modifier.width(12.dp))
+                                    FocalSwitch(
+                                        checked = settings.autoCheckUpdatesEnabled,
+                                        onCheckedChange = { checked ->
+                                            onUpdateSettings(settings.copy(autoCheckUpdatesEnabled = checked))
+                                        },
+                                    )
                                 }
                             }
                         }

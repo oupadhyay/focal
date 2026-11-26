@@ -102,6 +102,11 @@
                 android:resource="@xml/focal_file_paths" />
         </provider>
 
+        <!-- Native PackageInstaller.Session callback receiver for in-app self-updates -->
+        <receiver
+            android:name=".FocalUpdateInstallReceiver"
+            android:exported="false" />
+
         <!-- Background Audio & PiP Media3 Session Service -->
         <service
             android:name="app.focal.feature.media.FocalMediaSessionService"

@@ -302,3 +302,61 @@ jobs:
           name: focal-bridge-desktop-extension
           path: focal-bridge-extension.zip
           if-no-files-found: error
+
+  publish-release:
+    name: Publish Verified GitHub Release (In-App Update Feed)
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    needs: [android-and-rust, android-emulator-smoke, desktop-extension-and-relay]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository (full history for monotonic version tag)
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Download verified Android APKs and Desktop Extension
+        uses: actions/download-artifact@v8
+        with:
+          path: release-artifacts
+
+      - name: Stage release assets and generate SHA256SUMS.txt
+        run: |
+          mkdir -p release-dist
+          cp release-artifacts/focal-android-apk/focal-arm64-v8a.apk release-dist/focal-arm64-v8a.apk
+          cp release-artifacts/focal-emulator-apks/app-x86_64-release.apk release-dist/focal-x86_64.apk
+          cp release-artifacts/focal-bridge-desktop-extension/focal-bridge-extension.zip release-dist/focal-bridge-extension.zip
+          (
+            cd release-dist
+            sha256sum focal-arm64-v8a.apk focal-x86_64.apk focal-bridge-extension.zip > SHA256SUMS.txt
+          )
+          cat release-dist/SHA256SUMS.txt
+          ls -lh release-dist
+
+      - name: Publish GitHub Release for Focal in-app self-updater
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          COMMIT_COUNT=$(git rev-list --count HEAD)
+          TAG_NAME="v0.1.${COMMIT_COUNT}"
+          VERSION_CODE=$((100 + COMMIT_COUNT))
+          echo "Publishing release ${TAG_NAME} (versionCode ${VERSION_CODE})"
+          if gh release view "${TAG_NAME}" >/dev/null 2>&1; then
+            gh release upload "${TAG_NAME}" \
+              release-dist/focal-arm64-v8a.apk \
+              release-dist/focal-x86_64.apk \
+              release-dist/focal-bridge-extension.zip \
+              release-dist/SHA256SUMS.txt \
+              --clobber
+          else
+            gh release create "${TAG_NAME}" \
+              release-dist/focal-arm64-v8a.apk \
+              release-dist/focal-x86_64.apk \
+              release-dist/focal-bridge-extension.zip \
+              release-dist/SHA256SUMS.txt \
+              --title "Focal ${TAG_NAME}" \
+              --latest \
+              --generate-notes
+          fi
+

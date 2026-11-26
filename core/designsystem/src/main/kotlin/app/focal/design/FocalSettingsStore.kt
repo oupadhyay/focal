@@ -77,6 +77,7 @@ data class FocalBrowserSettings(
     val globalPrivacyControlEnabled: Boolean = true,
     val biometricPrivateLockEnabled: Boolean = false,
     val fullHideBottomBarOnScroll: Boolean = true,
+    val autoCheckUpdatesEnabled: Boolean = true,
 ) {
     /**
      * Resolves the effective `%s` search URL template, falling back cleanly to
@@ -148,6 +149,10 @@ class FocalSettingsStore internal constructor(
                 KEY_FULL_HIDE_BOTTOM_BAR_ON_SCROLL,
                 defaults.fullHideBottomBarOnScroll,
             ),
+            autoCheckUpdatesEnabled = prefs.getBoolean(
+                KEY_AUTO_CHECK_UPDATES,
+                defaults.autoCheckUpdatesEnabled,
+            ),
         )
     }
 
@@ -158,6 +163,7 @@ class FocalSettingsStore internal constructor(
             .putBoolean(KEY_GLOBAL_PRIVACY_CONTROL, settings.globalPrivacyControlEnabled)
             .putBoolean(KEY_BIOMETRIC_PRIVATE_LOCK, settings.biometricPrivateLockEnabled)
             .putBoolean(KEY_FULL_HIDE_BOTTOM_BAR_ON_SCROLL, settings.fullHideBottomBarOnScroll)
+            .putBoolean(KEY_AUTO_CHECK_UPDATES, settings.autoCheckUpdatesEnabled)
             .apply()
     }
 
@@ -168,5 +174,6 @@ class FocalSettingsStore internal constructor(
         private const val KEY_GLOBAL_PRIVACY_CONTROL = "global_privacy_control_enabled"
         private const val KEY_BIOMETRIC_PRIVATE_LOCK = "biometric_private_lock_enabled"
         private const val KEY_FULL_HIDE_BOTTOM_BAR_ON_SCROLL = "full_hide_bottom_bar_on_scroll"
+        private const val KEY_AUTO_CHECK_UPDATES = "auto_check_updates_enabled"
     }
 }

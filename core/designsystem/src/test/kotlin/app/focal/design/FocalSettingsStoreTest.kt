@@ -16,6 +16,7 @@ class FocalSettingsStoreTest {
         assertTrue(settings.globalPrivacyControlEnabled)
         assertFalse(settings.biometricPrivateLockEnabled)
         assertTrue(settings.fullHideBottomBarOnScroll)
+        assertTrue(settings.autoCheckUpdatesEnabled)
     }
 
     @Test
@@ -126,6 +127,7 @@ class FocalSettingsStoreTest {
             globalPrivacyControlEnabled = false,
             biometricPrivateLockEnabled = true,
             fullHideBottomBarOnScroll = false,
+            autoCheckUpdatesEnabled = false,
         )
         store.write(updated)
         assertEquals(updated, store.read())

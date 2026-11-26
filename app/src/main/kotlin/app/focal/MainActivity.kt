@@ -40,12 +40,19 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -69,6 +76,8 @@ import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.view.ViewCompat
@@ -89,6 +98,7 @@ import app.focal.design.AdaptiveGlassController
 import app.focal.design.AppChromeTheme
 import app.focal.design.FocalAppearanceStore
 import app.focal.design.FocalBrowserSettings
+import app.focal.design.FocalGlyphs
 import app.focal.design.FocalMotion
 import app.focal.design.FocalSettingsStore
 import app.focal.design.FocalTheme
@@ -133,6 +143,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.Locale
 import java.util.UUID
 
@@ -324,8 +335,228 @@ private fun FocalRootCoordinator(
         sessionVm.setGlobalPrivacyControl(browserSettings.globalPrivacyControlEnabled)
     }
 
+    val updateCheckStore = remember(context) { FocalUpdateCheckStore(context) }
     var updateBannerState by remember { mutableStateOf<UpdateBannerState>(UpdateBannerState.Idle) }
     var availableReleaseInfo by remember { mutableStateOf<FocalReleaseInfo?>(null) }
+    var verifiedUpdateApk by remember { mutableStateOf<File?>(null) }
+    var updateDownloadJob by remember { mutableStateOf<Job?>(null) }
+    var dismissedUpdatePillTag by remember(updateCheckStore) {
+        mutableStateOf(updateCheckStore.readDismissedTag())
+    }
+
+    fun FocalReleaseInfo.toAvailableState(): UpdateBannerState.Available = UpdateBannerState.Available(
+        tagName = tagName,
+        releaseName = releaseName,
+        notes = notes,
+        sizeBytes = apkAsset?.sizeBytes ?: 0L,
+        isDownloading = false,
+    )
+
+    val commitVerifiedUpdateApk: (File, FocalReleaseInfo) -> Unit = { apkFile, release ->
+        if (!FocalReleaseUpdater.canInstallPackages(context)) {
+            updateBannerState = UpdateBannerState.PermissionRequired(release.tagName)
+        } else {
+            updateBannerState = UpdateBannerState.Installing(release.tagName)
+            scope.launch {
+                val result = FocalReleaseUpdater.commitPackageInstallerSession(context, apkFile)
+                result.onFailure { err ->
+                    updateBannerState = UpdateBannerState.Error(
+                        err.message ?: "Unable to start in-app update installer",
+                    )
+                }
+            }
+        }
+    }
+
+    val installPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult(),
+    ) {
+        val release = availableReleaseInfo ?: return@rememberLauncherForActivityResult
+        val apkFile = verifiedUpdateApk
+        if (FocalReleaseUpdater.canInstallPackages(context) && apkFile != null && apkFile.isFile) {
+            commitVerifiedUpdateApk(apkFile, release)
+        } else if (apkFile != null && apkFile.isFile) {
+            updateBannerState = UpdateBannerState.PermissionRequired(release.tagName)
+        }
+    }
+
+    val requestInstallPermission: () -> Unit = {
+        runCatching {
+            installPermissionLauncher.launch(
+                FocalReleaseUpdater.createUnknownSourcesSettingsIntent(context),
+            )
+        }.onFailure {
+            updateBannerState = UpdateBannerState.Error("Open Android Settings to allow Focal installs")
+        }
+    }
+
+    val startInAppUpdate: () -> Unit = {
+        val release = availableReleaseInfo
+        if (release != null) {
+            val existingApk = verifiedUpdateApk
+            if (existingApk != null && existingApk.isFile) {
+                commitVerifiedUpdateApk(existingApk, release)
+            } else {
+                updateDownloadJob?.cancel()
+                val totalHint = release.apkAsset?.sizeBytes ?: 0L
+                updateBannerState = UpdateBannerState.Downloading(
+                    tagName = release.tagName,
+                    progress = 0f,
+                    downloadedBytes = 0L,
+                    totalBytes = totalHint,
+                )
+                updateDownloadJob = scope.launch {
+                    try {
+                        val verified = FocalReleaseUpdater.downloadAndVerifyApk(
+                            context = context,
+                            release = release,
+                            onProgress = { downloaded, total ->
+                                val safeTotal = total.coerceAtLeast(0L)
+                                val fraction = if (safeTotal > 0L) {
+                                    (downloaded.toFloat() / safeTotal.toFloat()).coerceIn(0f, 1f)
+                                } else {
+                                    0f
+                                }
+                                scope.launch(Dispatchers.Main.immediate) {
+                                    if (updateBannerState is UpdateBannerState.Downloading) {
+                                        updateBannerState = UpdateBannerState.Downloading(
+                                            tagName = release.tagName,
+                                            progress = fraction,
+                                            downloadedBytes = downloaded,
+                                            totalBytes = safeTotal,
+                                        )
+                                    }
+                                }
+                            },
+                            onVerifying = {
+                                scope.launch(Dispatchers.Main.immediate) {
+                                    updateBannerState = UpdateBannerState.Verifying(release.tagName)
+                                }
+                            },
+                        )
+                        when (verified) {
+                            is VerifiedApkResult.Ready -> {
+                                verifiedUpdateApk = verified.apkFile
+                                commitVerifiedUpdateApk(verified.apkFile, release)
+                            }
+                            is VerifiedApkResult.Failed -> {
+                                verifiedUpdateApk = null
+                                updateBannerState = UpdateBannerState.Error(verified.message)
+                            }
+                        }
+                    } catch (_: CancellationException) {
+                        updateBannerState = release.toAvailableState()
+                    } finally {
+                        updateDownloadJob = null
+                    }
+                }
+            }
+        }
+    }
+
+    val cancelInAppUpdate: () -> Unit = {
+        updateDownloadJob?.cancel()
+        updateDownloadJob = null
+        val release = availableReleaseInfo
+        updateBannerState = release?.toAvailableState() ?: UpdateBannerState.Idle
+    }
+
+    val runManualUpdateCheck: () -> Unit = {
+        updateDownloadJob?.cancel()
+        updateDownloadJob = null
+        updateBannerState = UpdateBannerState.Checking
+        scope.launch {
+            when (val result = FocalReleaseUpdater.checkLatestRelease(context)) {
+                is ReleaseCheckResult.UpToDate -> {
+                    updateCheckStore.recordCheckTimestamp(System.currentTimeMillis())
+                    availableReleaseInfo = null
+                    verifiedUpdateApk = null
+                    updateBannerState = UpdateBannerState.UpToDate(result.currentVersion)
+                }
+                is ReleaseCheckResult.UpdateAvailable -> {
+                    updateCheckStore.recordCheckTimestamp(System.currentTimeMillis())
+                    if (availableReleaseInfo?.tagName != result.release.tagName) {
+                        verifiedUpdateApk = null
+                    }
+                    availableReleaseInfo = result.release
+                    updateBannerState = result.release.toAvailableState()
+                }
+                is ReleaseCheckResult.Failed -> {
+                    updateBannerState = UpdateBannerState.Error(result.message)
+                }
+            }
+        }
+    }
+
+    // Receive Android PackageInstaller.Session callbacks cleanly inside Focal
+    LaunchedEffect(activity) {
+        FocalUpdateInstallStatusBus.events.collect { event ->
+            when (event) {
+                is FocalInstallEvent.PendingUserAction -> {
+                    runCatching {
+                        activity.startActivity(event.confirmIntent)
+                    }.onFailure { err ->
+                        updateBannerState = UpdateBannerState.Error(
+                            err.message ?: "Unable to open Android update prompt",
+                        )
+                    }
+                }
+                FocalInstallEvent.Success -> {
+                    verifiedUpdateApk = null
+                    availableReleaseInfo = null
+                    updateBannerState = UpdateBannerState.UpToDate(
+                        FocalReleaseUpdater.currentAppVersionName(context),
+                    )
+                }
+                FocalInstallEvent.Cancelled -> {
+                    updateBannerState = availableReleaseInfo?.toAvailableState() ?: UpdateBannerState.Idle
+                }
+                is FocalInstallEvent.Failed -> {
+                    updateBannerState = UpdateBannerState.Error(event.message)
+                }
+            }
+        }
+    }
+
+    // Quiet daily auto-check: strictly deferred past cold launch & disabled inside Private Aperture ◎
+    LaunchedEffect(browserSettings.autoCheckUpdatesEnabled, isPrivateAperture) {
+        if (!browserSettings.autoCheckUpdatesEnabled || isPrivateAperture) return@LaunchedEffect
+        delay(8_000L)
+        if (!browserSettings.autoCheckUpdatesEnabled || isPrivateAperture) return@LaunchedEffect
+        val nowMs = System.currentTimeMillis()
+        if (!FocalReleaseVersionMath.shouldAutoCheck(
+                autoCheckEnabled = browserSettings.autoCheckUpdatesEnabled,
+                isPrivateAperture = isPrivateAperture,
+                lastCheckedEpochMs = updateCheckStore.readLastCheckEpochMs(),
+                nowEpochMs = nowMs,
+            )
+        ) {
+            return@LaunchedEffect
+        }
+        val activeState = updateBannerState
+        if (activeState is UpdateBannerState.Downloading ||
+            activeState is UpdateBannerState.Verifying ||
+            activeState is UpdateBannerState.Installing
+        ) {
+            return@LaunchedEffect
+        }
+        when (val result = FocalReleaseUpdater.checkLatestRelease(context)) {
+            is ReleaseCheckResult.UpToDate -> {
+                updateCheckStore.recordCheckTimestamp(System.currentTimeMillis())
+                FocalReleaseUpdater.cleanupCachedUpdates(context)
+            }
+            is ReleaseCheckResult.UpdateAvailable -> {
+                updateCheckStore.recordCheckTimestamp(System.currentTimeMillis())
+                availableReleaseInfo = result.release
+                if (updateBannerState == UpdateBannerState.Idle || updateBannerState is UpdateBannerState.UpToDate) {
+                    updateBannerState = result.release.toAvailableState()
+                }
+            }
+            is ReleaseCheckResult.Failed -> {
+                // Silent failure for background auto-check; never interrupts browsing
+            }
+        }
+    }
 
     val requestPrivateAperture: (Boolean, () -> Unit) -> Unit = { enablePrivate, onApproved ->
         if (!enablePrivate || isPrivateAperture || !browserSettings.biometricPrivateLockEnabled) {
@@ -1514,51 +1745,10 @@ private fun FocalRootCoordinator(
                                     onClearBrowsingData = {
                                         sessionVm.clearBrowsingData(context)
                                     },
-                                    onCheckForUpdates = {
-                                        updateBannerState = UpdateBannerState.Checking
-                                        scope.launch {
-                                            when (val result = FocalReleaseUpdater.checkLatestRelease(context)) {
-                                                is ReleaseCheckResult.UpToDate -> {
-                                                    availableReleaseInfo = null
-                                                    updateBannerState = UpdateBannerState.UpToDate(result.currentVersion)
-                                                }
-                                                is ReleaseCheckResult.UpdateAvailable -> {
-                                                    availableReleaseInfo = result.release
-                                                    updateBannerState = UpdateBannerState.Available(
-                                                        tagName = result.release.tagName,
-                                                        releaseName = result.release.releaseName,
-                                                        notes = result.release.notes,
-                                                        isDownloading = false,
-                                                    )
-                                                }
-                                                is ReleaseCheckResult.Failed -> {
-                                                    updateBannerState = UpdateBannerState.Error(result.message)
-                                                }
-                                            }
-                                        }
-                                    },
-                                    onInstallUpdate = {
-                                        val release = availableReleaseInfo ?: return@GlobalSettingsSheet
-                                        updateBannerState = UpdateBannerState.Available(
-                                            tagName = release.tagName,
-                                            releaseName = release.releaseName,
-                                            notes = release.notes,
-                                            isDownloading = true,
-                                        )
-                                        scope.launch {
-                                            val started = FocalReleaseUpdater.downloadAndPromptInstall(context, release)
-                                            updateBannerState = if (started) {
-                                                UpdateBannerState.Available(
-                                                    tagName = release.tagName,
-                                                    releaseName = release.releaseName,
-                                                    notes = release.notes,
-                                                    isDownloading = false,
-                                                )
-                                            } else {
-                                                UpdateBannerState.Error("Failed to download release APK")
-                                            }
-                                        }
-                                    },
+                                    onCheckForUpdates = runManualUpdateCheck,
+                                    onInstallUpdate = startInAppUpdate,
+                                    onCancelUpdate = cancelInAppUpdate,
+                                    onGrantInstallPermission = requestInstallPermission,
                                     onDismiss = {
                                         sessionVm.setOverlaySheet(ActiveOverlaySheet.None)
                                     },
@@ -1688,6 +1878,36 @@ private fun FocalRootCoordinator(
                                 )
                             }
                         }
+                        }
+
+                        // Non-intrusive Smoked Glass Update Pill when a newer GitHub Release is ready
+                        val shouldShowUpdatePill = !isPrivateAperture &&
+                            !isInPictureInPictureMode &&
+                            overlaySheet == ActiveOverlaySheet.None &&
+                            when (val state = updateBannerState) {
+                                is UpdateBannerState.Available -> state.tagName != dismissedUpdatePillTag
+                                is UpdateBannerState.Downloading,
+                                is UpdateBannerState.Verifying,
+                                is UpdateBannerState.PermissionRequired,
+                                is UpdateBannerState.Installing,
+                                -> true
+                                else -> false
+                            }
+                        if (shouldShowUpdatePill) {
+                            FocalUpdateAvailablePill(
+                                updateState = updateBannerState,
+                                onStartUpdate = startInAppUpdate,
+                                onCancelUpdate = cancelInAppUpdate,
+                                onGrantPermission = requestInstallPermission,
+                                onDismissPill = { tag ->
+                                    dismissedUpdatePillTag = tag
+                                    updateCheckStore.dismissTag(tag)
+                                },
+                                modifier = Modifier
+                                    .align(Alignment.TopCenter)
+                                    .statusBarsPadding()
+                                    .padding(top = 10.dp, start = 16.dp, end = 16.dp),
+                            )
                         }
 
                         // Native Site Permission Confirmation Sheet (Camera, Mic, Location, Protected Media)
@@ -2029,3 +2249,185 @@ private fun OriginOverrides.toEntity(updatedAtEpochMs: Long): OriginOverrideEnti
     updatedAtEpochMs = updatedAtEpochMs,
     hiddenCssSelectorsJson = OriginHiddenSelectorsCodec.encode(hiddenCssSelectors),
 )
+
+@Composable
+internal fun FocalUpdateAvailablePill(
+    updateState: UpdateBannerState,
+    onStartUpdate: () -> Unit,
+    onCancelUpdate: () -> Unit,
+    onGrantPermission: () -> Unit,
+    onDismissPill: (tagName: String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = FocalTheme.colors
+    val typography = FocalTheme.typography
+    val pillShape = RoundedCornerShape(24.dp)
+
+    val pillTint = rememberUpdatedState(colors.effectiveSheetGlass)
+
+    SmokedGlassBox(
+        shape = pillShape,
+        glassTintState = pillTint,
+        borderSpecular = colors.borderSpecular,
+        modifier = modifier
+            .consumeClicks()
+            .testTag("floating_update_pill"),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Icon(
+                    imageVector = FocalGlyphs.Aperture,
+                    contentDescription = null,
+                    tint = colors.inkPrimary,
+                    modifier = Modifier.size(15.dp),
+                )
+
+                when (updateState) {
+                    is UpdateBannerState.Available -> {
+                        Text(
+                            text = "Focal ${updateState.tagName} ready",
+                            style = typography.controlPillLabel.copy(fontWeight = FontWeight.SemiBold),
+                            color = colors.inkPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Box(
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .background(colors.surfacePillActive)
+                                .clickable(onClick = onStartUpdate)
+                                .padding(horizontal = 12.dp, vertical = 5.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = "Update",
+                                style = typography.controlPillLabel.copy(fontWeight = FontWeight.SemiBold),
+                                color = colors.inkOnPillActive,
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(24.dp)
+                                .clip(CircleShape)
+                                .clickable { onDismissPill(updateState.tagName) },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                imageVector = FocalGlyphs.Close,
+                                contentDescription = "Dismiss update notice",
+                                tint = colors.inkSecondary,
+                                modifier = Modifier.size(14.dp),
+                            )
+                        }
+                    }
+
+                    is UpdateBannerState.Downloading -> {
+                        val pct = (updateState.progress.coerceIn(0f, 1f) * 100f).toInt()
+                        Text(
+                            text = "Updating ${updateState.tagName} · $pct%",
+                            style = typography.controlPillLabel.copy(fontWeight = FontWeight.SemiBold),
+                            color = colors.inkPrimary,
+                            maxLines = 1,
+                        )
+                        Box(
+                            modifier = Modifier
+                                .size(24.dp)
+                                .clip(CircleShape)
+                                .clickable(onClick = onCancelUpdate),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                imageVector = FocalGlyphs.Close,
+                                contentDescription = "Cancel update",
+                                tint = colors.inkSecondary,
+                                modifier = Modifier.size(14.dp),
+                            )
+                        }
+                    }
+
+                    is UpdateBannerState.Verifying -> {
+                        Text(
+                            text = "Verifying ${updateState.tagName}…",
+                            style = typography.controlPillLabel.copy(fontWeight = FontWeight.Medium),
+                            color = colors.inkPrimary,
+                            maxLines = 1,
+                        )
+                    }
+
+                    is UpdateBannerState.PermissionRequired -> {
+                        Text(
+                            text = "Allow Focal updates",
+                            style = typography.controlPillLabel.copy(fontWeight = FontWeight.SemiBold),
+                            color = colors.inkPrimary,
+                            maxLines = 1,
+                        )
+                        Box(
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .background(colors.surfacePillActive)
+                                .clickable(onClick = onGrantPermission)
+                                .padding(horizontal = 12.dp, vertical = 5.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = "Allow",
+                                style = typography.controlPillLabel.copy(fontWeight = FontWeight.SemiBold),
+                                color = colors.inkOnPillActive,
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(24.dp)
+                                .clip(CircleShape)
+                                .clickable { onDismissPill(updateState.tagName) },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                imageVector = FocalGlyphs.Close,
+                                contentDescription = "Dismiss update notice",
+                                tint = colors.inkSecondary,
+                                modifier = Modifier.size(14.dp),
+                            )
+                        }
+                    }
+
+                    is UpdateBannerState.Installing -> {
+                        Text(
+                            text = "Installing ${updateState.tagName}…",
+                            style = typography.controlPillLabel.copy(fontWeight = FontWeight.Medium),
+                            color = colors.inkPrimary,
+                            maxLines = 1,
+                        )
+                    }
+
+                    else -> Unit
+                }
+            }
+
+            if (updateState is UpdateBannerState.Downloading) {
+                Box(
+                    modifier = Modifier
+                        .width(190.dp)
+                        .height(3.dp)
+                        .clip(CircleShape)
+                        .background(colors.surfacePillSubtle),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(updateState.progress.coerceIn(0.03f, 1f))
+                            .fillMaxHeight()
+                            .clip(CircleShape)
+                            .background(colors.inkPrimary),
+                    )
+                }
+            }
+        }
+    }
+}
+

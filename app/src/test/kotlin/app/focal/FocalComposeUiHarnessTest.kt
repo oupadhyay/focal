@@ -24,6 +24,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
@@ -73,6 +74,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -1128,6 +1130,98 @@ class FocalComposeUiHarnessTest {
         composeRule.onNodeWithText("Kagi").performClick()
         composeRule.waitForIdle()
         assertEquals(SearchEnginePreset.KAGI, latestSettings.searchEngine)
+    }
+
+    @Test
+    fun inAppUpdater_floatingPillAndSettingsProgress_supportUpdateCancelAndAutoCheckToggle() {
+        var latestSettings = FocalBrowserSettings()
+        var startedCount = 0
+        var cancelledCount = 0
+        var grantPermissionCount = 0
+        var dismissedTag = ""
+
+        var pillState by mutableStateOf<UpdateBannerState>(
+            UpdateBannerState.Available(
+                tagName = "v0.1.72",
+                releaseName = "Focal v0.1.72",
+                notes = "Native in-app self-updater + physics tab swiping",
+                sizeBytes = 27_000_000L,
+            ),
+        )
+
+        composeRule.setContent {
+            var currentSettings by remember { mutableStateOf(latestSettings) }
+            FocalTheme(darkGlass = true, isPrivateAperture = false) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    GlobalSettingsSheet(
+                        settings = currentSettings,
+                        appTheme = AppChromeTheme.DARK,
+                        currentVersionName = "0.1.71",
+                        totalBlockedTrackers = 42L,
+                        biometricAvailable = true,
+                        updateState = pillState,
+                        onUpdateSettings = {
+                            currentSettings = it
+                            latestSettings = it
+                        },
+                        onUpdateAppTheme = {},
+                        onClearBrowsingData = {},
+                        onCheckForUpdates = {},
+                        onInstallUpdate = { startedCount++ },
+                        onCancelUpdate = { cancelledCount++ },
+                        onGrantInstallPermission = { grantPermissionCount++ },
+                        onDismiss = {},
+                    )
+                    FocalUpdateAvailablePill(
+                        updateState = pillState,
+                        onStartUpdate = { startedCount++ },
+                        onCancelUpdate = { cancelledCount++ },
+                        onGrantPermission = { grantPermissionCount++ },
+                        onDismissPill = { dismissedTag = it },
+                        modifier = Modifier.align(Alignment.TopCenter),
+                    )
+                }
+            }
+        }
+
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("floating_update_pill").assertIsDisplayed()
+        composeRule.onNodeWithText("Focal v0.1.72 ready").assertIsDisplayed()
+        composeRule.onNodeWithText("Update").performClick()
+        composeRule.waitForIdle()
+        assertEquals(1, startedCount)
+
+        // Transition to active streaming download progress & cancel
+        pillState = UpdateBannerState.Downloading(
+            tagName = "v0.1.72",
+            progress = 0.56f,
+            downloadedBytes = 15_120_000L,
+            totalBytes = 27_000_000L,
+        )
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("Updating v0.1.72 · 56%").assertIsDisplayed()
+        val snap = composeRule.captureSnapshotPng("17_in_app_update_progress.png")
+        assertTrue(snap.length() > 1_000L)
+
+        composeRule.onNodeWithContentDescription("Cancel update").performClick()
+        composeRule.waitForIdle()
+        assertEquals(1, cancelledCount)
+
+        // Transition to unknown-sources permission prompt
+        pillState = UpdateBannerState.PermissionRequired(tagName = "v0.1.72")
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("Allow").performClick()
+        composeRule.waitForIdle()
+        assertEquals(1, grantPermissionCount)
+
+        composeRule.onNodeWithContentDescription("Dismiss update notice").performClick()
+        composeRule.waitForIdle()
+        assertEquals("v0.1.72", dismissedTag)
+
+        // Toggle Auto-Check for Updates switch off in Settings
+        composeRule.onNodeWithText("Auto-Check for Updates").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        assertFalse(latestSettings.autoCheckUpdatesEnabled)
     }
 
     @Test
