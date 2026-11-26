@@ -54,6 +54,7 @@ class AutoArchiveTabsWorker(
                 repeatInterval = 1,
                 repeatIntervalTimeUnit = TimeUnit.HOURS,
             )
+                .setInitialDelay(1, TimeUnit.HOURS)
                 .setConstraints(constraints)
                 .build()
 

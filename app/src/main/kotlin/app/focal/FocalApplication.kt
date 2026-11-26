@@ -16,17 +16,18 @@ import app.focal.sync.SyncRelaySessionManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
 
 /**
  * Process-level container initializing Focal's 120Hz runtime graph:
  * - Native Rust `AdblockController` (`libfocal_adblock.so` + serialized DAT cache on `Dispatchers.IO`)
- * - `WebViewBrowserEngine` (`WarmWebViewPool` scheduled on idle after first frame)
+ * - `WebViewBrowserEngine` (`WarmWebViewPool` background Chromium warmup deferred past first-frame focus)
  * - Room `FocalDatabase` seeded with `Personal`, `Work`, and `Reading` Spaces
  * - 100% On-Device `LocalSummarizer` (`AICore` / `LiteRT-LM` / Offline RAM + `ParagraphGrounder`)
  * - Zero-Account E2EE `SyncRelaySessionManager` (lazy off-main-thread AndroidKeyStore hydration)
- * - `AutoArchiveTabsWorker` (lazy on-demand `WorkManager` via `Configuration.Provider` on `Dispatchers.IO`)
+ * - `AutoArchiveTabsWorker` (lazy on-demand `WorkManager` via `Configuration.Provider`, deferred 10s post-launch)
  */
 class FocalApplication : Application(), Configuration.Provider {
 
@@ -69,12 +70,16 @@ class FocalApplication : Application(), Configuration.Provider {
 
         applicationScope.launch(Dispatchers.IO) {
             launch {
-                nativeAdblock.initializeOrLoadCache(File(cacheDir, "focal_adblock_engine.dat"))
-            }
-            launch {
                 FocalDatabaseDefaults.seedIfEmpty(database)
             }
             launch {
+                // Keep Frame 1 + FocusEvent + Gboard reveal 100% uncontested on low-core devices
+                delay(450L)
+                nativeAdblock.initializeOrLoadCache(File(cacheDir, "focal_adblock_engine.dat"))
+            }
+            launch {
+                // Defer WorkManager DB init & JobScheduler registration well past cold launch
+                delay(10_000L)
                 runCatching {
                     AutoArchiveTabsWorker.schedulePeriodicSweep(this@FocalApplication)
                 }

@@ -166,6 +166,8 @@ jobs:
           if [ "$INST_EXIT" -ne 0 ] || grep -q "FAILURES!!!" emulator-screenshots/instrument.log || ! grep -q "OK (" emulator-screenshots/instrument.log; then
             echo "Instrumentation verification failed (exit=$INST_EXIT)!"
             adb exec-out screencap -p > emulator-screenshots/failure_screen.png || true
+            echo "=== ANR DROPBOX TRACE ==="
+            adb shell dumpsys dropbox --print data_app_anr | head -n 140 || true
             cat emulator-screenshots/android_runtime_errors.log || true
             exit 1
           fi

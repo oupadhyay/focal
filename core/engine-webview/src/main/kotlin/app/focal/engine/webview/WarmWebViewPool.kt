@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.MutableContextWrapper
 import android.os.Handler
 import android.os.Looper
+import android.os.Process
 import android.webkit.WebSettings
 import android.webkit.WebView
 import androidx.webkit.OutcomeReceiverCompat
@@ -35,7 +36,10 @@ class WarmWebViewPool(
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
     private val warmupExecutor = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "focal-webview-warmup").apply { isDaemon = true }
+        Thread({
+            runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND) }
+            runnable.run()
+        }, "focal-webview-warmup").apply { isDaemon = true }
     }
     private val prefetchCallbackExecutor = Executor { command -> command.run() }
 
@@ -51,32 +55,34 @@ class WarmWebViewPool(
 
     private val pool = ArrayDeque<WebView>(targetPoolSize)
     private val idleScheduled = AtomicBoolean(false)
+    private val providerWarmupScheduled = AtomicBoolean(false)
     private val providerWarmed = AtomicBoolean(false)
     private val shutDown = AtomicBoolean(false)
 
     /**
      * Cold-launch provider warmup: loads Chromium's WebView APK & native binaries strictly on a
-     * background daemon thread (`setShouldRunUiThreadStartUpTasks(false)`), keeping 0ms of
-     * synchronous Chromium initialization off the main thread during initial `FocusEvent` and
-     * `SearchSheet` / IME launch. Standby `WebView` pre-inflation ([scheduleIdleWarmup]) is
-     * deferred until after the first tab acquires a live `WebView` (subsequent inflations take
-     * `< 15ms` without risking a cold-boot ANR during window focus).
+     * low-priority background daemon thread (`setShouldRunUiThreadStartUpTasks(false)`) after a
+     * short delay past Frame 1, keeping 0ms of synchronous Chromium initialization or CPU contention
+     * off the main thread during initial `FocusEvent` and `SearchSheet` / IME launch.
      */
     @androidx.annotation.OptIn(WebViewCompat.ExperimentalAsyncStartUp::class)
     fun scheduleBackgroundProviderWarmup() {
-        if (shutDown.get()) return
-        if (!providerWarmed.compareAndSet(false, true)) return
+        if (shutDown.get() || providerWarmed.get()) return
+        if (!providerWarmupScheduled.compareAndSet(false, true)) return
 
-        try {
-            val config = WebViewStartUpConfig.Builder(warmupExecutor)
-                .setShouldRunUiThreadStartUpTasks(false)
-                .build()
-            WebViewCompat.startUpWebView(config) {
-                // Background Chromium package & native binary warmup finished with zero UI-thread stall.
+        mainHandler.postDelayed({
+            if (shutDown.get() || !providerWarmed.compareAndSet(false, true)) return@postDelayed
+            try {
+                val config = WebViewStartUpConfig.Builder(warmupExecutor)
+                    .setShouldRunUiThreadStartUpTasks(false)
+                    .build()
+                WebViewCompat.startUpWebView(config) {
+                    // Background Chromium package & native binary warmup finished with zero UI-thread stall.
+                }
+            } catch (_: Throwable) {
+                // Headless JVM / older WebView APKs fall back cleanly to on-demand WebView creation
             }
-        } catch (_: Throwable) {
-            // Headless JVM / older WebView APKs fall back cleanly to on-demand WebView creation
-        }
+        }, PROVIDER_WARMUP_DELAY_MS)
     }
 
     /**
@@ -251,6 +257,7 @@ class WarmWebViewPool(
     }
 
     companion object {
+        private const val PROVIDER_WARMUP_DELAY_MS = 750L
         private const val REPLENISH_WARMUP_DELAY_MS = 400L
     }
 }
