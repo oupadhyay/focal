@@ -6,9 +6,13 @@ import android.content.MutableContextWrapper
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.net.Uri
+import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.Message
+import android.os.SystemClock
+import android.util.LruCache
 import android.view.MotionEvent
 import android.view.ViewGroup
 import android.webkit.CookieManager
@@ -35,6 +39,7 @@ import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import app.focal.adblock.AdblockController
 import app.focal.adblock.AdblockWebResponses
+import app.focal.adblock.NativeAdblockController
 import app.focal.design.FaviconCache
 import app.focal.engine.api.ActiveMediaSessionInfo
 import app.focal.engine.api.EngineSession
@@ -115,6 +120,8 @@ class WebViewSession internal constructor(
         private const val DESKTOP_USER_AGENT =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
         private const val HISTORY_PREVIEW_MAX_WIDTH_PX = 420
+        private const val HISTORY_SNAPSHOT_DEDUP_WINDOW_MS = 400L
+        private const val COSMETIC_CSS_CACHE_MAX_ENTRIES = 128
 
         /**
          * Permits only `https://`, `http://`, and `about:blank`, blocking `file://`,
@@ -181,6 +188,7 @@ class WebViewSession internal constructor(
     private val documentScriptHandlers = mutableListOf<ScriptHandler>()
     private var gpcScriptHandler: ScriptHandler? = null
     private val historyFrames = HistoryFrameStore()
+    private val cosmeticCssCache = LruCache<String, String>(COSMETIC_CSS_CACHE_MAX_ENTRIES)
     private var pendingFileChooserCallback: ValueCallback<Array<Uri>>? = null
     private val assetLoader: WebViewAssetLoader = WebViewAssetLoader.Builder()
         .setDomain(ASSET_LOADER_DOMAIN)
@@ -199,6 +207,9 @@ class WebViewSession internal constructor(
     @Volatile
     private var bottomChromeInsetPx: Int = 0
     private var lastAppliedBottomInsetPx: Int = -1
+    private var hasInjectedLiveOverrides: Boolean = false
+    private var lastHistorySnapshotUrl: String = ""
+    private var lastHistorySnapshotAtMs: Long = 0L
 
     private var lastTouchXRatio: Float = 0.5f
     private var lastTouchYRatio: Float = 0.5f
@@ -292,13 +303,37 @@ class WebViewSession internal constructor(
                                 originHost = originHost,
                             )
                             if (currentOverrides.blockAdsAndTrackers) {
-                                val css = adblockController.cosmeticCssForUrl(verifiedUrl)
-                                if (css.isNotBlank()) {
-                                    val reply = JSONObject()
-                                        .put("type", "cosmetic_css")
-                                        .put("css", css)
-                                        .toString()
-                                    replyProxy.postMessage(reply)
+                                val cacheKey = "$originScheme://$originHost"
+                                val cachedCss = cosmeticCssCache.get(cacheKey)
+                                if (cachedCss != null) {
+                                    if (cachedCss.isNotBlank()) {
+                                        val reply = JSONObject()
+                                            .put("type", "cosmetic_css")
+                                            .put("css", cachedCss)
+                                            .toString()
+                                        runCatching { replyProxy.postMessage(reply) }
+                                    }
+                                } else {
+                                    sessionScope.launch(Dispatchers.Default) {
+                                        val css = adblockController.cosmeticCssForUrl(verifiedUrl)
+                                        val engineReady =
+                                            (adblockController as? NativeAdblockController)?.isNativeEngineActive
+                                                ?: true
+                                        if (engineReady || css.isNotEmpty()) {
+                                            cosmeticCssCache.put(cacheKey, css)
+                                        }
+                                        if (css.isNotBlank() && !disposed.get()) {
+                                            val reply = JSONObject()
+                                                .put("type", "cosmetic_css")
+                                                .put("css", css)
+                                                .toString()
+                                            runOnMain {
+                                                if (!disposed.get()) {
+                                                    runCatching { replyProxy.postMessage(reply) }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -310,19 +345,28 @@ class WebViewSession internal constructor(
                                 originHost = originHost,
                             )
                             if (currentOverrides.blockAdsAndTrackers) {
-                                val classes = jsonArrayToStringList(json.optJSONArray("classes"), limit = 512)
-                                val ids = jsonArrayToStringList(json.optJSONArray("ids"), limit = 512)
-                                val dynamicCss = adblockController.cosmeticCssForClassesAndIds(
-                                    url = verifiedUrl,
-                                    classes = classes,
-                                    ids = ids,
-                                )
-                                if (dynamicCss.isNotBlank()) {
-                                    val reply = JSONObject()
-                                        .put("type", "cosmetic_dynamic_css")
-                                        .put("css", dynamicCss)
-                                        .toString()
-                                    replyProxy.postMessage(reply)
+                                val rawClasses = json.optJSONArray("classes")
+                                val rawIds = json.optJSONArray("ids")
+                                sessionScope.launch(Dispatchers.Default) {
+                                    val classes = jsonArrayToStringList(rawClasses, limit = 512)
+                                    val ids = jsonArrayToStringList(rawIds, limit = 512)
+                                    if (classes.isEmpty() && ids.isEmpty()) return@launch
+                                    val dynamicCss = adblockController.cosmeticCssForClassesAndIds(
+                                        url = verifiedUrl,
+                                        classes = classes,
+                                        ids = ids,
+                                    )
+                                    if (dynamicCss.isNotBlank() && !disposed.get()) {
+                                        val reply = JSONObject()
+                                            .put("type", "cosmetic_dynamic_css")
+                                            .put("css", dynamicCss)
+                                            .toString()
+                                        runOnMain {
+                                            if (!disposed.get()) {
+                                                runCatching { replyProxy.postMessage(reply) }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -557,7 +601,7 @@ class WebViewSession internal constructor(
                     Looper.myLooper() == Looper.getMainLooper() &&
                     !targetUrl.equals(_state.value.url, ignoreCase = true)
                 ) {
-                    captureSnapshotSync(HISTORY_PREVIEW_MAX_WIDTH_PX)?.let { snapshot ->
+                    captureHistorySnapshotIfNotRecent()?.let { snapshot ->
                         historyFrames.pushBack(snapshot)
                     }
                     historyFrames.clearForward()
@@ -628,6 +672,7 @@ class WebViewSession internal constructor(
                 val safeUrl = url.orEmpty()
                 val nextDomain = extractHostDomain(safeUrl)
                 lastAppliedBottomInsetPx = -1
+                hasInjectedLiveOverrides = false
                 cancelAndResetTranslation(resetState = false)
                 sessionBlockedCount.set(0L)
                 _telemetry.update {
@@ -693,10 +738,35 @@ class WebViewSession internal constructor(
                     if (gpcEnabled) {
                         view?.evaluateJavascript(ElementZapperScripts.GLOBAL_PRIVACY_CONTROL_JS, null)
                     }
-                    if (currentOverrides.blockAdsAndTrackers) {
-                        val css = adblockController.cosmeticCssForUrl(safeUrl)
-                        if (css.isNotBlank()) {
-                            injectCssRuleBlock(view, "focal-cosmetic-fallback", css)
+                    if (currentOverrides.blockAdsAndTrackers && safeUrl.isNotBlank()) {
+                        val parsedUri = runCatching { Uri.parse(safeUrl) }.getOrNull()
+                        val cacheKey = if (parsedUri?.scheme != null && parsedUri.host != null) {
+                            "${parsedUri.scheme?.lowercase()}://${parsedUri.host?.lowercase()}"
+                        } else {
+                            safeUrl
+                        }
+                        val cachedCss = cosmeticCssCache.get(cacheKey)
+                        if (cachedCss != null) {
+                            if (cachedCss.isNotBlank()) {
+                                injectCssRuleBlock(view, "focal-cosmetic-fallback", cachedCss)
+                            }
+                        } else {
+                            sessionScope.launch(Dispatchers.Default) {
+                                val css = adblockController.cosmeticCssForUrl(safeUrl)
+                                val engineReady =
+                                    (adblockController as? NativeAdblockController)?.isNativeEngineActive
+                                        ?: true
+                                if (engineReady || css.isNotEmpty()) {
+                                    cosmeticCssCache.put(cacheKey, css)
+                                }
+                                if (css.isNotBlank() && !disposed.get()) {
+                                    runOnMain {
+                                        if (!disposed.get()) {
+                                            injectCssRuleBlock(view, "focal-cosmetic-fallback", css)
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -708,7 +778,9 @@ class WebViewSession internal constructor(
                 val totalBlocked = sessionBlockedCount.get()
                 applyHiddenSelectorsForPage(view, safeUrl, onlyIfNonEmpty = false)
                 val insetPx = bottomChromeInsetPx
-                applyBottomChromeInsetJs(view, insetPx)
+                if (insetPx > 0 || lastAppliedBottomInsetPx > 0) {
+                    applyBottomChromeInsetJs(view, insetPx)
+                }
                 lastAppliedBottomInsetPx = insetPx
                 _telemetry.update {
                     it.copy(
@@ -924,7 +996,7 @@ class WebViewSession internal constructor(
             if (!isAllowedNavigationUrl(cleaned)) return@runOnMain
             val isBlankTarget = cleaned.equals("about:blank", ignoreCase = true)
             if (!isBlankTarget) {
-                captureSnapshotSync(HISTORY_PREVIEW_MAX_WIDTH_PX)?.let { snapshot ->
+                captureHistorySnapshotIfNotRecent()?.let { snapshot ->
                     historyFrames.pushBack(snapshot)
                 }
                 historyFrames.clearForward()
@@ -975,7 +1047,7 @@ class WebViewSession internal constructor(
                 if (_state.value.isElementZapperActive) {
                     setElementZapperActive(false)
                 }
-                captureSnapshotSync(HISTORY_PREVIEW_MAX_WIDTH_PX)?.let { snapshot ->
+                captureHistorySnapshotIfNotRecent()?.let { snapshot ->
                     historyFrames.pushForward(snapshot)
                 }
             }
@@ -994,7 +1066,7 @@ class WebViewSession internal constructor(
                 if (_state.value.isElementZapperActive) {
                     setElementZapperActive(false)
                 }
-                captureSnapshotSync(HISTORY_PREVIEW_MAX_WIDTH_PX)?.let { snapshot ->
+                captureHistorySnapshotIfNotRecent()?.let { snapshot ->
                     historyFrames.pushBack(snapshot)
                 }
             }
@@ -1034,6 +1106,21 @@ class WebViewSession internal constructor(
     private fun applyLiveOverridesJs(view: WebView?) {
         val target = view ?: return
         val ov = currentOverrides
+        val needsDark = ov.forceDarkWebSurface
+        val needsFonts = ov.overridePublisherFonts
+        if (!needsDark && !needsFonts) {
+            if (!hasInjectedLiveOverrides) return
+            hasInjectedLiveOverrides = false
+            val clearJs = """
+                (function() {
+                  const style = document.getElementById('focal-live-site-overrides');
+                  if (style) style.textContent = '';
+                })();
+            """.trimIndent()
+            target.evaluateJavascript(clearJs, null)
+            return
+        }
+        hasInjectedLiveOverrides = true
         val js = """
             (function() {
               const id = 'focal-live-site-overrides';
@@ -1044,10 +1131,10 @@ class WebViewSession internal constructor(
                 (document.head || document.documentElement).appendChild(style);
               }
               let css = '';
-              if (${ov.forceDarkWebSurface}) {
+              if ($needsDark) {
                 css += 'html { color-scheme: dark !important; background: #0E0F12 !important; color: #F4F5F7 !important; } ';
               }
-              if (${ov.overridePublisherFonts}) {
+              if ($needsFonts) {
                 css += "@font-face { font-family: 'FocalAllo'; src: url('https://$ASSET_LOADER_DOMAIN/res/font/allo_variable.ttf') format('truetype'); font-weight: 100 900; font-display: swap; } ";
                 css += "@font-face { font-family: 'FocalSwitzer'; src: url('https://$ASSET_LOADER_DOMAIN/res/font/switzer_variable.ttf') format('truetype'); font-weight: 100 900; font-display: swap; } ";
                 css += "h1, h2, h3, h4, h5, h6 { font-family: 'FocalAllo', system-ui, -apple-system, sans-serif !important; font-variation-settings: 'ROND' 0, 'opsz' 28 !important; letter-spacing: -0.02em !important; } ";
@@ -1359,6 +1446,26 @@ class WebViewSession internal constructor(
         }
     }
 
+    private fun captureHistorySnapshotIfNotRecent(): Bitmap? {
+        if (disposed.get()) return null
+        val currentUrl = _state.value.url
+        if (currentUrl.isBlank() || currentUrl.equals("about:blank", ignoreCase = true)) {
+            return null
+        }
+        val nowMs = SystemClock.elapsedRealtime()
+        if (
+            lastHistorySnapshotAtMs > 0L &&
+            currentUrl.equals(lastHistorySnapshotUrl, ignoreCase = true) &&
+            (nowMs - lastHistorySnapshotAtMs) < HISTORY_SNAPSHOT_DEDUP_WINDOW_MS
+        ) {
+            return null
+        }
+        val snapshot = captureSnapshotSync(HISTORY_PREVIEW_MAX_WIDTH_PX) ?: return null
+        lastHistorySnapshotUrl = currentUrl
+        lastHistorySnapshotAtMs = nowMs
+        return snapshot
+    }
+
     private fun captureSnapshotSync(maxWidthPx: Int): Bitmap? {
         if (disposed.get()) return null
         val currentUrl = _state.value.url
@@ -1551,6 +1658,72 @@ class WebViewSession internal constructor(
         return historyFrames.peekForward()?.takeUnless { it.isRecycled }
     }
 
+    override fun setForegroundActive(active: Boolean) {
+        if (disposed.get()) return
+        runOnMain {
+            if (disposed.get()) return@runOnMain
+            if (active) {
+                runCatching { webView.onResume() }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    runCatching {
+                        webView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
+                    }
+                }
+            } else {
+                // Only pause WebView and waive renderer priority when media is not actively playing
+                if (_state.value.activeMedia?.isPlaying != true) {
+                    runCatching { webView.onPause() }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        runCatching {
+                            webView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_WAIVED, true)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    override fun saveNavigationState(): Bundle? {
+        if (disposed.get() || Looper.myLooper() != Looper.getMainLooper()) return null
+        return runCatching {
+            val bundle = Bundle()
+            if (webView.saveState(bundle) != null && !bundle.isEmpty) bundle else null
+        }.getOrNull()
+    }
+
+    override fun restoreNavigationState(state: Bundle): Boolean {
+        if (disposed.get() || state.isEmpty || Looper.myLooper() != Looper.getMainLooper()) return false
+        return runCatching {
+            val restoredList = webView.restoreState(state)
+            if (restoredList != null) {
+                val restoredUrl = restoredList.currentItem?.url ?: webView.url.orEmpty()
+                val restoredTitle = restoredList.currentItem?.title ?: webView.title.orEmpty()
+                if (restoredUrl.isNotBlank()) {
+                    _state.update { prev ->
+                        prev.copy(
+                            url = restoredUrl,
+                            domain = extractHostDomain(restoredUrl),
+                            title = restoredTitle.ifBlank { prev.title },
+                            isHttps = restoredUrl.startsWith("https://", ignoreCase = true),
+                            canGoBack = webView.canGoBack(),
+                            canGoForward = webView.canGoForward(),
+                        )
+                    }
+                }
+                true
+            } else {
+                false
+            }
+        }.getOrDefault(false)
+    }
+
+    override fun trimMemory() {
+        historyFrames.clear()
+        cosmeticCssCache.evictAll()
+        lastHistorySnapshotUrl = ""
+        lastHistorySnapshotAtMs = 0L
+    }
+
     private fun applyHiddenSelectorsJs(view: WebView?, selectors: List<String>) {
         val target = view ?: return
         target.evaluateJavascript(ElementZapperScripts.buildHiddenSelectorsCssScript(selectors), null)
@@ -1591,7 +1764,10 @@ class WebViewSession internal constructor(
         if (!disposed.compareAndSet(false, true)) return
         translationGeneration.incrementAndGet()
         sessionScope.cancel()
-        historyFrames.clearAll()
+        historyFrames.clear()
+        cosmeticCssCache.evictAll()
+        lastHistorySnapshotUrl = ""
+        lastHistorySnapshotAtMs = 0L
         runOnMain {
             try {
                 cancelPendingFileChooser()
@@ -1717,17 +1893,18 @@ private fun extractHostDomain(url: String): String {
 }
 
 private fun inferAdblockResourceType(request: WebResourceRequest): String {
-    val accept = request.requestHeaders?.get("Accept")?.lowercase().orEmpty()
+    if (request.isForMainFrame) return "main_frame"
+    val headers = request.requestHeaders
+    val accept = headers?.get("Accept")?.lowercase().orEmpty()
     val path = request.url?.path?.lowercase().orEmpty()
     return when {
-        request.isForMainFrame -> "main_frame"
         accept.contains("text/css") || path.endsWith(".css") -> "stylesheet"
         accept.contains("image/") || path.endsWith(".png") || path.endsWith(".jpg") ||
             path.endsWith(".webp") || path.endsWith(".gif") || path.endsWith(".svg") -> "image"
         path.endsWith(".js") || path.endsWith(".mjs") || accept.contains("javascript") -> "script"
         path.endsWith(".woff2") || path.endsWith(".woff") || path.endsWith(".ttf") -> "font"
         accept.contains("application/json") ||
-            request.requestHeaders?.containsKey("X-Requested-With") == true -> "xmlhttprequest"
+            headers?.containsKey("X-Requested-With") == true -> "xmlhttprequest"
         else -> "other"
     }
 }
@@ -1807,11 +1984,12 @@ private const val FOCAL_DOCUMENT_START_BOOTSTRAP_JS = """
   } catch (_) {}
 
   document.addEventListener('DOMContentLoaded', function() {
+    if (window !== window.top) return;
     try {
       const paras = document.querySelectorAll('article p, main p, p');
       let chars = 0;
       for (let i = 0; i < Math.min(paras.length, 25); i++) {
-        chars += (paras[i].innerText || '').trim().length;
+        chars += (paras[i].textContent || '').trim().length;
       }
       const iconNode = document.querySelector(
         'link[rel="apple-touch-icon"], link[rel="apple-touch-icon-precomposed"], link[rel="icon"][sizes*="192"], link[rel="icon"][sizes*="128"], link[rel="icon"][sizes*="64"], link[rel="icon"][sizes*="32"], link[rel="icon"], link[rel="shortcut icon"]'

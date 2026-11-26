@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -29,6 +30,7 @@ class NativeAdblockController(
 
     private val closed = AtomicBoolean(false)
     private val engineHandle = AtomicLong(0L)
+    private val blockedCounter = AtomicLong(0L)
     private val cacheBootstrapMutex = Mutex()
 
     private val _totalBlockedCount = MutableStateFlow(0L)
@@ -136,7 +138,7 @@ class NativeAdblockController(
             resourceType = resourceType.ifBlank { "other" },
         ) ?: return BlockDecision.ALLOW
 
-        syncBlockedCountFromNative(handle)
+        recordBlockedSubresource()
 
         val isImportant = encodedDecision.getOrNull(0) == "1"
         val redirectBody = encodedDecision.getOrNull(1)
@@ -172,7 +174,7 @@ class NativeAdblockController(
             resourceType = resourceType.ifBlank { "other" },
         )
         if (blocked) {
-            syncBlockedCountFromNative(handle)
+            recordBlockedSubresource()
         }
         return blocked
     }
@@ -220,6 +222,11 @@ class NativeAdblockController(
 
     override fun cleanTrackingUrl(rawUrl: String): CleanedUrlResult {
         if (rawUrl.isBlank()) {
+            return CleanedUrlResult(cleanUrl = rawUrl, strippedParams = emptyList())
+        }
+        // Zero-allocation fast-path: clean URLs without query or fragment cannot carry tracking
+        // query params; skip ensureLibraryLoaded() / System.loadLibrary and JNI completely.
+        if ('?' !in rawUrl && '#' !in rawUrl) {
             return CleanedUrlResult(cleanUrl = rawUrl, strippedParams = emptyList())
         }
 
@@ -273,11 +280,9 @@ class NativeAdblockController(
         return RustAdblockBridge.nativeLoadCustomRules(handle, rulesText, includeStarterRules)
     }
 
-    private fun syncBlockedCountFromNative(handle: Long) {
-        val count = RustAdblockBridge.nativeGetBlockedCount(handle)
-        if (count >= 0L) {
-            _totalBlockedCount.value = count
-        }
+    private fun recordBlockedSubresource() {
+        val next = blockedCounter.incrementAndGet()
+        _totalBlockedCount.update { current -> if (next > current) next else current }
     }
 
     /**

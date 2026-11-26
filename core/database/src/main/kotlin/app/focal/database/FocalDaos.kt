@@ -4,8 +4,10 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
+import java.util.UUID
 
 @Dao
 interface SpaceDao {
@@ -217,6 +219,33 @@ interface HistoryDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entry: HistoryEntryEntity)
+
+    /**
+     * Atomically records a browsing history visit inside a single SQLite transaction so
+     * concurrent navigations to the same URL cannot lose `visitCount` increments or create
+     * duplicate-key read/write races.
+     */
+    @Transaction
+    suspend fun recordHistoryVisit(
+        url: String,
+        domain: String,
+        title: String,
+        visitedAtEpochMs: Long = System.currentTimeMillis(),
+    ) {
+        val existing = getByUrl(url)
+        val resolvedTitle = title.trim()
+            .ifBlank { existing?.title?.takeIf { it.isNotBlank() } ?: domain.ifBlank { url } }
+        upsert(
+            HistoryEntryEntity(
+                id = existing?.id ?: "hist-${UUID.randomUUID()}",
+                url = url,
+                domain = domain,
+                title = resolvedTitle,
+                visitedAtEpochMs = visitedAtEpochMs,
+                visitCount = (existing?.visitCount ?: 0) + 1,
+            ),
+        )
+    }
 
     @Query("DELETE FROM history_entries WHERE id = :id")
     suspend fun deleteById(id: String)

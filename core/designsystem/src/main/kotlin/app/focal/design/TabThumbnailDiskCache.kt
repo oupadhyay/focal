@@ -106,7 +106,10 @@ class TabThumbnailDiskCache(
         val file = fileForTab(tabId)
         if (!file.isFile || file.length() <= 0L) return null
         return try {
-            BitmapFactory.decodeFile(file.absolutePath)
+            val options = BitmapFactory.Options().apply {
+                inPreferredConfig = Bitmap.Config.RGB_565
+            }
+            BitmapFactory.decodeFile(file.absolutePath, options)
         } catch (_: Throwable) {
             null
         }
@@ -116,6 +119,28 @@ class TabThumbnailDiskCache(
         if (tabIds.isEmpty() || !cacheDir.isDirectory) return emptyMap()
         val result = LinkedHashMap<String, Bitmap>(tabIds.size)
         for (tabId in tabIds) {
+            if (result.containsKey(tabId)) continue
+            val bitmap = load(tabId)
+            if (bitmap != null) {
+                result[tabId] = bitmap
+            }
+        }
+        return result
+    }
+
+    /**
+     * Decodes at most [maxCount] existing thumbnail files following [orderedTabIds] priority order
+     * (typically most-recently-active tabs first) using [Bitmap.Config.RGB_565] to bound cold-start
+     * I/O and halve thumbnail RAM footprint.
+     */
+    fun loadRecentForTabs(
+        orderedTabIds: List<String>,
+        maxCount: Int = DEFAULT_RECENT_LOAD_LIMIT,
+    ): Map<String, Bitmap> {
+        if (orderedTabIds.isEmpty() || maxCount <= 0 || !cacheDir.isDirectory) return emptyMap()
+        val result = LinkedHashMap<String, Bitmap>(minOf(orderedTabIds.size, maxCount))
+        for (tabId in orderedTabIds) {
+            if (result.size >= maxCount) break
             if (result.containsKey(tabId)) continue
             val bitmap = load(tabId)
             if (bitmap != null) {
@@ -160,6 +185,7 @@ class TabThumbnailDiskCache(
         private const val DEFAULT_DIR_NAME = "tab_thumbs"
         private const val FILE_EXTENSION = ".jpg"
         private const val JPEG_QUALITY = 78
+        private const val DEFAULT_RECENT_LOAD_LIMIT = 16
         private const val MAX_DIRECT_KEY_LENGTH = 64
         private const val HASH_BYTE_COUNT = 16
         private const val HASH_HEX_LENGTH = HASH_BYTE_COUNT * 2

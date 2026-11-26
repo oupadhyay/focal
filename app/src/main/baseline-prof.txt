@@ -1,0 +1,48 @@
+# Focal Android Browser — ART Baseline Profile (Hot Startup + 120Hz Core Runtime)
+# Compiled by AGP into assets/dexopt/baseline.prof for install-time AOT compilation.
+
+# App cold startup & root coordinator
+Lapp/focal/FocalApplication;
+HSPLapp/focal/FocalApplication;->**(**)**
+Lapp/focal/MainActivity;
+HSPLapp/focal/MainActivity;->**(**)**
+Lapp/focal/MainActivityKt;
+HSPLapp/focal/MainActivityKt;->**(**)**
+Lapp/focal/BrowserSessionViewModel;
+HSPLapp/focal/BrowserSessionViewModel;->**(**)**
+
+# Core Design System, Adaptive Glass, Favicons & Shaders
+Lapp/focal/design/**;
+HSPLapp/focal/design/**;->**(**)**
+
+# Core WebView Engine & Warm Pool
+Lapp/focal/engine/api/**;
+HSPLapp/focal/engine/api/**;->**(**)**
+Lapp/focal/engine/webview/WarmWebViewPool;
+HSPLapp/focal/engine/webview/WarmWebViewPool;->**(**)**
+Lapp/focal/engine/webview/WebViewBrowserEngine;
+HSPLapp/focal/engine/webview/WebViewBrowserEngine;->**(**)**
+Lapp/focal/engine/webview/WebViewSession;
+HSPLapp/focal/engine/webview/WebViewSession;->**(**)**
+Lapp/focal/engine/webview/WebViewSession$*;
+HSPLapp/focal/engine/webview/WebViewSession$*;->**(**)**
+
+# Rust Adblock JNI Hot Path
+Lapp/focal/adblock/**;
+HSPLapp/focal/adblock/**;->**(**)**
+
+# Room Database Cold-Start & Active Tab Queries
+Lapp/focal/database/**;
+HSPLapp/focal/database/**;->**(**)**
+
+# Primary 120Hz Interactive Surfaces (Search, Viewport, Bottom Bar, Physics Tab Deck)
+Lapp/focal/feature/search/**;
+HSPLapp/focal/feature/search/**;->**(**)**
+Lapp/focal/feature/browser/BrowserViewportScreenKt;
+HSPLapp/focal/feature/browser/BrowserViewportScreenKt;->**(**)**
+Lapp/focal/feature/browser/FocalBottomBarKt;
+HSPLapp/focal/feature/browser/FocalBottomBarKt;->**(**)**
+Lapp/focal/feature/tabs/TabSwitcherSheetKt;
+HSPLapp/focal/feature/tabs/TabSwitcherSheetKt;->**(**)**
+Lapp/focal/feature/tabs/TabDeckPhysics;
+HSPLapp/focal/feature/tabs/TabDeckPhysics;->**(**)**

@@ -21,6 +21,7 @@ data class SpaceEntity(
         Index(value = ["spaceId", "sortOrder"]),
         Index(value = ["parentFolderId"]),
         Index(value = ["isPinnedSquircle"]),
+        Index(value = ["isPinnedSquircle", "sortOrder"]),
     ],
 )
 data class BookmarkEntity(
@@ -44,6 +45,8 @@ data class BookmarkEntity(
     indices = [
         Index(value = ["spaceId", "isArchived", "lastActiveEpochMs"]),
         Index(value = ["isArchived", "hasUnsentFormDraft", "lastActiveEpochMs"]),
+        Index(value = ["isArchived", "lastActiveEpochMs"]),
+        Index(value = ["isArchived", "archivedAtEpochMs"]),
     ],
 )
 data class TabMetadataEntity(

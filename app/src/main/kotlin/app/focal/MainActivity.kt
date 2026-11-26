@@ -130,7 +130,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Locale
 import java.util.UUID
 
@@ -139,6 +141,7 @@ class MainActivity : ComponentActivity() {
     private var pendingExternalUri by mutableStateOf<String?>(null)
     private var pendingLaunchMode by mutableStateOf<String?>(null)
     private var isInPipModeState by mutableStateOf(false)
+    private var activeSessionVm: BrowserSessionViewModel? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge(
@@ -164,6 +167,7 @@ class MainActivity : ComponentActivity() {
             val sessionVm: BrowserSessionViewModel = viewModel(
                 factory = BrowserSessionViewModel.factory(focalApp),
             )
+            activeSessionVm = sessionVm
             FocalRootCoordinator(
                 activity = this,
                 sessionVm = sessionVm,
@@ -179,6 +183,21 @@ class MainActivity : ComponentActivity() {
                 onEnterSystemPip = ::enterBrowserPipMode,
             )
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        activeSessionVm?.onAppForegroundChanged(inForeground = true)
+    }
+
+    override fun onPause() {
+        activeSessionVm?.onAppForegroundChanged(inForeground = false)
+        super.onPause()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        activeSessionVm?.onTrimMemory(level)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -250,39 +269,28 @@ private fun FocalRootCoordinator(
     val pendingPairingRequest by sessionVm.pendingPairingRequest.collectAsState()
     val lastClosedTab by sessionVm.lastClosedTab.collectAsState()
 
-    // Room reactive streams wrapped in remember { toImmutableList() } (P2-1)
-    val spaces by database.spaceDao().observeSpaces().collectAsState(initial = emptyList())
-    val allBookmarks by remember {
+    // Room reactive streams wrapped in remember { ... } so recompositions never re-query SQLite
+    val spaces by remember(database) {
+        database.spaceDao().observeSpaces()
+    }.collectAsState(initial = emptyList())
+    val allBookmarks by remember(database) {
         database.bookmarkDao().observeAllBookmarks()
     }.collectAsState(initial = emptyList())
-    val quickSearchBookmarks by remember {
+    val quickSearchBookmarks by remember(database) {
         database.bookmarkDao().observeQuickSearchPins(limit = 5)
     }.collectAsState(initial = emptyList())
 
-    val allActiveTabs by remember {
+    val allActiveTabs by remember(database) {
         database.tabMetadataDao().observeAllActiveTabs()
     }.collectAsState(initial = emptyList())
-    val activeTabsInSpace by remember(activeSpaceId) {
+    val activeTabsInSpace by remember(database, activeSpaceId) {
         database.tabMetadataDao().observeActiveTabsForSpace(activeSpaceId)
-    }.collectAsState(initial = emptyList())
-    val archivedTabs by remember {
-        val retentionStart = System.currentTimeMillis() - TabMetadataEntity.ARCHIVE_RETENTION_MS
-        database.tabMetadataDao().observeArchivedTabs(retentionStart)
-    }.collectAsState(initial = emptyList())
-    val recentHistory by remember {
-        database.historyDao().observeRecentHistory(limit = 200)
-    }.collectAsState(initial = emptyList())
-    val recentDownloads by remember {
-        database.downloadRecordDao().observeRecentDownloads(limit = 100)
     }.collectAsState(initial = emptyList())
 
     val immutableSpaces = remember(spaces) { spaces.toImmutableList() }
     val immutableAllBookmarks = remember(allBookmarks) { allBookmarks.toImmutableList() }
     val immutableAllActiveTabs = remember(allActiveTabs) { allActiveTabs.toImmutableList() }
     val immutableActiveTabs = remember(activeTabsInSpace) { activeTabsInSpace.toImmutableList() }
-    val immutableArchivedTabs = remember(archivedTabs) { archivedTabs.toImmutableList() }
-    val immutableHistory = remember(recentHistory) { recentHistory.toImmutableList() }
-    val immutableDownloads = remember(recentDownloads) { recentDownloads.toImmutableList() }
     val immutableTabPreviews = remember(tabPreviews) { tabPreviews.toImmutableMap() }
     val tabCountBySpace = remember(allActiveTabs) {
         allActiveTabs.groupingBy { it.spaceId }.eachCount().toImmutableMap()
@@ -316,12 +324,6 @@ private fun FocalRootCoordinator(
         sessionVm.setGlobalPrivacyControl(browserSettings.globalPrivacyControlEnabled)
     }
 
-    val biometricAvailable = remember(context) {
-        FocalBiometricLock.isDeviceAuthenticationAvailable(context)
-    }
-    val appVersionName = remember(context) {
-        FocalReleaseUpdater.currentAppVersionName(context)
-    }
     var updateBannerState by remember { mutableStateOf<UpdateBannerState>(UpdateBannerState.Idle) }
     var availableReleaseInfo by remember { mutableStateOf<FocalReleaseInfo?>(null) }
 
@@ -337,10 +339,14 @@ private fun FocalRootCoordinator(
         }
     }
 
-    // Observe per-origin overrides (including sticky Reader Mode settings & Element Zapper CSS rules)
+    // Observe per-origin overrides only when a real web origin is loaded (avoids cold-start "" SQLite query)
     val currentOrigin = activeSessionState?.domain.orEmpty()
-    val savedOverrideEntity by remember(currentOrigin) {
-        database.originOverrideDao().observeOverrideForOrigin(currentOrigin)
+    val savedOverrideEntity by remember(database, currentOrigin) {
+        if (currentOrigin.isBlank()) {
+            flowOf<OriginOverrideEntity?>(null)
+        } else {
+            database.originOverrideDao().observeOverrideForOrigin(currentOrigin)
+        }
     }.collectAsState(initial = null)
     var privateOverridesByOrigin by remember(isPrivateAperture) {
         mutableStateOf<Map<String, OriginOverrides>>(emptyMap())
@@ -363,7 +369,14 @@ private fun FocalRootCoordinator(
 
     val readerDefaultsStore = remember(context) { ReaderDefaultsStore(context) }
     var globalReaderDefaults by remember(readerDefaultsStore) {
-        mutableStateOf(readerDefaultsStore.read())
+        mutableStateOf(app.focal.feature.reader.ReaderPreferences())
+    }
+    var readerDefaultsLoaded by remember(readerDefaultsStore) { mutableStateOf(false) }
+    LaunchedEffect(overlaySheet is ActiveOverlaySheet.Reader, readerDefaultsStore) {
+        if (overlaySheet is ActiveOverlaySheet.Reader && !readerDefaultsLoaded) {
+            readerDefaultsLoaded = true
+            globalReaderDefaults = withContext(Dispatchers.IO) { readerDefaultsStore.read() }
+        }
     }
     var privateReaderPrefsOverride by remember(isPrivateAperture) {
         mutableStateOf<app.focal.feature.reader.ReaderPreferences?>(null)
@@ -1090,6 +1103,16 @@ private fun FocalRootCoordinator(
                             ActiveOverlaySheet.None -> Unit
 
                             ActiveOverlaySheet.Search -> {
+                                val searchHistory by remember(database, isPrivateAperture) {
+                                    if (isPrivateAperture) {
+                                        flowOf(emptyList())
+                                    } else {
+                                        database.historyDao().observeRecentHistory(limit = 200)
+                                    }
+                                }.collectAsState(initial = emptyList())
+                                val immutableSearchHistory = remember(searchHistory) {
+                                    searchHistory.toImmutableList()
+                                }
                                 val prefillQuery = if (
                                     pendingNewTabInSearch ||
                                     activeSession?.isPrivate != isPrivateAperture
@@ -1121,7 +1144,7 @@ private fun FocalRootCoordinator(
                                     animateEntrance = hasLeftInitialSearch,
                                     openTabs = if (isPrivateAperture) privateTabs else immutableAllActiveTabs,
                                     bookmarks = immutableAllBookmarks,
-                                    historyEntries = if (isPrivateAperture) persistentListOf() else immutableHistory,
+                                    historyEntries = immutableSearchHistory,
                                     spaces = immutableSpaces,
                                     browserSettings = browserSettings,
                                     onSwitchToTab = { tabId ->
@@ -1191,6 +1214,13 @@ private fun FocalRootCoordinator(
                             }
 
                             ActiveOverlaySheet.TabSwitcher -> {
+                                val archivedTabs by remember(database) {
+                                    val retentionStart = System.currentTimeMillis() - TabMetadataEntity.ARCHIVE_RETENTION_MS
+                                    database.tabMetadataDao().observeArchivedTabs(retentionStart)
+                                }.collectAsState(initial = emptyList())
+                                val immutableArchivedTabs = remember(archivedTabs) {
+                                    archivedTabs.toImmutableList()
+                                }
                                 val undoClosedTitle = lastClosedTab?.let { rec ->
                                     rec.meta.title.ifBlank { rec.meta.domain.ifBlank { rec.meta.url } }
                                 }
@@ -1391,6 +1421,12 @@ private fun FocalRootCoordinator(
                             }
 
                             ActiveOverlaySheet.History -> {
+                                val recentHistory by remember(database) {
+                                    database.historyDao().observeRecentHistory(limit = 200)
+                                }.collectAsState(initial = emptyList())
+                                val immutableHistory = remember(recentHistory) {
+                                    recentHistory.toImmutableList()
+                                }
                                 HistorySheet(
                                     entries = immutableHistory,
                                     onOpenUrl = { url ->
@@ -1418,6 +1454,12 @@ private fun FocalRootCoordinator(
                             }
 
                             ActiveOverlaySheet.Downloads -> {
+                                val recentDownloads by remember(database) {
+                                    database.downloadRecordDao().observeRecentDownloads(limit = 100)
+                                }.collectAsState(initial = emptyList())
+                                val immutableDownloads = remember(recentDownloads) {
+                                    recentDownloads.toImmutableList()
+                                }
                                 DownloadsSheet(
                                     downloads = immutableDownloads,
                                     onOpenDownload = { record ->
@@ -1451,6 +1493,12 @@ private fun FocalRootCoordinator(
                             }
 
                             ActiveOverlaySheet.GlobalSettings -> {
+                                val biometricAvailable = remember(context) {
+                                    FocalBiometricLock.isDeviceAuthenticationAvailable(context)
+                                }
+                                val appVersionName = remember(context) {
+                                    FocalReleaseUpdater.currentAppVersionName(context)
+                                }
                                 GlobalSettingsSheet(
                                     settings = browserSettings,
                                     appTheme = appChromeTheme,

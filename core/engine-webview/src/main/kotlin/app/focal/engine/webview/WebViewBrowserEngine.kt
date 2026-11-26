@@ -61,6 +61,11 @@ class WebViewBrowserEngine(
         return session
     }
 
+    override fun prefetchUrl(url: String) {
+        if (activePrivateSessionIds.isNotEmpty()) return
+        warmPool.prefetchUrl(url)
+    }
+
     private fun handleSessionDisposed(session: WebViewSession) {
         if (session.isPrivate) {
             activePrivateSessionIds.remove(session.sessionId)

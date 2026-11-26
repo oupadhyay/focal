@@ -35,6 +35,7 @@ import androidx.compose.runtime.FloatState
 import androidx.compose.runtime.IntState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableFloatState
+import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -47,6 +48,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -146,11 +148,14 @@ fun BrowserViewportScreen(
     val scrubOffsetPxState = remember { mutableFloatStateOf(0f) }
     val hasLoadedWebUrl = activeSession != null && sessionState.url.isNotBlank() && sessionState.url != "about:blank"
 
-    val overlayDimProgress by animateFloatAsState(
+    val overlayDimProgressState = animateFloatAsState(
         targetValue = if (isOverlaySheetOpen) 1f else 0f,
         animationSpec = FocalMotion.smartPillSpring(),
         label = "FocalOverlayDimProgress",
     )
+    val isOverlayNotFullyDimmed by remember(overlayDimProgressState) {
+        derivedStateOf { overlayDimProgressState.value < 0.99f }
+    }
 
     val deviceLang = remember { Locale.getDefault().language.lowercase() }
     val foreignLanguageDetected = remember(sessionState.pageLanguageTag, deviceLang) {
@@ -199,7 +204,7 @@ fun BrowserViewportScreen(
     } else {
         colors.canvasBackground
     }
-    val animatedWebBackdropColor by animateColorAsState(
+    val animatedWebBackdropColorState = animateColorAsState(
         targetValue = targetWebBackdropColor,
         animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
         label = "FocalWebViewportBackdropColor",
@@ -289,7 +294,7 @@ fun BrowserViewportScreen(
                     val scrubFraction = (kotlin.math.abs(scrubPx) / 88.dp.toPx()).coerceIn(0f, 1f)
                     val scrubScale = 1f - (scrubFraction * 0.06f)
                     val backScale = 1f - (backProg * 0.06f)
-                    val sheetRecedeScale = 1f - (overlayDimProgress * 0.025f)
+                    val sheetRecedeScale = 1f - (overlayDimProgressState.value * 0.025f)
 
                     translationX = scrubPx + backSlidePx
                     scaleX = scrubScale * backScale * sheetRecedeScale
@@ -324,7 +329,7 @@ fun BrowserViewportScreen(
                     modifier = Modifier
                         .fillMaxSize()
                         .then(
-                            if (overlayDimProgress < 0.99f) {
+                            if (isOverlayNotFullyDimmed) {
                                 Modifier.recordFocalBackdrop(backdropGraphicsLayer)
                             } else {
                                 Modifier
@@ -333,7 +338,7 @@ fun BrowserViewportScreen(
                 ) {
                     CalmOpticalLaunchCanvas(
                         isPrivateAperture = isPrivateAperture,
-                        overlayDimProgress = overlayDimProgress,
+                        overlayDimProgressState = overlayDimProgressState,
                         continuityHandoff = continuityHandoff,
                         onOpenContinuityHandoff = onOpenContinuityHandoff,
                         onTapStartSearch = onOpenSearchSheet,
@@ -408,14 +413,14 @@ fun BrowserViewportScreen(
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .height(webViewportBottomPaddingDp)
-                    .background(animatedWebBackdropColor)
+                    .drawBehind { drawRect(animatedWebBackdropColorState.value) }
                     .testTag("web_bottom_dock_backdrop"),
             )
         }
 
         // Layer 2: Floating Lower Dock — adapts ONLY bottom bar elements to light/dark web pages
         // Steps aside cleanly while typing in web page inputs (e.g., Google AI Mode composer)
-        if (!isInPictureInPictureMode && !isFindInPageOpen && !isWebImeOpen && overlayDimProgress < 0.99f) {
+        if (!isInPictureInPictureMode && !isFindInPageOpen && !isWebImeOpen && isOverlayNotFullyDimmed) {
             val effectiveBackdropLayer = if (hasLoadedWebUrl) null else backdropGraphicsLayer
             val dockDarkGlass = if (hasLoadedWebUrl) adaptiveBottomBarDarkGlass else colors.isDarkGlass
             FocalTheme(
@@ -431,19 +436,20 @@ fun BrowserViewportScreen(
                             .navigationBarsPadding()
                             .padding(bottom = 12.dp)
                             .graphicsLayer {
+                                val dimProgress = overlayDimProgressState.value
                                 val scrollHideFraction = bottomBarScrollHideFraction.floatValue.coerceIn(0f, 1f)
                                 val scrollHideY = if (fullHideBottomBarOnScroll) {
                                     scrollHideFraction * 92.dp.toPx()
                                 } else {
                                     scrollHideFraction * 18.dp.toPx()
                                 }
-                                val sheetHideY = overlayDimProgress * 28.dp.toPx()
+                                val sheetHideY = dimProgress * 28.dp.toPx()
                                 val scrollAlpha = if (fullHideBottomBarOnScroll) {
                                     (1f - scrollHideFraction).coerceIn(0f, 1f)
                                 } else {
                                     1f
                                 }
-                                val sheetAlpha = (1f - overlayDimProgress * 1.15f).coerceIn(0f, 1f)
+                                val sheetAlpha = (1f - dimProgress * 1.15f).coerceIn(0f, 1f)
                                 translationY = scrollHideY + sheetHideY
                                 alpha = scrollAlpha * sheetAlpha
                             },
@@ -545,7 +551,7 @@ fun BrowserViewportScreen(
 @Composable
 private fun CalmOpticalLaunchCanvas(
     isPrivateAperture: Boolean,
-    overlayDimProgress: Float,
+    overlayDimProgressState: State<Float>,
     continuityHandoff: SyncEvent.TabHandoffEvent?,
     onOpenContinuityHandoff: (SyncEvent.TabHandoffEvent) -> Unit,
     onTapStartSearch: () -> Unit,
@@ -560,6 +566,9 @@ private fun CalmOpticalLaunchCanvas(
             Color.Black.copy(alpha = 0.032f)
         },
     )
+    val showContinuityChip by remember(overlayDimProgressState) {
+        derivedStateOf { overlayDimProgressState.value < 0.5f }
+    }
 
     Box(
         modifier = Modifier
@@ -577,7 +586,7 @@ private fun CalmOpticalLaunchCanvas(
             .padding(horizontal = 24.dp, vertical = 18.dp),
     ) {
         // Optional Top E2EE Desktop Continuity Handoff Chip (only rendered when active)
-        if (continuityHandoff != null && overlayDimProgress < 0.5f) {
+        if (continuityHandoff != null && showContinuityChip) {
             Row(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
@@ -609,10 +618,11 @@ private fun CalmOpticalLaunchCanvas(
             modifier = Modifier
                 .align(BiasAlignment(horizontalBias = 0f, verticalBias = -0.22f))
                 .graphicsLayer {
-                    val markAlpha = (1f - overlayDimProgress * 1.4f).coerceIn(0f, 1f)
+                    val dimProgress = overlayDimProgressState.value
+                    val markAlpha = (1f - dimProgress * 1.4f).coerceIn(0f, 1f)
                     alpha = markAlpha
-                    scaleX = 1f - overlayDimProgress * 0.06f
-                    scaleY = 1f - overlayDimProgress * 0.06f
+                    scaleX = 1f - dimProgress * 0.06f
+                    scaleY = 1f - dimProgress * 0.06f
                 }
                 .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,

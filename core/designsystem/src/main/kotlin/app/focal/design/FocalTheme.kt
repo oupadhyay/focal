@@ -17,6 +17,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -28,7 +29,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 
-val LocalFocalColors = staticCompositionLocalOf { FocalPalettes.DarkSmokedOled }
+val LocalFocalColors = compositionLocalOf { FocalPalettes.DarkSmokedOled }
 val LocalFocalTypography = staticCompositionLocalOf { DefaultFocalTypeScale }
 
 /**

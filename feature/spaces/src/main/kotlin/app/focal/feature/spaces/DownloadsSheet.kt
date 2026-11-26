@@ -23,10 +23,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -41,6 +41,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
@@ -69,6 +71,16 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+
+private val DownloadsCardTopShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
+private val DownloadsCardBottomShape = RoundedCornerShape(bottomStart = 20.dp, bottomEnd = 20.dp)
+
+private fun downloadsGroupedRowShape(index: Int, totalCount: Int): Shape = when {
+    totalCount <= 1 -> FocalGeometry.CardShape
+    index == 0 -> DownloadsCardTopShape
+    index == totalCount - 1 -> DownloadsCardBottomShape
+    else -> RectangleShape
+}
 
 internal fun formatDownloadRelativeTime(
     createdAtEpochMs: Long,
@@ -262,55 +274,64 @@ fun DownloadsSheet(
                     }
                 }
 
-                // Scrollable Downloads List or Calm Empty State
-                Column(
+                // Scrollable Downloads List or Calm Empty State (virtualized LazyColumn)
+                LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 460.dp)
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                        .heightIn(max = 460.dp),
                 ) {
                     if (orderedDownloads.isEmpty()) {
-                        FocalGroupedCard {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 18.dp, vertical = 28.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(6.dp),
-                            ) {
-                                Box(
+                        item(key = "downloads_empty", contentType = "empty_state") {
+                            FocalGroupedCard {
+                                Column(
                                     modifier = Modifier
-                                        .size(40.dp)
-                                        .clip(CircleShape)
-                                        .background(colors.surfacePillSubtle),
-                                    contentAlignment = Alignment.Center,
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 18.dp, vertical = 28.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(6.dp),
                                 ) {
-                                    Icon(
-                                        imageVector = FocalGlyphs.Download,
-                                        contentDescription = null,
-                                        tint = colors.inkSecondary,
-                                        modifier = Modifier.size(20.dp),
+                                    Box(
+                                        modifier = Modifier
+                                            .size(40.dp)
+                                            .clip(CircleShape)
+                                            .background(colors.surfacePillSubtle),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Icon(
+                                            imageVector = FocalGlyphs.Download,
+                                            contentDescription = null,
+                                            tint = colors.inkSecondary,
+                                            modifier = Modifier.size(20.dp),
+                                        )
+                                    }
+                                    Spacer(Modifier.height(2.dp))
+                                    Text(
+                                        text = "No downloads yet",
+                                        style = typography.cardTitle,
+                                        color = colors.inkPrimary,
+                                        textAlign = TextAlign.Center,
+                                    )
+                                    Text(
+                                        text = "Files and saved images appear here",
+                                        style = typography.captionMetadata,
+                                        color = colors.inkSecondary,
+                                        textAlign = TextAlign.Center,
                                     )
                                 }
-                                Spacer(Modifier.height(2.dp))
-                                Text(
-                                    text = "No downloads yet",
-                                    style = typography.cardTitle,
-                                    color = colors.inkPrimary,
-                                    textAlign = TextAlign.Center,
-                                )
-                                Text(
-                                    text = "Files and saved images appear here",
-                                    style = typography.captionMetadata,
-                                    color = colors.inkSecondary,
-                                    textAlign = TextAlign.Center,
-                                )
                             }
                         }
                     } else {
-                        FocalGroupedCard {
-                            orderedDownloads.forEachIndexed { index, record ->
+                        itemsIndexed(
+                            items = orderedDownloads,
+                            key = { _, record -> "download_${record.id}" },
+                            contentType = { _, _ -> "download_row" },
+                        ) { index, record ->
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(downloadsGroupedRowShape(index, orderedDownloads.size))
+                                    .background(colors.surfacePillSubtle),
+                            ) {
                                 if (index > 0) {
                                     FocalHairlineDivider(insetStart = 60.dp)
                                 }

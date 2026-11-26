@@ -9,6 +9,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -23,6 +24,8 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -293,35 +296,48 @@ fun ReaderModeView(
                 .background(selectedTheme.divider),
         )
 
-        // Article Body
-        Column(
+        val bodyFontFamily = if (useSerif) FontFamily.Serif else SwitzerBody
+        val lineHeightSp = (fontSizeSp * lineHeightRatio).sp
+
+        // Article Body (virtualized LazyColumn for long-form articles)
+        LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp, vertical = 22.dp),
+                .weight(1f),
+            contentPadding = PaddingValues(
+                start = 24.dp,
+                end = 24.dp,
+                top = 22.dp,
+                bottom = 54.dp,
+            ),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Text(
-                text = document.title,
-                fontFamily = AlloCrispDisplay,
-                fontSize = 26.sp,
-                lineHeight = 32.sp,
-                color = selectedTheme.primaryInk,
-            )
-
-            if (!document.byline.isNullOrBlank()) {
+            item(key = "reader_title", contentType = "article_title") {
                 Text(
-                    text = document.byline!!,
-                    style = typography.captionMetadata,
-                    color = selectedTheme.secondaryInk,
+                    text = document.title,
+                    fontFamily = AlloCrispDisplay,
+                    fontSize = 26.sp,
+                    lineHeight = 32.sp,
+                    color = selectedTheme.primaryInk,
                 )
             }
 
-            val bodyFontFamily = if (useSerif) FontFamily.Serif else SwitzerBody
-            val lineHeightSp = (fontSizeSp * lineHeightRatio).sp
+            val byline = document.byline
+            if (!byline.isNullOrBlank()) {
+                item(key = "reader_byline", contentType = "article_byline") {
+                    Text(
+                        text = byline,
+                        style = typography.captionMetadata,
+                        color = selectedTheme.secondaryInk,
+                    )
+                }
+            }
 
-            document.paragraphs.forEach { paragraph ->
+            itemsIndexed(
+                items = document.paragraphs,
+                key = { index, _ -> "reader_paragraph_$index" },
+                contentType = { _, _ -> "article_paragraph" },
+            ) { _, paragraph ->
                 Text(
                     text = paragraph,
                     fontFamily = bodyFontFamily,
@@ -330,8 +346,6 @@ fun ReaderModeView(
                     color = selectedTheme.primaryInk,
                 )
             }
-
-            Spacer(Modifier.height(32.dp))
         }
     }
 }

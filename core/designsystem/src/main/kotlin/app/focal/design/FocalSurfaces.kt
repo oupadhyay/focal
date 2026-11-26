@@ -1,7 +1,7 @@
 package app.focal.design
 
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -23,17 +22,21 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -112,17 +115,19 @@ fun FocalSwitch(
     modifier: Modifier = Modifier,
 ) {
     val colors = FocalTheme.colors
+    val density = LocalDensity.current
+    val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
     val inactiveTrack = if (colors.isDarkGlass || colors.isPrivateAperture) {
         Color.White.copy(alpha = 0.14f)
     } else {
         Color.Black.copy(alpha = 0.11f)
     }
-    val trackColor by animateColorAsState(
+    val trackColorState = animateColorAsState(
         targetValue = if (checked) colors.surfacePillActive else inactiveTrack,
         animationSpec = FocalMotion.smartPillSpring(),
         label = "FocalSwitchTrack",
     )
-    val thumbColor by animateColorAsState(
+    val thumbColorState = animateColorAsState(
         targetValue = if (checked) {
             colors.inkOnPillActive
         } else if (colors.isDarkGlass || colors.isPrivateAperture) {
@@ -133,8 +138,9 @@ fun FocalSwitch(
         animationSpec = FocalMotion.smartPillSpring(),
         label = "FocalSwitchThumb",
     )
-    val thumbOffset by animateDpAsState(
-        targetValue = if (checked) 20.dp else 2.dp,
+    val targetThumbOffsetPx = with(density) { (if (checked) 20.dp else 2.dp).toPx() }
+    val thumbOffsetPxState = animateFloatAsState(
+        targetValue = targetThumbOffsetPx,
         animationSpec = FocalMotion.smartPillSpring(),
         label = "FocalSwitchOffset",
     )
@@ -143,7 +149,7 @@ fun FocalSwitch(
         modifier = modifier
             .size(width = 44.dp, height = 26.dp)
             .clip(CircleShape)
-            .background(trackColor)
+            .drawBehind { drawRect(trackColorState.value) }
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -154,10 +160,13 @@ fun FocalSwitch(
     ) {
         Box(
             modifier = Modifier
-                .offset(x = thumbOffset)
+                .graphicsLayer {
+                    val thumbOffsetPx = thumbOffsetPxState.value
+                    translationX = if (isRtl) -thumbOffsetPx else thumbOffsetPx
+                }
                 .size(22.dp)
                 .clip(CircleShape)
-                .background(thumbColor),
+                .drawBehind { drawRect(thumbColorState.value) },
         )
     }
 }

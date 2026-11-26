@@ -1,8 +1,10 @@
 package app.focal
 
+import android.content.ComponentCallbacks2
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Bundle
 import android.webkit.CookieManager
 import android.webkit.WebStorage
 import androidx.compose.runtime.Immutable
@@ -32,6 +34,7 @@ import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -45,6 +48,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 @Immutable
 sealed interface ActiveOverlaySheet {
@@ -99,10 +103,16 @@ class BrowserSessionViewModel(
 ) : ViewModel() {
 
     private val sessionLock = Any()
-    private val sessionMap = LinkedHashMap<String, EngineSession>()
+    // Access-ordered LRU map so excess background WebViews can hibernate cleanly (eldest first)
+    private val sessionMap = LinkedHashMap<String, EngineSession>(8, 0.75f, true)
+    private val hibernatedStates = ConcurrentHashMap<String, Bundle>()
     private val sessionJobs = ConcurrentHashMap<String, Job>()
     private val tabSpaceIds = ConcurrentHashMap<String, String>()
     private val persistedNonPrivateTabIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    private val thumbnailsHydrated = AtomicBoolean(false)
+
+    @Volatile
+    private var appInForeground: Boolean = true
 
     private val previewLock = Any()
     private val previewMap = LinkedHashMap<String, Bitmap>(16, 0.75f, true)
@@ -152,7 +162,7 @@ class BrowserSessionViewModel(
 
     init {
         bindMultiTabMediaHandlers()
-        hydrateDiskCachedThumbnails()
+        scheduleDeferredThumbnailHydration()
         observeArchivedTabsForLiveDisposal()
         observeIncomingSpacesSnapshots()
         observeOutboundPresenceTabs()
@@ -172,17 +182,27 @@ class BrowserSessionViewModel(
     }
 
     /**
-     * Hydrates disk-cached JPEG previews for active non-private tabs on cold launch
-     * and prunes stale thumbnail files from closed/archived tabs off the main thread.
+     * Defers disk-cached RGB_565 thumbnail hydration past cold-start Frame 0 (or triggers
+     * immediately if the user opens the Tab Switcher first) and caps decoding strictly to
+     * [MAX_CACHED_TAB_PREVIEWS] active tabs.
      */
-    private fun hydrateDiskCachedThumbnails() {
+    private fun scheduleDeferredThumbnailHydration() {
+        if (thumbnailDiskCache == null) return
+        viewModelScope.launch(Dispatchers.IO) {
+            delay(1_200L)
+            hydrateDiskCachedThumbnailsIfNeeded()
+        }
+    }
+
+    private fun hydrateDiskCachedThumbnailsIfNeeded() {
         val cache = thumbnailDiskCache ?: return
+        if (!thumbnailsHydrated.compareAndSet(false, true)) return
         viewModelScope.launch(Dispatchers.IO) {
             val activeTabs = runCatching {
                 database.tabMetadataDao().observeAllActiveTabs().first()
             }.getOrDefault(emptyList())
             val activeIds = activeTabs.map { it.id }
-            val loaded = cache.loadAllForTabs(activeIds)
+            val loaded = cache.loadRecentForTabs(activeIds, maxCount = MAX_CACHED_TAB_PREVIEWS)
             cache.pruneExcept(activeIds.toSet())
             if (loaded.isNotEmpty()) {
                 synchronized(previewLock) {
@@ -373,11 +393,96 @@ class BrowserSessionViewModel(
     }
 
     fun openTabSwitcher() {
+        hydrateDiskCachedThumbnailsIfNeeded()
         val currentSelId = _selectedTabId.value
         getSession(currentSelId)?.setElementZapperActive(false)
         capturePreviewForTab(currentSelId)
         _pendingNewTabInSearch.value = false
         _overlaySheet.value = ActiveOverlaySheet.TabSwitcher
+    }
+
+    /**
+     * Coordinates WebView `onResume`/`onPause` and Chromium renderer priority when the app moves
+     * between foreground and background (preserving background audio/video playback).
+     */
+    fun onAppForegroundChanged(inForeground: Boolean) {
+        appInForeground = inForeground
+        syncForegroundSession(activeTabId = if (inForeground) _selectedTabId.value else null)
+    }
+
+    /**
+     * Reclaims native Chromium renderer and bitmap memory under Android memory pressure.
+     */
+    fun onTrimMemory(level: Int) {
+        val live = synchronized(sessionLock) { sessionMap.values.toList() }
+        for (session in live) {
+            session.trimMemory()
+        }
+        val targetCap = when {
+            level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND -> 1
+            level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN -> 2
+            level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW -> 2
+            else -> MAX_LIVE_WEBVIEW_SESSIONS
+        }
+        hibernateExcessBackgroundSessions(
+            keepTabId = _selectedTabId.value,
+            maxLiveCount = targetCap,
+        )
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+            val activeId = _selectedTabId.value
+            synchronized(previewLock) {
+                val iter = previewMap.entries.iterator()
+                while (iter.hasNext() && previewMap.size > 4) {
+                    val entry = iter.next()
+                    if (entry.key != activeId) {
+                        iter.remove()
+                    }
+                }
+                _tabPreviews.value = LinkedHashMap(previewMap)
+            }
+        }
+    }
+
+    fun prefetchUrl(url: String) {
+        if (_isPrivateAperture.value) return
+        browserEngine.prefetchUrl(url)
+    }
+
+    private fun syncForegroundSession(activeTabId: String?) {
+        val snapshot = synchronized(sessionLock) { sessionMap.entries.toList() }
+        for ((id, session) in snapshot) {
+            session.setForegroundActive(appInForeground && id == activeTabId)
+        }
+    }
+
+    private fun hibernateExcessBackgroundSessions(
+        keepTabId: String?,
+        maxLiveCount: Int = MAX_LIVE_WEBVIEW_SESSIONS,
+    ) {
+        val toHibernate = mutableListOf<Pair<String, EngineSession>>()
+        synchronized(sessionLock) {
+            if (sessionMap.size <= maxLiveCount) return
+            val iter = sessionMap.entries.iterator()
+            while (iter.hasNext() && sessionMap.size > maxLiveCount) {
+                val (candidateId, candidateSession) = iter.next()
+                if (candidateId == keepTabId) continue
+                // Never hibernate a tab actively playing background audio/video
+                if (candidateSession.state.value.activeMedia?.isPlaying == true) continue
+                iter.remove()
+                toHibernate += candidateId to candidateSession
+            }
+            if (toHibernate.isNotEmpty()) {
+                _liveSessions.value = LinkedHashMap(sessionMap)
+            }
+        }
+        for ((tabId, session) in toHibernate) {
+            val savedState = runCatching { session.saveNavigationState() }.getOrNull()
+            if (savedState != null) {
+                hibernatedStates[tabId] = savedState
+            }
+            sessionJobs.remove(tabId)?.cancel()
+            session.dispose()
+        }
     }
 
     fun capturePreviewForTab(tabId: String?) {
@@ -532,6 +637,7 @@ class BrowserSessionViewModel(
             spaceId = currentSpace,
             createdAtEpochMs = now,
         )
+        hibernatedStates.remove(tabId)
         session.loadUrl(trimmedUrl)
 
         if (!openInBackground) {
@@ -539,6 +645,11 @@ class BrowserSessionViewModel(
             _isPrivateAperture.value = privateMode
             _overlaySheet.value = ActiveOverlaySheet.None
             FocalMediaBridge.onSelectedTabChanged(tabId)
+            syncForegroundSession(tabId)
+            hibernateExcessBackgroundSessions(keepTabId = tabId)
+        } else {
+            session.setForegroundActive(false)
+            hibernateExcessBackgroundSessions(keepTabId = _selectedTabId.value)
         }
 
         val domain = extractCleanDomain(trimmedUrl)
@@ -569,23 +680,34 @@ class BrowserSessionViewModel(
         }
     }
 
-    fun selectTab(tabId: String, activeSpaceTabs: List<TabMetadataEntity>) {
+    fun selectTab(
+        tabId: String,
+        activeSpaceTabs: List<TabMetadataEntity>,
+        captureOutgoingPreview: Boolean = true,
+    ) {
         val currentSelId = _selectedTabId.value
         if (currentSelId != null && currentSelId != tabId) {
             getSession(currentSelId)?.setElementZapperActive(false)
-            capturePreviewForTab(currentSelId)
+            if (captureOutgoingPreview) {
+                capturePreviewForTab(currentSelId)
+            }
         }
         val now = System.currentTimeMillis()
         val privateMeta = synchronized(privateTabLock) { privateTabMap[tabId] }
         if (privateMeta != null) {
+            val alreadyLive = getSession(tabId) != null
             val session = getOrCreateRegisteredSession(
                 tabId = tabId,
                 isPrivate = true,
                 spaceId = privateMeta.spaceId,
                 createdAtEpochMs = privateMeta.createdAtEpochMs,
             )
-            if (session.state.value.url.isBlank() || session.state.value.url == "about:blank") {
-                session.loadUrl(privateMeta.url)
+            if (!alreadyLive) {
+                val savedBundle = hibernatedStates.remove(tabId)
+                val restored = savedBundle != null && session.restoreNavigationState(savedBundle)
+                if (!restored && (session.state.value.url.isBlank() || session.state.value.url == "about:blank")) {
+                    session.loadUrl(privateMeta.url)
+                }
             }
             upsertPrivateTabInMemory(
                 tabId = privateMeta.id,
@@ -601,6 +723,8 @@ class BrowserSessionViewModel(
             _isPrivateAperture.value = true
             _overlaySheet.value = ActiveOverlaySheet.None
             FocalMediaBridge.onSelectedTabChanged(tabId)
+            syncForegroundSession(tabId)
+            hibernateExcessBackgroundSessions(keepTabId = tabId)
             return
         }
 
@@ -615,13 +739,19 @@ class BrowserSessionViewModel(
                 createdAtEpochMs = meta.createdAtEpochMs,
             )
             if (!alreadyLive) {
-                session.loadUrl(meta.url)
+                val savedBundle = hibernatedStates.remove(meta.id)
+                val restored = savedBundle != null && session.restoreNavigationState(savedBundle)
+                if (!restored) {
+                    session.loadUrl(meta.url)
+                }
             }
             _activeSpaceId.value = meta.spaceId
             _selectedTabId.value = meta.id
             _isPrivateAperture.value = false
             _overlaySheet.value = ActiveOverlaySheet.None
             FocalMediaBridge.onSelectedTabChanged(meta.id)
+            syncForegroundSession(meta.id)
+            hibernateExcessBackgroundSessions(keepTabId = meta.id)
             viewModelScope.launch(Dispatchers.IO) {
                 database.tabMetadataDao().touchTab(meta.id, now)
             }
@@ -634,12 +764,12 @@ class BrowserSessionViewModel(
             if (pTabs.size <= 1) return
             val currentIdx = pTabs.indexOfFirst { it.id == _selectedTabId.value }.coerceAtLeast(0)
             val nextMeta = pTabs[(currentIdx + delta).mod(pTabs.size)]
-            selectTab(nextMeta.id, activeSpaceTabs)
+            selectTab(nextMeta.id, activeSpaceTabs, captureOutgoingPreview = false)
         } else {
             if (activeSpaceTabs.size <= 1) return
             val currentIdx = activeSpaceTabs.indexOfFirst { it.id == _selectedTabId.value }.coerceAtLeast(0)
             val nextMeta = activeSpaceTabs[(currentIdx + delta).mod(activeSpaceTabs.size)]
-            selectTab(nextMeta.id, activeSpaceTabs)
+            selectTab(nextMeta.id, activeSpaceTabs, captureOutgoingPreview = false)
         }
     }
 
@@ -685,6 +815,7 @@ class BrowserSessionViewModel(
 
         sessionJobs.remove(tabId)?.cancel()
         tabSpaceIds.remove(tabId)
+        hibernatedStates.remove(tabId)
         val disposedSession = removeSessionInternal(tabId)
         disposedSession?.dispose()
         removePreviewBitmap(tabId)
@@ -700,6 +831,7 @@ class BrowserSessionViewModel(
                 val nextId = remainingPrivate.firstOrNull()?.id
                 _selectedTabId.value = nextId
                 FocalMediaBridge.onSelectedTabChanged(nextId)
+                syncForegroundSession(nextId)
             }
         } else {
             persistedNonPrivateTabIds.remove(tabId)
@@ -711,6 +843,7 @@ class BrowserSessionViewModel(
                 val nextId = activeSpaceTabs.firstOrNull { it.id != tabId }?.id
                 _selectedTabId.value = nextId
                 FocalMediaBridge.onSelectedTabChanged(nextId)
+                syncForegroundSession(nextId)
             }
         }
     }
@@ -756,6 +889,8 @@ class BrowserSessionViewModel(
         }
         _selectedTabId.value = meta.id
         FocalMediaBridge.onSelectedTabChanged(meta.id)
+        syncForegroundSession(meta.id)
+        hibernateExcessBackgroundSessions(keepTabId = meta.id)
     }
 
     fun dismissUndoCloseTab() {
@@ -771,7 +906,7 @@ class BrowserSessionViewModel(
     }
 
     /**
-     * Records a completed non-private page visit in local Room history.
+     * Records a completed non-private page visit in local Room history via a single SQLite transaction.
      * Strictly no-op for Private Aperture (`◎`) tabs or non-HTTP(S) URLs.
      */
     fun recordHistoryVisit(
@@ -787,20 +922,12 @@ class BrowserSessionViewModel(
         if (!isHttp) return
 
         viewModelScope.launch(Dispatchers.IO) {
-            val existing = database.historyDao().getByUrl(cleanUrl)
             val domain = extractCleanDomain(cleanUrl)
-            val resolvedTitle = title.trim()
-                .ifBlank { existing?.title?.takeIf { it.isNotBlank() } ?: domain.ifBlank { cleanUrl } }
-            val now = System.currentTimeMillis()
-            database.historyDao().upsert(
-                HistoryEntryEntity(
-                    id = existing?.id ?: "hist-${UUID.randomUUID()}",
-                    url = cleanUrl,
-                    domain = domain,
-                    title = resolvedTitle,
-                    visitedAtEpochMs = now,
-                    visitCount = (existing?.visitCount ?: 0) + 1,
-                ),
+            database.historyDao().recordHistoryVisit(
+                url = cleanUrl,
+                domain = domain,
+                title = title.trim(),
+                visitedAtEpochMs = System.currentTimeMillis(),
             )
         }
     }
@@ -811,6 +938,7 @@ class BrowserSessionViewModel(
      */
     fun clearBrowsingData(context: Context) {
         _lastClosedTab.value = null
+        hibernatedStates.clear()
         synchronized(previewLock) {
             previewMap.clear()
             _tabPreviews.value = emptyMap()
@@ -883,6 +1011,7 @@ class BrowserSessionViewModel(
         for (id in allPrivateIds) {
             sessionJobs.remove(id)?.cancel()
             tabSpaceIds.remove(id)
+            hibernatedStates.remove(id)
             removeSessionInternal(id)?.dispose()
             removePreviewBitmap(id)
             FocalMediaBridge.clearIfOwnedBy(id)
@@ -1105,6 +1234,7 @@ class BrowserSessionViewModel(
         }
         sessionJobs.clear()
         tabSpaceIds.clear()
+        hibernatedStates.clear()
 
         synchronized(previewLock) {
             previewMap.clear()
@@ -1126,6 +1256,7 @@ class BrowserSessionViewModel(
 
     companion object {
         private const val MAX_CACHED_TAB_PREVIEWS = 16
+        private const val MAX_LIVE_WEBVIEW_SESSIONS = 4
 
         fun factory(app: FocalApplication): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {

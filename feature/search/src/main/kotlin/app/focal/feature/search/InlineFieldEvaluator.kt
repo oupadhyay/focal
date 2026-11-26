@@ -160,9 +160,11 @@ object InlineFieldEvaluator {
     private val TIME_12H_FMT = DateTimeFormatter.ofPattern("h:mm a", Locale.US)
     private val TIME_24H_FMT = DateTimeFormatter.ofPattern("HH:mm", Locale.US)
     private val ZONE_ABBREV_FMT = DateTimeFormatter.ofPattern("zzz", Locale.US)
+    private val DAY_DELTA_FMT = DateTimeFormatter.ofPattern("EEE, MMM d", Locale.US)
+    private val MULTI_WHITESPACE_REGEX = Regex("\\s+")
 
     private fun lookupZone(rawPlace: String): ZoneEntry? {
-        val cleaned = rawPlace.trim().lowercase(Locale.US).replace(Regex("\\s+"), " ")
+        val cleaned = rawPlace.trim().lowercase(Locale.US).replace(MULTI_WHITESPACE_REGEX, " ")
         ZONE_LOOKUP[cleaned]?.let { return it }
         // Also support explicit IANA zone IDs like "America/New_York"
         if (cleaned.contains('/')) {
@@ -192,7 +194,7 @@ object InlineFieldEvaluator {
             0 -> ""
             1 -> " · Tomorrow"
             -1 -> " · Yesterday"
-            else -> " · ${targetDate.format(DateTimeFormatter.ofPattern("EEE, MMM d", Locale.US))}"
+            else -> " · ${targetDate.format(DAY_DELTA_FMT)}"
         }
     }
 
@@ -444,7 +446,7 @@ object InlineFieldEvaluator {
     )
 
     private fun lookupUnit(raw: String): UnitSpec? {
-        val normalized = raw.trim().lowercase(Locale.US).replace(Regex("\\s+"), " ")
+        val normalized = raw.trim().lowercase(Locale.US).replace(MULTI_WHITESPACE_REGEX, " ")
         return UNITS_BY_ALIAS[normalized]
     }
 
@@ -762,6 +764,16 @@ object InlineFieldEvaluator {
     // Number Formatting (clean IEEE-754 noise cleanup + tabular grouping)
     // -------------------------------------------------------------------------
 
+    private val US_DECIMAL_SYMBOLS: DecimalFormatSymbols = DecimalFormatSymbols(Locale.US)
+    private val THREAD_LOCAL_DECIMAL_FORMAT: ThreadLocal<DecimalFormat> =
+        ThreadLocal.withInitial {
+            DecimalFormat("#,##0", US_DECIMAL_SYMBOLS).apply {
+                isGroupingUsed = true
+                minimumFractionDigits = 0
+                roundingMode = RoundingMode.HALF_UP
+            }
+        }
+
     private fun cleanBigDecimal(value: Double, maxFractionDigits: Int): BigDecimal {
         val safeValue = if (abs(value) < 1e-12) 0.0 else value
         val rounded = BigDecimal.valueOf(safeValue)
@@ -772,13 +784,9 @@ object InlineFieldEvaluator {
 
     private fun formatNumeric(value: Double, maxFractionDigits: Int): String {
         val bd = cleanBigDecimal(value, maxFractionDigits)
-        val symbols = DecimalFormatSymbols(Locale.US)
-        val pattern = if (maxFractionDigits > 0) {
-            "#,##0.${"#".repeat(maxFractionDigits)}"
-        } else {
-            "#,##0"
-        }
-        return DecimalFormat(pattern, symbols).format(bd)
+        val formatter = THREAD_LOCAL_DECIMAL_FORMAT.get()!!
+        formatter.maximumFractionDigits = maxFractionDigits.coerceAtLeast(0)
+        return formatter.format(bd)
     }
 
     private fun formatRawNumeric(value: Double, maxFractionDigits: Int): String {

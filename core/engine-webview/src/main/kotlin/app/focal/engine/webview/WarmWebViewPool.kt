@@ -7,11 +7,16 @@ import android.os.Handler
 import android.os.Looper
 import android.webkit.WebSettings
 import android.webkit.WebView
+import androidx.webkit.OutcomeReceiverCompat
+import androidx.webkit.PrefetchException
+import androidx.webkit.Profile
+import androidx.webkit.ProfileStore
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import androidx.webkit.WebViewStartUpConfig
 import java.util.ArrayDeque
+import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -32,6 +37,18 @@ class WarmWebViewPool(
     private val warmupExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "focal-webview-warmup").apply { isDaemon = true }
     }
+    private val prefetchCallbackExecutor = Executor { command -> command.run() }
+
+    @androidx.annotation.OptIn(Profile.ExperimentalUrlPrefetch::class)
+    private val noopPrefetchReceiver: OutcomeReceiverCompat<Void?, PrefetchException> by lazy(
+        LazyThreadSafetyMode.NONE,
+    ) {
+        object : OutcomeReceiverCompat<Void?, PrefetchException> {
+            override fun onResult(result: Void?) = Unit
+            override fun onError(error: PrefetchException) = Unit
+        }
+    }
+
     private val pool = ArrayDeque<WebView>(targetPoolSize)
     private val idleScheduled = AtomicBoolean(false)
     private val providerWarmed = AtomicBoolean(false)
@@ -41,7 +58,8 @@ class WarmWebViewPool(
      * Cold-launch provider warmup: loads Chromium's WebView APK & native binaries strictly on a
      * background daemon thread (`setShouldRunUiThreadStartUpTasks(false)`), keeping 0ms of
      * synchronous Chromium initialization off the main thread during initial `FocusEvent` and
-     * `SearchSheet` / IME launch.
+     * `SearchSheet` / IME launch, then immediately schedules a main-looper idle pre-inflation so
+     * the user's first navigation acquires an already-warm pooled [WebView].
      */
     @androidx.annotation.OptIn(WebViewCompat.ExperimentalAsyncStartUp::class)
     fun scheduleBackgroundProviderWarmup() {
@@ -53,10 +71,48 @@ class WarmWebViewPool(
                 .setShouldRunUiThreadStartUpTasks(false)
                 .build()
             WebViewCompat.startUpWebView(config) {
-                // Background Chromium package & native binary warmup finished with zero UI-thread stall
+                // Background Chromium package & native binary warmup finished with zero UI-thread stall;
+                // pre-inflate a warm WebView on the main looper idle queue before first navigation.
+                if (!shutDown.get()) {
+                    scheduleIdleWarmup()
+                }
             }
         } catch (_: Throwable) {
             // Headless JVM / older WebView APKs fall back cleanly to on-demand WebView creation
+        }
+    }
+
+    /**
+     * Speculatively prefetches an `https://` [url] into Chromium's default profile when supported.
+     * Always dispatched on the main thread and safely wrapped so older WebViews or headless tests
+     * remain no-ops.
+     */
+    @SuppressLint("RequiresFeature")
+    @androidx.annotation.OptIn(Profile.ExperimentalUrlPrefetch::class)
+    fun prefetchUrl(url: String) {
+        if (shutDown.get()) return
+        val trimmed = url.trim()
+        if (!trimmed.startsWith("https://", ignoreCase = true)) return
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROFILE_URL_PREFETCH)) return
+
+        val task = Runnable {
+            if (shutDown.get()) return@Runnable
+            runCatching {
+                val store = ProfileStore.getInstance()
+                val profile = store.getProfile(Profile.DEFAULT_PROFILE_NAME)
+                    ?: store.getOrCreateProfile(Profile.DEFAULT_PROFILE_NAME)
+                profile.prefetchUrlAsync(
+                    trimmed,
+                    null,
+                    prefetchCallbackExecutor,
+                    noopPrefetchReceiver,
+                )
+            }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            task.run()
+        } else {
+            mainHandler.post(task)
         }
     }
 
@@ -130,7 +186,11 @@ class WarmWebViewPool(
         return createConfiguredWebView(MutableContextWrapper(unwrappedHost))
     }
 
-    @SuppressLint("SetJavaScriptEnabled")
+    @SuppressLint("SetJavaScriptEnabled", "RequiresFeature")
+    @androidx.annotation.OptIn(
+        WebSettingsCompat.ExperimentalBackForwardCache::class,
+        WebSettingsCompat.ExperimentalSpeculativeLoading::class,
+    )
     private fun createConfiguredWebView(wrapper: MutableContextWrapper): WebView {
         return WebView(wrapper).apply {
             // Programmatic WebViews lack XML resource IDs, which causes Android's default AUTO
@@ -161,6 +221,21 @@ class WarmWebViewPool(
                 // Privacy hardening: disable Google SafeBrowsing telemetry (replaced by local adblock-rust)
                 if (WebViewFeature.isFeatureSupported(WebViewFeature.SAFE_BROWSING_ENABLE)) {
                     runCatching { WebSettingsCompat.setSafeBrowsingEnabled(this, false) }
+                }
+
+                // Instant back/forward restoration via Chromium BFCache when supported
+                if (WebViewFeature.isFeatureSupported(WebViewFeature.BACK_FORWARD_CACHE)) {
+                    runCatching { WebSettingsCompat.setBackForwardCacheEnabled(this, true) }
+                }
+
+                // Chromium Speculative Loading (prerender hints) when supported
+                if (WebViewFeature.isFeatureSupported(WebViewFeature.SPECULATIVE_LOADING)) {
+                    runCatching {
+                        WebSettingsCompat.setSpeculativeLoadingStatus(
+                            this,
+                            WebSettingsCompat.SPECULATIVE_LOADING_PRERENDER_ENABLED,
+                        )
+                    }
                 }
             }
         }

@@ -408,11 +408,7 @@ object ElementZapperScripts {
                 (function() {
                   var id = '$BOTTOM_INSET_STYLE_ID';
                   var style = document.getElementById(id);
-                  if (!style) {
-                    style = document.createElement('style');
-                    style.id = id;
-                    (document.head || document.documentElement).appendChild(style);
-                  }
+                  if (!style) return;
                   style.textContent = ${encodeJsStringLiteral(rootCss)};
                 })();
             """.trimIndent()

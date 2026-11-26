@@ -23,11 +23,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -43,6 +44,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -72,6 +75,16 @@ import kotlinx.collections.immutable.ImmutableList
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneId
+
+private val HistoryCardTopShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
+private val HistoryCardBottomShape = RoundedCornerShape(bottomStart = 20.dp, bottomEnd = 20.dp)
+
+private fun historyGroupedRowShape(index: Int, totalCount: Int): Shape = when {
+    totalCount <= 1 -> FocalGeometry.CardShape
+    index == 0 -> HistoryCardTopShape
+    index == totalCount - 1 -> HistoryCardBottomShape
+    else -> RectangleShape
+}
 
 enum class HistoryDayBucket(val label: String) {
     TODAY("Today"),
@@ -366,105 +379,124 @@ fun HistorySheet(
                     }
                 }
 
-                // Scrollable grouped history sections or calm empty states
-                Column(
+                // Scrollable grouped history sections or calm empty states (virtualized LazyColumn)
+                LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 460.dp)
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                        .heightIn(max = 460.dp),
                 ) {
                     if (entries.isEmpty()) {
-                        FocalGroupedCard {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 18.dp, vertical = 28.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(6.dp),
-                            ) {
-                                Box(
+                        item(key = "history_empty", contentType = "empty_state") {
+                            FocalGroupedCard {
+                                Column(
                                     modifier = Modifier
-                                        .size(40.dp)
-                                        .clip(CircleShape)
-                                        .background(colors.surfacePillSubtle),
-                                    contentAlignment = Alignment.Center,
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 18.dp, vertical = 28.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(6.dp),
                                 ) {
-                                    Icon(
-                                        imageVector = FocalGlyphs.Clock,
-                                        contentDescription = null,
-                                        tint = colors.inkSecondary,
-                                        modifier = Modifier.size(20.dp),
+                                    Box(
+                                        modifier = Modifier
+                                            .size(40.dp)
+                                            .clip(CircleShape)
+                                            .background(colors.surfacePillSubtle),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Icon(
+                                            imageVector = FocalGlyphs.Clock,
+                                            contentDescription = null,
+                                            tint = colors.inkSecondary,
+                                            modifier = Modifier.size(20.dp),
+                                        )
+                                    }
+                                    Spacer(Modifier.height(2.dp))
+                                    Text(
+                                        text = "No browsing history yet",
+                                        style = typography.cardTitle,
+                                        color = colors.inkPrimary,
+                                        textAlign = TextAlign.Center,
+                                    )
+                                    Text(
+                                        text = "Pages you visit in regular spaces appear here",
+                                        style = typography.captionMetadata,
+                                        color = colors.inkSecondary,
+                                        textAlign = TextAlign.Center,
                                     )
                                 }
-                                Spacer(Modifier.height(2.dp))
-                                Text(
-                                    text = "No browsing history yet",
-                                    style = typography.cardTitle,
-                                    color = colors.inkPrimary,
-                                    textAlign = TextAlign.Center,
-                                )
-                                Text(
-                                    text = "Pages you visit in regular spaces appear here",
-                                    style = typography.captionMetadata,
-                                    color = colors.inkSecondary,
-                                    textAlign = TextAlign.Center,
-                                )
                             }
                         }
                     } else if (groupedSections.isEmpty()) {
-                        FocalGroupedCard {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 18.dp, vertical = 24.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(6.dp),
-                            ) {
-                                Icon(
-                                    imageVector = FocalGlyphs.Search,
-                                    contentDescription = null,
-                                    tint = colors.inkFaint,
-                                    modifier = Modifier.size(20.dp),
-                                )
-                                Text(
-                                    text = "No matching history",
-                                    style = typography.cardTitle,
-                                    color = colors.inkPrimary,
-                                    textAlign = TextAlign.Center,
-                                )
-                                Text(
-                                    text = "Try a different title, domain, or address",
-                                    style = typography.captionMetadata,
-                                    color = colors.inkSecondary,
-                                    textAlign = TextAlign.Center,
-                                )
+                        item(key = "history_no_match", contentType = "empty_state") {
+                            FocalGroupedCard {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 18.dp, vertical = 24.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = FocalGlyphs.Search,
+                                        contentDescription = null,
+                                        tint = colors.inkFaint,
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                    Text(
+                                        text = "No matching history",
+                                        style = typography.cardTitle,
+                                        color = colors.inkPrimary,
+                                        textAlign = TextAlign.Center,
+                                    )
+                                    Text(
+                                        text = "Try a different title, domain, or address",
+                                        style = typography.captionMetadata,
+                                        color = colors.inkSecondary,
+                                        textAlign = TextAlign.Center,
+                                    )
+                                }
                             }
                         }
                     } else {
-                        groupedSections.forEach { (bucket, bucketEntries) ->
-                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        groupedSections.forEachIndexed { sectionIndex, (bucket, bucketEntries) ->
+                            item(
+                                key = "history_header_${bucket.name}",
+                                contentType = "section_header",
+                            ) {
                                 Text(
                                     text = bucket.label,
                                     style = typography.captionMetadata,
                                     color = colors.inkSecondary,
-                                    modifier = Modifier.padding(horizontal = 4.dp),
+                                    modifier = Modifier.padding(
+                                        start = 4.dp,
+                                        end = 4.dp,
+                                        top = if (sectionIndex > 0) 12.dp else 0.dp,
+                                        bottom = 6.dp,
+                                    ),
                                 )
-                                FocalGroupedCard {
-                                    bucketEntries.forEachIndexed { index, entry ->
-                                        if (index > 0) {
-                                            FocalHairlineDivider(insetStart = 50.dp)
-                                        }
-                                        HistoryEntryRow(
-                                            entry = entry,
-                                            onOpen = {
-                                                if (entry.url.isNotBlank()) {
-                                                    onOpenUrl(entry.url)
-                                                }
-                                            },
-                                            onDelete = { onDeleteEntry(entry.id) },
-                                        )
+                            }
+                            itemsIndexed(
+                                items = bucketEntries,
+                                key = { _, entry -> "history_${entry.id}" },
+                                contentType = { _, _ -> "history_entry" },
+                            ) { index, entry ->
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(historyGroupedRowShape(index, bucketEntries.size))
+                                        .background(colors.surfacePillSubtle),
+                                ) {
+                                    if (index > 0) {
+                                        FocalHairlineDivider(insetStart = 50.dp)
                                     }
+                                    HistoryEntryRow(
+                                        entry = entry,
+                                        onOpen = {
+                                            if (entry.url.isNotBlank()) {
+                                                onOpenUrl(entry.url)
+                                            }
+                                        },
+                                        onDelete = { onDeleteEntry(entry.id) },
+                                    )
                                 }
                             }
                         }

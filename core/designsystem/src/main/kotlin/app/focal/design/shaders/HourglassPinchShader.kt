@@ -71,7 +71,89 @@ half4 main(float2 fragCoord) {
 
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 private class HourglassShaderHolder {
-    val shader: RuntimeShader = RuntimeShader(HOURGLASS_PINCH_AGSL)
+    private val shader: RuntimeShader = RuntimeShader(HOURGLASS_PINCH_AGSL)
+    private var cachedWidth: Float = -1f
+    private var cachedHeight: Float = -1f
+    private var cachedProgress: Float = -1f
+    private var cachedCenterY: Float = -1f
+    private var cachedDensity: Float = -1f
+    private var cachedEffect: androidx.compose.ui.graphics.RenderEffect? = null
+
+    fun obtainRenderEffect(
+        width: Float,
+        height: Float,
+        progress: Float,
+        centerY: Float,
+        density: Float,
+        blurRadiusPx: Float,
+    ): androidx.compose.ui.graphics.RenderEffect {
+        val current = cachedEffect
+        if (
+            current != null &&
+            cachedDensity == density &&
+            kotlin.math.abs(cachedWidth - width) < CACHE_EPSILON &&
+            kotlin.math.abs(cachedHeight - height) < CACHE_EPSILON &&
+            kotlin.math.abs(cachedProgress - progress) < CACHE_EPSILON &&
+            kotlin.math.abs(cachedCenterY - centerY) < CACHE_EPSILON
+        ) {
+            return current
+        }
+
+        shader.setFloatUniform("resolution", width, height)
+        shader.setFloatUniform("pinchProgress", progress)
+        shader.setFloatUniform("pinchCenterY", centerY)
+
+        val warpEffect = AndroidRenderEffect.createRuntimeShaderEffect(shader, "content")
+        val blurEffect = AndroidRenderEffect.createBlurEffect(
+            blurRadiusPx,
+            blurRadiusPx,
+            Shader.TileMode.DECAL,
+        )
+        val next = AndroidRenderEffect
+            .createChainEffect(blurEffect, warpEffect)
+            .asComposeRenderEffect()
+
+        cachedWidth = width
+        cachedHeight = height
+        cachedProgress = progress
+        cachedCenterY = centerY
+        cachedDensity = density
+        cachedEffect = next
+        return next
+    }
+
+    private companion object {
+        const val CACHE_EPSILON = 0.001f
+    }
+}
+
+@RequiresApi(Build.VERSION_CODES.S)
+private class HourglassApi31BlurHolder {
+    private var cachedProgress: Float = -1f
+    private var cachedDensity: Float = -1f
+    private var cachedEffect: androidx.compose.ui.graphics.RenderEffect? = null
+
+    fun obtainBlurEffect(
+        progress: Float,
+        density: Float,
+        blurRadiusPx: Float,
+    ): androidx.compose.ui.graphics.RenderEffect {
+        val current = cachedEffect
+        if (
+            current != null &&
+            cachedDensity == density &&
+            kotlin.math.abs(cachedProgress - progress) < 0.001f
+        ) {
+            return current
+        }
+        val next = AndroidRenderEffect
+            .createBlurEffect(blurRadiusPx, blurRadiusPx, Shader.TileMode.DECAL)
+            .asComposeRenderEffect()
+        cachedProgress = progress
+        cachedDensity = density
+        cachedEffect = next
+        return next
+    }
 }
 
 /**
@@ -92,6 +174,11 @@ fun Modifier.hourglassPinchEffect(
     } else {
         null
     }
+    val api31BlurHolder = if (api33Holder == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        remember { HourglassApi31BlurHolder() }
+    } else {
+        null
+    }
 
     return this.graphicsLayer {
         val p = pinchProgressState.floatValue.coerceIn(0f, 1f)
@@ -108,31 +195,27 @@ fun Modifier.hourglassPinchEffect(
         val h = size.height.coerceAtLeast(1f)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && api33Holder != null) {
-            val pinchShader = api33Holder.shader
-            pinchShader.setFloatUniform("resolution", w, h)
-            pinchShader.setFloatUniform("pinchProgress", p)
-            pinchShader.setFloatUniform("pinchCenterY", cy)
-
-            val warpEffect = AndroidRenderEffect.createRuntimeShaderEffect(pinchShader, "content")
             val blurRadius = (p * 22.dp.toPx()).coerceAtLeast(0.5f)
-            val blurEffect = AndroidRenderEffect.createBlurEffect(
-                blurRadius,
-                blurRadius,
-                Shader.TileMode.DECAL,
+            renderEffect = api33Holder.obtainRenderEffect(
+                width = w,
+                height = h,
+                progress = p,
+                centerY = cy,
+                density = density,
+                blurRadiusPx = blurRadius,
             )
-            renderEffect = AndroidRenderEffect
-                .createChainEffect(blurEffect, warpEffect)
-                .asComposeRenderEffect()
             scaleX = 1f
             scaleY = 1f
             alpha = (1f - p * 0.18f).coerceIn(0.6f, 1f)
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && api31BlurHolder != null) {
             // API 31–32 fallback: hardware RenderEffect blur + anisotropic inward waist squeeze
             val strength = p * (1f - 0.35f * p)
             val blurRadius = (p * 20.dp.toPx()).coerceAtLeast(0.5f)
-            renderEffect = AndroidRenderEffect
-                .createBlurEffect(blurRadius, blurRadius, Shader.TileMode.DECAL)
-                .asComposeRenderEffect()
+            renderEffect = api31BlurHolder.obtainBlurEffect(
+                progress = p,
+                density = density,
+                blurRadiusPx = blurRadius,
+            )
             scaleX = 1f - strength * 0.16f
             scaleY = 1f - strength * 0.06f
             alpha = (1f - p * 0.24f).coerceIn(0.55f, 1f)

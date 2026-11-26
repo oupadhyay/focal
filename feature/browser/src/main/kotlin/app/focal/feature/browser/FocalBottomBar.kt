@@ -45,6 +45,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.ui.input.pointer.util.addPointerInputChange
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.contentDescription
@@ -63,6 +65,8 @@ import app.focal.engine.api.EngineTelemetryState
 import app.focal.engine.api.PageTranslationPhase
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
@@ -76,7 +80,7 @@ private enum class CenterPillAxisLock {
  * - **Left Capsule (`[Tabs]`)**: Tab counter squircle (`Tap = YAB Tab Switcher`, `Long-Press = Quick Close / Private`).
  * - **Center Pill (`[Search / domain.com]`)**: Vector-locked within `10.dp` touch slop:
  *   - `Tap`: Opens Search-First Sheet above IME.
- *   - `Horizontal Scrub` (`|dx| > |dy| * 1.35f`): Live horizontal tab scrubbing with haptic ticks.
+ *   - `Horizontal Scrub` (`|dx| > |dy| * 1.35f`): Live horizontal tab scrubbing with haptic ticks and flick velocity physics.
  * - **Right Capsule (`[...]`)**: Opens Page Menu, Bookmarks, Reader & Per-Site Settings sheet.
  */
 @OptIn(ExperimentalFoundationApi::class)
@@ -110,12 +114,16 @@ fun FocalBottomBar(
 
     val latestOnTapSearch = rememberUpdatedState(onTapCenterSearch)
     val latestOnStepTab = rememberUpdatedState(onStepToAdjacentTab)
+    val latestTabCount = rememberUpdatedState(tabCount)
 
     var showTabQuickMenu by remember { mutableStateOf(false) }
     var scrubSettleJob by remember { mutableStateOf<Job?>(null) }
 
     val slopPx = with(density) { 10.dp.toPx() }
-    val tabCrossingStepPx = with(density) { 88.dp.toPx() }
+    val tabCrossingStepPx = with(density) { 68.dp.toPx() }
+    val flickVelocityThresholdPxPerSec = with(density) { 360.dp.toPx() }
+    val hardFlickVelocityThresholdPxPerSec = with(density) { 1400.dp.toPx() }
+    val maxSettleVelocityPxPerSec = with(density) { 2400.dp.toPx() }
 
     Row(
         modifier = modifier
@@ -215,17 +223,27 @@ fun FocalBottomBar(
                     ambientColor = Color.Black.copy(alpha = 0.35f),
                     spotColor = Color.Black.copy(alpha = 0.45f),
                 )
-                .pointerInput(slopPx, tabCrossingStepPx, gestureLease) {
+                .pointerInput(
+                    slopPx,
+                    tabCrossingStepPx,
+                    flickVelocityThresholdPxPerSec,
+                    hardFlickVelocityThresholdPxPerSec,
+                    maxSettleVelocityPxPerSec,
+                    gestureLease,
+                ) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         scrubSettleJob?.cancel()
                         scrubSettleJob = null
+                        val velocityTracker = VelocityTracker()
+                        velocityTracker.addPointerInputChange(down)
                         var totalDx = 0f
                         var totalDy = 0f
                         var axisLock = CenterPillAxisLock.UNDECIDED
                         var activeLeaseToken: GestureLeaseToken? = null
                         var preempted = false
                         var emittedSteps = 0
+                        var liftVelocityX = 0f
 
                         try {
                             while (true) {
@@ -233,6 +251,8 @@ fun FocalBottomBar(
                                 val change = event.changes.firstOrNull { it.id == down.id }
                                     ?: event.changes.firstOrNull()
                                     ?: break
+
+                                velocityTracker.addPointerInputChange(change)
 
                                 if (!change.pressed) {
                                     break
@@ -271,17 +291,34 @@ fun FocalBottomBar(
                                         scrubOffsetPxState.floatValue = totalDx * 0.42f
                                         val targetSteps = (totalDx / tabCrossingStepPx).toInt()
                                         if (targetSteps != emittedSteps) {
-                                            val stepDir = if (targetSteps > emittedSteps) -1 else 1
+                                            val stepDelta = emittedSteps - targetSteps
                                             emittedSteps = targetSteps
                                             haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                            latestOnStepTab.value(stepDir)
+                                            latestOnStepTab.value(stepDelta)
                                         }
                                     }
                                     CenterPillAxisLock.UNDECIDED -> Unit
                                 }
                             }
 
-                            if (
+                            if (!preempted && axisLock == CenterPillAxisLock.HORIZONTAL_TAB_SCRUB) {
+                                val vx = velocityTracker.calculateVelocity().x
+                                liftVelocityX = vx
+                                val absVx = abs(vx)
+                                if (emittedSteps == 0 && absVx >= flickVelocityThresholdPxPerSec) {
+                                    val stepMagnitude = if (
+                                        absVx >= hardFlickVelocityThresholdPxPerSec &&
+                                        latestTabCount.value >= 3
+                                    ) {
+                                        2
+                                    } else {
+                                        1
+                                    }
+                                    val stepDelta = if (vx > 0f) -stepMagnitude else stepMagnitude
+                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    latestOnStepTab.value(stepDelta)
+                                }
+                            } else if (
                                 !preempted &&
                                 axisLock == CenterPillAxisLock.UNDECIDED &&
                                 abs(totalDx) <= slopPx &&
@@ -292,12 +329,15 @@ fun FocalBottomBar(
                             }
                         } finally {
                             val settleStart = scrubOffsetPxState.floatValue
-                            if (abs(settleStart) > 0.5f) {
+                            val initialScrubVelocity = (liftVelocityX * 0.42f)
+                                .coerceIn(-maxSettleVelocityPxPerSec, maxSettleVelocityPxPerSec)
+                            if (abs(settleStart) > 0.5f || abs(initialScrubVelocity) > 10f) {
                                 scrubSettleJob?.cancel()
                                 scrubSettleJob = scope.launch {
                                     Animatable(settleStart).animateTo(
                                         targetValue = 0f,
                                         animationSpec = FocalMotion.tabScrubSnapSpring(),
+                                        initialVelocity = initialScrubVelocity,
                                     ) {
                                         scrubOffsetPxState.floatValue = value
                                     }
@@ -392,10 +432,15 @@ private fun LoadProgressHairline(
     fallbackProgress: Int,
     telemetryFlow: StateFlow<EngineTelemetryState>?,
 ) {
-    val colors = FocalTheme.colors
-    val telemetry = telemetryFlow?.collectAsState()?.value
-    val progress = telemetry?.loadProgress ?: fallbackProgress
+    val progressFlow = remember(telemetryFlow) {
+        telemetryFlow?.map { it.loadProgress }?.distinctUntilChanged()
+    }
+    val progress = progressFlow
+        ?.collectAsState(initial = telemetryFlow?.value?.loadProgress ?: fallbackProgress)
+        ?.value
+        ?: fallbackProgress
     if (isLoading && progress in 1..99) {
+        val colors = FocalTheme.colors
         Box(
             modifier = Modifier
                 .padding(top = 3.dp)

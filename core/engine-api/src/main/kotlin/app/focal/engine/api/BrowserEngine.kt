@@ -2,6 +2,7 @@ package app.focal.engine.api
 
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Bundle
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -161,6 +162,9 @@ interface BrowserEngine {
     /** Creates an isolated session; when [isPrivate] is `true`, binds to ephemeral storage (`◎`). */
     fun createSession(isPrivate: Boolean = false, spaceId: String? = null): EngineSession
 
+    /** Hints the engine to speculatively prefetch [url] for faster navigation. */
+    fun prefetchUrl(url: String) {}
+
     /** Wipes ephemeral cookies, `localStorage`, IndexedDB, and HTTP cache for Private Aperture `◎`. */
     fun clearEphemeralData()
 
@@ -206,6 +210,11 @@ interface EngineSession {
     fun setElementZapperActive(active: Boolean) {}
     fun getHistoryBackPreview(): Bitmap? = null
     fun getHistoryForwardPreview(): Bitmap? = null
+
+    fun setForegroundActive(active: Boolean) {}
+    fun saveNavigationState(): Bundle? = null
+    fun restoreNavigationState(state: Bundle): Boolean = false
+    fun trimMemory() {}
 
     fun dispose()
 }

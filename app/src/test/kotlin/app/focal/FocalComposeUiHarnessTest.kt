@@ -1329,6 +1329,66 @@ class FocalComposeUiHarnessTest {
     }
 
     @Test
+    fun tabSwitcherSheet_fastHorizontalFling_glidesAcrossMultipleTabsWithPhysics() {
+        val now = System.currentTimeMillis()
+        val spaces = persistentListOf(
+            SpaceEntity("personal", "Personal", "#F4725E", 0, now),
+        )
+        // activeTabs are newest-first; deckTabs reverses them so tab-0 sits on the far right (index 6)
+        val activeTabs = (0..6).map { idx ->
+            TabMetadataEntity(
+                id = "tab-$idx",
+                spaceId = "personal",
+                url = "https://site$idx.example.com",
+                domain = "site$idx.example.com",
+                title = "Tab Number $idx",
+                lastActiveEpochMs = now - idx * 60_000L,
+                createdAtEpochMs = now - idx * 60_000L,
+            )
+        }.toImmutableList()
+
+        var selectedTabIdResult: String? = null
+        composeRule.setContent {
+            FocalTheme(darkGlass = true) {
+                TabSwitcherSheet(
+                    activeTabs = activeTabs,
+                    archivedTabs = persistentListOf(),
+                    selectedTabId = "tab-0",
+                    spaces = spaces,
+                    activeSpaceId = "personal",
+                    tabCountBySpace = persistentMapOf("personal" to activeTabs.size),
+                    onSelectTab = { selectedTabIdResult = it },
+                    onCloseTab = {},
+                    onRestoreArchivedTab = {},
+                    onNewSearch = {},
+                    onDone = {},
+                )
+            }
+        }
+
+        composeRule.waitForIdle()
+        // Starting on tab-0 (rightmost card, deckIndex = 6); swipe right rapidly to fling left across multiple cards
+        composeRule.onNodeWithTag("front_tab_card").performTouchInput {
+            swipeRight(
+                startX = width * 0.12f,
+                endX = width * 0.96f,
+                durationMillis = 70L,
+            )
+        }
+        composeRule.waitForIdle()
+
+        // Tap whichever front card we landed on and verify we moved at least 2 tabs (not clamped to 1!)
+        composeRule.onNodeWithTag("front_tab_card").performClick()
+        composeRule.waitForIdle()
+
+        val landedIdx = selectedTabIdResult?.removePrefix("tab-")?.toIntOrNull() ?: -1
+        assertTrue(
+            "Expected fast physics fling to glide >= 2 tabs from tab-0, but landed on $selectedTabIdResult",
+            landedIdx >= 2,
+        )
+    }
+
+    @Test
     @Config(sdk = [34], application = FocalApplication::class, qualifiers = "w412dp-h915dp-xxhdpi")
     fun mainActivity_coldLaunch_mountsCalmCanvasWithoutCrash() {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->

@@ -116,4 +116,65 @@ class AdaptiveGlassControllerTest {
             AdaptiveGlassController.computeMedianSurfaceArgb(pixels, pixels.size, r, g, b),
         )
     }
+
+    @Test
+    fun emissionCoalescing_suppressesSteadyColorScrollChurnAndEmitsOnMeaningfulChange() {
+        val initial = GlassLuminanceState(
+            isDarkGlass = true,
+            medianLuminance = 0.12f,
+            lightStatusBarIcons = true,
+            sampledSurfaceArgb = null,
+        )
+
+        // 1. First non-null surface color sample must emit even with minimal luminance change
+        val firstSampled = AdaptiveGlassController.resolveNextState(
+            previous = initial,
+            medianLuminance = 0.125f,
+            sampledSurfaceArgb = 0xFF1F1F23.toInt(),
+        )
+        assertTrue("null -> non-null sampledSurfaceArgb must emit", firstSampled !== initial)
+        assertEquals(0xFF1F1F23.toInt(), firstSampled.sampledSurfaceArgb)
+
+        // 2. Steady-color scroll jitter (RGB delta <= 5 per channel, luma delta < 0.04f, same polarity) coalesces
+        val jittered = AdaptiveGlassController.resolveNextState(
+            previous = firstSampled,
+            medianLuminance = 0.15f, // delta 0.025f < 0.04f
+            sampledSurfaceArgb = 0xFF241B28.toInt(), // R:+5, G:-4, B:+5 (all < 6)
+        )
+        assertTrue("Steady-color scroll jitter must coalesce to identical state instance", jittered === firstSampled)
+
+        // 3. Per-channel RGB delta >= 6 emits a new state
+        val colorShifted = AdaptiveGlassController.resolveNextState(
+            previous = firstSampled,
+            medianLuminance = 0.13f,
+            sampledSurfaceArgb = 0xFF251F23.toInt(), // R:+6 >= 6
+        )
+        assertTrue("RGB channel delta >= 6 must emit", colorShifted !== firstSampled)
+        assertEquals(0xFF251F23.toInt(), colorShifted.sampledSurfaceArgb)
+
+        // 4. Median luminance delta >= 0.04f emits even with identical surface color
+        val lumaShifted = AdaptiveGlassController.resolveNextState(
+            previous = colorShifted,
+            medianLuminance = 0.18f, // delta 0.05f >= 0.04f
+            sampledSurfaceArgb = colorShifted.sampledSurfaceArgb,
+        )
+        assertTrue("Luminance delta >= 0.04f must emit", lumaShifted !== colorShifted)
+        assertEquals(0.18f, lumaShifted.medianLuminance, 0.0001f)
+
+        // 5. Glass polarity flip across hysteresis threshold emits even when luma delta < 0.04f and RGB delta < 6
+        val nearThresholdDark = GlassLuminanceState(
+            isDarkGlass = true,
+            medianLuminance = 0.50f,
+            lightStatusBarIcons = true,
+            sampledSurfaceArgb = 0xFF808080.toInt(),
+        )
+        val flippedToLight = AdaptiveGlassController.resolveNextState(
+            previous = nearThresholdDark,
+            medianLuminance = 0.53f, // delta 0.03f < 0.04f, but crosses 0.52f DARK_TO_LIGHT_THRESHOLD
+            sampledSurfaceArgb = 0xFF828282.toInt(), // RGB delta +2 < 6
+        )
+        assertTrue("Polarity flip must emit immediately", flippedToLight !== nearThresholdDark)
+        assertFalse(flippedToLight.isDarkGlass)
+        assertFalse(flippedToLight.lightStatusBarIcons)
+    }
 }

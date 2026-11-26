@@ -9,20 +9,23 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
 
 /**
  * Pure geometry & state-transition rules for zero-jump IME height memory.
@@ -181,80 +184,113 @@ fun Modifier.zeroJumpImePadding(): Modifier = composed {
         }
     }
 
-    val imeBottomPx = WindowInsets.ime.getBottom(density)
-    val navBottomPx = WindowInsets.navigationBars.getBottom(density)
-    val liveImeAboveNavPx = (imeBottomPx - navBottomPx).coerceAtLeast(0)
+    val imeInsets = WindowInsets.ime
+    val navInsets = WindowInsets.navigationBars
+    val liveImeAboveNavPxState = remember(imeInsets, navInsets, density) {
+        derivedStateOf {
+            (imeInsets.getBottom(density) - navInsets.getBottom(density)).coerceAtLeast(0)
+        }
+    }
 
-    var imeHasStabilized by remember(isLandscape) { mutableStateOf(false) }
+    var imeHasStabilized by remember(isLandscape, cachedHeightPx) { mutableStateOf(false) }
     var holdCachedWindowActive by remember(isLandscape, cachedHeightPx) {
         mutableStateOf(cachedHeightPx > 0)
     }
     var smoothSettlingAfterHoldExpiry by remember(isLandscape, cachedHeightPx) {
         mutableStateOf(false)
     }
-    var peakLiveImePx by remember(isLandscape, cachedHeightPx) { mutableIntStateOf(0) }
 
-    if (liveImeAboveNavPx > peakLiveImePx) {
-        peakLiveImePx = liveImeAboveNavPx
-    }
-
-    // Hand off seamlessly once the live IME reaches resting cached height (0px dip, 0px bounce)
-    // or if the user actively dismisses the keyboard mid-rise.
-    if (
-        !imeHasStabilized && (
-            LaunchKeyboardGeometry.hasLiveImeCaughtUp(liveImeAboveNavPx, cachedHeightPx, minKeyboardPx) ||
-                LaunchKeyboardGeometry.isKeyboardClosing(liveImeAboveNavPx, peakLiveImePx, minKeyboardPx)
+    val targetBottomPxState = remember(isLandscape, cachedHeightPx, liveImeAboveNavPxState) {
+        derivedStateOf {
+            LaunchKeyboardGeometry.resolveEffectiveBottomPaddingPx(
+                liveImeAboveNavPx = liveImeAboveNavPxState.value,
+                cachedHeightPx = cachedHeightPx,
+                imeHasStabilized = imeHasStabilized,
+                holdCachedWindowActive = holdCachedWindowActive,
             )
-    ) {
-        imeHasStabilized = true
-        holdCachedWindowActive = false
-        smoothSettlingAfterHoldExpiry = false
-    }
-
-    // Activity-aware fallback release: keyed on `liveImeAboveNavPx` so an actively rising keyboard
-    // NEVER times out mid-animation and dips downward. Releases only once movement stops short of
-    // cached height (140ms) or no soft keyboard appears at all (550ms hardware keyboard fallback).
-    LaunchedEffect(isLandscape, cachedHeightPx, liveImeAboveNavPx, imeHasStabilized, holdCachedWindowActive) {
-        if (!imeHasStabilized && holdCachedWindowActive && cachedHeightPx > 0) {
-            delay(LaunchKeyboardGeometry.resolveHoldTimeoutMs(liveImeAboveNavPx))
-            if (!imeHasStabilized && holdCachedWindowActive) {
-                holdCachedWindowActive = false
-                smoothSettlingAfterHoldExpiry = true
-            }
         }
     }
+    val targetBottomPx = targetBottomPxState.value
 
-    // Persist stabilized soft keyboard height for future zero-jump launches
-    LaunchedEffect(liveImeAboveNavPx, isLandscape, viewportHeightPx, minKeyboardPx) {
-        if (LaunchKeyboardGeometry.isValidImeHeightPx(liveImeAboveNavPx, viewportHeightPx, minKeyboardPx)) {
-            delay(LaunchKeyboardGeometry.STABILIZE_PERSIST_DEBOUNCE_MS)
-            store.writeHeightPx(isLandscape = isLandscape, heightPx = liveImeAboveNavPx)
-        }
-    }
-
-    val targetBottomPx = LaunchKeyboardGeometry.resolveEffectiveBottomPaddingPx(
-        liveImeAboveNavPx = liveImeAboveNavPx,
-        cachedHeightPx = cachedHeightPx,
-        imeHasStabilized = imeHasStabilized,
-        holdCachedWindowActive = holdCachedWindowActive,
-    )
-
-    val animatedSettleBottomPx by animateIntAsState(
+    val animatedSettleBottomPxState = animateIntAsState(
         targetValue = targetBottomPx,
         animationSpec = spring(
             stiffness = Spring.StiffnessMedium,
             dampingRatio = Spring.DampingRatioNoBouncy,
         ),
         label = "FocalZeroJumpImeSettle",
+        finishedListener = { finalValue ->
+            if (smoothSettlingAfterHoldExpiry && kotlin.math.abs(finalValue - targetBottomPxState.value) <= 2) {
+                smoothSettlingAfterHoldExpiry = false
+                imeHasStabilized = true
+            }
+        },
     )
 
-    // Once the post-hold smooth settle finishes, switch permanently to direct 1:1 live IME tracking
-    if (smoothSettlingAfterHoldExpiry && kotlin.math.abs(animatedSettleBottomPx - targetBottomPx) <= 2) {
-        smoothSettlingAfterHoldExpiry = false
-        imeHasStabilized = true
+    // Single LaunchedEffect observing live IME insets via snapshotFlow — avoids mutating snapshot
+    // state during composition and avoids cancelling/respawning LaunchedEffect slots per IME frame.
+    LaunchedEffect(store, isLandscape, cachedHeightPx, viewportHeightPx, minKeyboardPx, liveImeAboveNavPxState) {
+        var peakLiveImePx = 0
+        var holdTimeoutJob: Job? = null
+        var persistJob: Job? = null
+
+        snapshotFlow { liveImeAboveNavPxState.value }
+            .distinctUntilChanged()
+            .collect { livePx ->
+                if (livePx > peakLiveImePx) {
+                    peakLiveImePx = livePx
+                }
+
+                // Hand off seamlessly once the live IME reaches resting cached height (0px dip,
+                // 0px bounce) or if the user actively dismisses the keyboard mid-rise.
+                if (
+                    !imeHasStabilized && (
+                        LaunchKeyboardGeometry.hasLiveImeCaughtUp(livePx, cachedHeightPx, minKeyboardPx) ||
+                            LaunchKeyboardGeometry.isKeyboardClosing(livePx, peakLiveImePx, minKeyboardPx)
+                        )
+                ) {
+                    holdTimeoutJob?.cancel()
+                    holdTimeoutJob = null
+                    imeHasStabilized = true
+                    holdCachedWindowActive = false
+                    smoothSettlingAfterHoldExpiry = false
+                } else if (!imeHasStabilized && holdCachedWindowActive && cachedHeightPx > 0) {
+                    // Activity-aware fallback release: resets while the keyboard is actively rising,
+                    // and releases once movement stops short of cached height (140ms) or no soft
+                    // keyboard appears at all (550ms hardware keyboard fallback).
+                    holdTimeoutJob?.cancel()
+                    holdTimeoutJob = launch {
+                        delay(LaunchKeyboardGeometry.resolveHoldTimeoutMs(livePx))
+                        if (!imeHasStabilized && holdCachedWindowActive) {
+                            val nextTarget = LaunchKeyboardGeometry.resolveEffectiveBottomPaddingPx(
+                                liveImeAboveNavPx = liveImeAboveNavPxState.value,
+                                cachedHeightPx = cachedHeightPx,
+                                imeHasStabilized = false,
+                                holdCachedWindowActive = false,
+                            )
+                            holdCachedWindowActive = false
+                            if (kotlin.math.abs(animatedSettleBottomPxState.value - nextTarget) <= 2) {
+                                smoothSettlingAfterHoldExpiry = false
+                                imeHasStabilized = true
+                            } else {
+                                smoothSettlingAfterHoldExpiry = true
+                            }
+                        }
+                    }
+                }
+
+                // Persist stabilized soft keyboard height for future zero-jump launches
+                persistJob?.cancel()
+                if (LaunchKeyboardGeometry.isValidImeHeightPx(livePx, viewportHeightPx, minKeyboardPx)) {
+                    persistJob = launch {
+                        delay(LaunchKeyboardGeometry.STABILIZE_PERSIST_DEBOUNCE_MS)
+                        store.writeHeightPx(isLandscape = isLandscape, heightPx = livePx)
+                    }
+                }
+            }
     }
 
-    val resolvedBottomPx = (if (smoothSettlingAfterHoldExpiry) animatedSettleBottomPx else targetBottomPx)
+    val resolvedBottomPx = (if (smoothSettlingAfterHoldExpiry) animatedSettleBottomPxState.value else targetBottomPx)
         .coerceAtLeast(0)
 
     this.padding(bottom = with(density) { resolvedBottomPx.toDp() })

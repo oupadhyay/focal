@@ -23,13 +23,14 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -45,6 +46,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -76,6 +79,16 @@ import app.focal.sync.SyncSessionUiState
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.launch
+
+private val BookmarksCardTopShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
+private val BookmarksCardBottomShape = RoundedCornerShape(bottomStart = 20.dp, bottomEnd = 20.dp)
+
+private fun bookmarksGroupedRowShape(index: Int, totalCount: Int): Shape = when {
+    totalCount <= 1 -> FocalGeometry.CardShape
+    index == 0 -> BookmarksCardTopShape
+    index == totalCount - 1 -> BookmarksCardBottomShape
+    else -> RectangleShape
+}
 
 @Immutable
 data class BookmarksSheetUiState(
@@ -352,56 +365,71 @@ fun BookmarksSheet(
                         }
                     }
 
-                    // Scrollable Bookmarks, Folders, and Desktop Sync Content
-                    Column(
+                    val folderChildrenByParentId = remember(uiState.allBookmarks) {
+                        uiState.allBookmarks
+                            .filter { it.parentFolderId != null }
+                            .groupBy { it.parentFolderId!! }
+                    }
+
+                    // Scrollable Bookmarks, Folders, and Desktop Sync Content (virtualized LazyColumn)
+                    LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 460.dp)
-                            .verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                            .heightIn(max = 460.dp),
                     ) {
                         if (bookmarkLinks.isEmpty() && folders.isEmpty()) {
-                            FocalGroupedCard {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 18.dp, vertical = 26.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                                ) {
-                                    Icon(
-                                        imageVector = FocalGlyphs.Bookmark,
-                                        contentDescription = null,
-                                        tint = colors.inkFaint,
-                                        modifier = Modifier.size(22.dp),
-                                    )
-                                    Text(
-                                        text = "No Bookmarks Yet",
-                                        style = typography.cardTitle,
-                                        color = colors.inkPrimary,
-                                    )
-                                    Text(
-                                        text = "Tap ··· → Bookmark on any page to save it here",
-                                        style = typography.captionMetadata,
-                                        color = colors.inkSecondary,
-                                    )
+                            item(key = "bookmarks_empty", contentType = "empty_state") {
+                                FocalGroupedCard {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 18.dp, vertical = 26.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                                    ) {
+                                        Icon(
+                                            imageVector = FocalGlyphs.Bookmark,
+                                            contentDescription = null,
+                                            tint = colors.inkFaint,
+                                            modifier = Modifier.size(22.dp),
+                                        )
+                                        Text(
+                                            text = "No Bookmarks Yet",
+                                            style = typography.cardTitle,
+                                            color = colors.inkPrimary,
+                                        )
+                                        Text(
+                                            text = "Tap ··· → Bookmark on any page to save it here",
+                                            style = typography.captionMetadata,
+                                            color = colors.inkSecondary,
+                                        )
+                                    }
                                 }
                             }
                         }
 
-                        // Saved Bookmarks Card
+                        // Saved Bookmarks Card (virtualized row-by-row)
                         if (bookmarkLinks.isNotEmpty()) {
-                            FocalGroupedCard {
-                                bookmarkLinks.forEachIndexed { index, item ->
+                            itemsIndexed(
+                                items = bookmarkLinks,
+                                key = { _, item -> "bookmark_${item.id}" },
+                                contentType = { _, _ -> "bookmark_row" },
+                            ) { index, item ->
+                                val url = item.url.orEmpty()
+                                val displayHost = remember(url) {
+                                    url.removePrefix("https://")
+                                        .removePrefix("http://")
+                                        .removePrefix("www.")
+                                        .trimEnd('/')
+                                }
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(bookmarksGroupedRowShape(index, bookmarkLinks.size))
+                                        .background(colors.surfacePillSubtle),
+                                ) {
                                     if (index > 0) {
                                         FocalHairlineDivider(insetStart = 48.dp)
-                                    }
-                                    val url = item.url.orEmpty()
-                                    val displayHost = remember(url) {
-                                        url.removePrefix("https://")
-                                            .removePrefix("http://")
-                                            .removePrefix("www.")
-                                            .trimEnd('/')
                                     }
                                     Row(
                                         modifier = Modifier
@@ -470,139 +498,151 @@ fun BookmarksSheet(
                             }
                         }
 
-                        // Saved Folders Card
+                        // Saved Folders Card (virtualized row-by-row)
                         if (folders.isNotEmpty()) {
-                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            item(key = "folders_header", contentType = "section_header") {
                                 Text(
                                     text = "Folders",
                                     style = typography.captionMetadata,
                                     color = colors.inkSecondary,
-                                    modifier = Modifier.padding(horizontal = 4.dp),
+                                    modifier = Modifier.padding(
+                                        start = 4.dp,
+                                        end = 4.dp,
+                                        top = if (bookmarkLinks.isNotEmpty()) 12.dp else 0.dp,
+                                        bottom = 6.dp,
+                                    ),
                                 )
-                                FocalGroupedCard {
-                                    folders.forEachIndexed { index, folder ->
-                                        if (index > 0) {
-                                            FocalHairlineDivider(insetStart = 48.dp)
-                                        }
-                                        val children = remember(uiState.allBookmarks, folder.id) {
-                                            uiState.allBookmarks.filter { it.parentFolderId == folder.id }
-                                        }
-                                        Column(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clickable {
-                                                    if (!isEditing) {
-                                                        expandedFolderId =
-                                                            if (expandedFolderId == folder.id) null else folder.id
-                                                    }
-                                                }
-                                                .padding(horizontal = 14.dp, vertical = 11.dp),
-                                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                                        ) {
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically,
-                                            ) {
-                                                Row(
-                                                    modifier = Modifier.weight(1f),
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                                ) {
-                                                    Box(
-                                                        modifier = Modifier.size(22.dp),
-                                                        contentAlignment = Alignment.Center,
-                                                    ) {
-                                                        Icon(
-                                                            imageVector = FocalGlyphs.Folder,
-                                                            contentDescription = null,
-                                                            tint = colors.inkSecondary,
-                                                            modifier = Modifier.size(18.dp),
-                                                        )
-                                                    }
-                                                    Column(modifier = Modifier.weight(1f)) {
-                                                        Text(
-                                                            text = folder.title,
-                                                            style = typography.bodyCompact.copy(
-                                                                fontWeight = FontWeight.Medium,
-                                                                fontSize = 14.5.sp,
-                                                            ),
-                                                            color = colors.inkPrimary,
-                                                            maxLines = 1,
-                                                            overflow = TextOverflow.Ellipsis,
-                                                        )
-                                                        val subtitle = if (children.isNotEmpty()) {
-                                                            "${children.size} saved"
-                                                        } else {
-                                                            folder.subtitle.orEmpty()
-                                                        }
-                                                        if (subtitle.isNotBlank()) {
-                                                            Text(
-                                                                text = subtitle,
-                                                                style = typography.captionMetadata,
-                                                                color = colors.inkSecondary,
-                                                                maxLines = 1,
-                                                                overflow = TextOverflow.Ellipsis,
-                                                            )
-                                                        }
-                                                    }
-                                                }
-                                                Spacer(Modifier.width(8.dp))
-                                                if (isEditing) {
-                                                    Box(
-                                                        modifier = Modifier
-                                                            .size(28.dp)
-                                                            .clip(CircleShape)
-                                                            .background(colors.surfacePillSubtle)
-                                                            .clickable { onDeleteBookmark(folder.id) },
-                                                        contentAlignment = Alignment.Center,
-                                                    ) {
-                                                        Icon(
-                                                            imageVector = FocalGlyphs.Close,
-                                                            contentDescription = "Remove ${folder.title}",
-                                                            tint = colors.inkPrimary,
-                                                            modifier = Modifier.size(13.dp),
-                                                        )
-                                                    }
-                                                } else {
-                                                    Icon(
-                                                        imageVector = if (expandedFolderId == folder.id) {
-                                                            FocalGlyphs.ChevronDown
-                                                        } else {
-                                                            FocalGlyphs.ChevronRight
-                                                        },
-                                                        contentDescription = null,
-                                                        tint = colors.inkFaint,
-                                                        modifier = Modifier.size(15.dp),
-                                                    )
+                            }
+                            itemsIndexed(
+                                items = folders,
+                                key = { _, folder -> "folder_${folder.id}" },
+                                contentType = { _, _ -> "folder_row" },
+                            ) { index, folder ->
+                                val children = folderChildrenByParentId[folder.id].orEmpty()
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(bookmarksGroupedRowShape(index, folders.size))
+                                        .background(colors.surfacePillSubtle),
+                                ) {
+                                    if (index > 0) {
+                                        FocalHairlineDivider(insetStart = 48.dp)
+                                    }
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                if (!isEditing) {
+                                                    expandedFolderId =
+                                                        if (expandedFolderId == folder.id) null else folder.id
                                                 }
                                             }
-
-                                            if (expandedFolderId == folder.id && children.isNotEmpty()) {
-                                                Spacer(Modifier.height(4.dp))
-                                                children.forEach { child ->
-                                                    Row(
-                                                        modifier = Modifier
-                                                            .fillMaxWidth()
-                                                            .clip(RoundedCornerShape(10.dp))
-                                                            .clickable { child.url?.let(onOpenUrl) }
-                                                            .padding(start = 34.dp, top = 6.dp, bottom = 6.dp, end = 4.dp),
-                                                        verticalAlignment = Alignment.CenterVertically,
-                                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                                    ) {
-                                                        SiteFavicon(
-                                                            urlOrDomain = child.url.orEmpty(),
-                                                            size = 16.dp,
-                                                            cornerRadius = 4.dp,
-                                                        )
+                                            .padding(horizontal = 14.dp, vertical = 11.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.weight(1f),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier.size(22.dp),
+                                                    contentAlignment = Alignment.Center,
+                                                ) {
+                                                    Icon(
+                                                        imageVector = FocalGlyphs.Folder,
+                                                        contentDescription = null,
+                                                        tint = colors.inkSecondary,
+                                                        modifier = Modifier.size(18.dp),
+                                                    )
+                                                }
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = folder.title,
+                                                        style = typography.bodyCompact.copy(
+                                                            fontWeight = FontWeight.Medium,
+                                                            fontSize = 14.5.sp,
+                                                        ),
+                                                        color = colors.inkPrimary,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                    )
+                                                    val subtitle = if (children.isNotEmpty()) {
+                                                        "${children.size} saved"
+                                                    } else {
+                                                        folder.subtitle.orEmpty()
+                                                    }
+                                                    if (subtitle.isNotBlank()) {
                                                         Text(
-                                                            text = child.title,
-                                                            style = typography.bodyCompact,
-                                                            color = colors.inkPrimary,
+                                                            text = subtitle,
+                                                            style = typography.captionMetadata,
+                                                            color = colors.inkSecondary,
                                                             maxLines = 1,
                                                             overflow = TextOverflow.Ellipsis,
                                                         )
                                                     }
+                                                }
+                                            }
+                                            Spacer(Modifier.width(8.dp))
+                                            if (isEditing) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(28.dp)
+                                                        .clip(CircleShape)
+                                                        .background(colors.surfacePillSubtle)
+                                                        .clickable { onDeleteBookmark(folder.id) },
+                                                    contentAlignment = Alignment.Center,
+                                                ) {
+                                                    Icon(
+                                                        imageVector = FocalGlyphs.Close,
+                                                        contentDescription = "Remove ${folder.title}",
+                                                        tint = colors.inkPrimary,
+                                                        modifier = Modifier.size(13.dp),
+                                                    )
+                                                }
+                                            } else {
+                                                Icon(
+                                                    imageVector = if (expandedFolderId == folder.id) {
+                                                        FocalGlyphs.ChevronDown
+                                                    } else {
+                                                        FocalGlyphs.ChevronRight
+                                                    },
+                                                    contentDescription = null,
+                                                    tint = colors.inkFaint,
+                                                    modifier = Modifier.size(15.dp),
+                                                )
+                                            }
+                                        }
+
+                                        if (expandedFolderId == folder.id && children.isNotEmpty()) {
+                                            Spacer(Modifier.height(4.dp))
+                                            children.forEach { child ->
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .clip(RoundedCornerShape(10.dp))
+                                                        .clickable { child.url?.let(onOpenUrl) }
+                                                        .padding(start = 34.dp, top = 6.dp, bottom = 6.dp, end = 4.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                ) {
+                                                    SiteFavicon(
+                                                        urlOrDomain = child.url.orEmpty(),
+                                                        size = 16.dp,
+                                                        cornerRadius = 4.dp,
+                                                    )
+                                                    Text(
+                                                        text = child.title,
+                                                        style = typography.bodyCompact,
+                                                        color = colors.inkPrimary,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                    )
                                                 }
                                             }
                                         }
@@ -613,82 +653,86 @@ fun BookmarksSheet(
 
                         // Custom Folder Creation Card
                         if (showCreateFolderDialog) {
-                            val submitFolder = {
-                                val targetSpace = selectedFilterSpaceId ?: uiState.activeSpaceId
-                                val cleanName = customFolderName.trim().ifBlank { "New Folder" }
-                                onCreateFolder(targetSpace, cleanName)
-                                customFolderName = ""
-                                showCreateFolderDialog = false
-                            }
-                            FocalGroupedCard {
-                                Column(
-                                    modifier = Modifier.padding(14.dp),
-                                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                                ) {
-                                    Text(
-                                        text = "New Folder",
-                                        style = typography.controlPillLabel,
-                                        color = colors.inkSecondary,
-                                    )
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clip(RoundedCornerShape(14.dp))
-                                            .background(colors.canvasBackground.copy(alpha = 0.42f))
-                                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                                        contentAlignment = Alignment.CenterStart,
-                                    ) {
-                                        if (customFolderName.isEmpty()) {
-                                            Text(
-                                                text = "Folder name…",
-                                                style = typography.bodyCompact,
-                                                color = colors.inkFaint,
-                                            )
-                                        }
-                                        BasicTextField(
-                                            value = customFolderName,
-                                            onValueChange = { customFolderName = it },
-                                            singleLine = true,
-                                            textStyle = typography.bodyCompact.copy(color = colors.inkPrimary),
-                                            cursorBrush = SolidColor(colors.inkPrimary),
-                                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                                            keyboardActions = KeyboardActions(onDone = { submitFolder() }),
-                                            modifier = Modifier.fillMaxWidth(),
-                                        )
-                                    }
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.End,
-                                        verticalAlignment = Alignment.CenterVertically,
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .clip(CircleShape)
-                                                .clickable {
-                                                    customFolderName = ""
-                                                    showCreateFolderDialog = false
-                                                }
-                                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            item(key = "create_folder_card", contentType = "create_folder") {
+                                val submitFolder = {
+                                    val targetSpace = selectedFilterSpaceId ?: uiState.activeSpaceId
+                                    val cleanName = customFolderName.trim().ifBlank { "New Folder" }
+                                    onCreateFolder(targetSpace, cleanName)
+                                    customFolderName = ""
+                                    showCreateFolderDialog = false
+                                }
+                                Box(modifier = Modifier.padding(top = 12.dp)) {
+                                    FocalGroupedCard {
+                                        Column(
+                                            modifier = Modifier.padding(14.dp),
+                                            verticalArrangement = Arrangement.spacedBy(10.dp),
                                         ) {
                                             Text(
-                                                text = "Cancel",
+                                                text = "New Folder",
                                                 style = typography.controlPillLabel,
                                                 color = colors.inkSecondary,
                                             )
-                                        }
-                                        Spacer(Modifier.width(8.dp))
-                                        Box(
-                                            modifier = Modifier
-                                                .clip(CircleShape)
-                                                .background(colors.surfacePillActive)
-                                                .clickable { submitFolder() }
-                                                .padding(horizontal = 14.dp, vertical = 6.dp),
-                                        ) {
-                                            Text(
-                                                text = "Create",
-                                                style = typography.controlPillLabel,
-                                                color = colors.inkOnPillActive,
-                                            )
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clip(RoundedCornerShape(14.dp))
+                                                    .background(colors.canvasBackground.copy(alpha = 0.42f))
+                                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                                contentAlignment = Alignment.CenterStart,
+                                            ) {
+                                                if (customFolderName.isEmpty()) {
+                                                    Text(
+                                                        text = "Folder name…",
+                                                        style = typography.bodyCompact,
+                                                        color = colors.inkFaint,
+                                                    )
+                                                }
+                                                BasicTextField(
+                                                    value = customFolderName,
+                                                    onValueChange = { customFolderName = it },
+                                                    singleLine = true,
+                                                    textStyle = typography.bodyCompact.copy(color = colors.inkPrimary),
+                                                    cursorBrush = SolidColor(colors.inkPrimary),
+                                                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                                                    keyboardActions = KeyboardActions(onDone = { submitFolder() }),
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                )
+                                            }
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.End,
+                                                verticalAlignment = Alignment.CenterVertically,
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .clip(CircleShape)
+                                                        .clickable {
+                                                            customFolderName = ""
+                                                            showCreateFolderDialog = false
+                                                        }
+                                                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                                                ) {
+                                                    Text(
+                                                        text = "Cancel",
+                                                        style = typography.controlPillLabel,
+                                                        color = colors.inkSecondary,
+                                                    )
+                                                }
+                                                Spacer(Modifier.width(8.dp))
+                                                Box(
+                                                    modifier = Modifier
+                                                        .clip(CircleShape)
+                                                        .background(colors.surfacePillActive)
+                                                        .clickable { submitFolder() }
+                                                        .padding(horizontal = 14.dp, vertical = 6.dp),
+                                                ) {
+                                                    Text(
+                                                        text = "Create",
+                                                        style = typography.controlPillLabel,
+                                                        color = colors.inkOnPillActive,
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -696,18 +740,22 @@ fun BookmarksSheet(
                         }
 
                         // Quiet Desktop Sync (E2EE) Presence Card
-                        LiveDesktopPresenceCard(
-                            peerName = uiState.syncState.peerDeviceName,
-                            desktopTabs = desktopTabs,
-                            sasCode = uiState.syncState.sasVerificationCode,
-                            onOpenTab = onOpenUrl,
-                            onOpenPairingView = {
-                                if (uiState.syncState.pairingUri == null) {
-                                    onStartE2eePairing()
-                                }
-                                showPairingModal = true
-                            },
-                        )
+                        item(key = "desktop_presence_card", contentType = "desktop_presence") {
+                            Box(modifier = Modifier.padding(top = 12.dp)) {
+                                LiveDesktopPresenceCard(
+                                    peerName = uiState.syncState.peerDeviceName,
+                                    desktopTabs = desktopTabs,
+                                    sasCode = uiState.syncState.sasVerificationCode,
+                                    onOpenTab = onOpenUrl,
+                                    onOpenPairingView = {
+                                        if (uiState.syncState.pairingUri == null) {
+                                            onStartE2eePairing()
+                                        }
+                                        showPairingModal = true
+                                    },
+                                )
+                            }
+                        }
                     }
 
                     // Bottom Footer Bar (`Done` · `+ New Folder`)

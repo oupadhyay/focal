@@ -43,8 +43,10 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -76,9 +78,13 @@ enum class BuiltInFaviconMark {
  * - Fetches favicons **directly from the target origin** (`apple-touch-icon.png` / `favicon.ico` /
  *   `<link rel="icon">`), never leaking visited or bookmarked domains to third-party icon APIs.
  * - Strictly skips disk & shared-memory caching when `isPrivate == true` (`◎` Private Aperture).
+ * - Exposes per-host [StateFlow] streams so loading one favicon recomposes only composables for
+ *   that exact host, and bounds concurrent origin HTTP fetches via a 4-permit [Semaphore].
  */
 object FaviconCache {
     private const val MAX_MEMORY_ENTRIES = 128
+    private const val MAX_HOST_FLOW_ENTRIES = 256
+    private const val MAX_CONCURRENT_NETWORK_FETCHES = 4
     private const val MAX_ICON_DIMENSION_PX = 96
     private const val MAX_DOWNLOAD_BYTES = 512 * 1024
     private const val CONNECT_TIMEOUT_MS = 3_000
@@ -87,18 +93,34 @@ object FaviconCache {
     private const val FAVICON_USER_AGENT =
         "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36"
 
+    private data class CachedIcon(
+        val bitmap: Bitmap,
+        val imageBitmap: ImageBitmap,
+    )
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val inFlightByHost = ConcurrentHashMap<String, Deferred<ImageBitmap?>>()
     private val failedHostsSession = ConcurrentHashMap.newKeySet<String>()
+    private val networkFetchSemaphore = Semaphore(permits = MAX_CONCURRENT_NETWORK_FETCHES)
 
-    private val memoryCache = object : LinkedHashMap<String, ImageBitmap>(MAX_MEMORY_ENTRIES, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ImageBitmap>?): Boolean {
-            return size > MAX_MEMORY_ENTRIES
+    private val emptyHostFlow: StateFlow<Bitmap?> = MutableStateFlow<Bitmap?>(null).asStateFlow()
+    private val hostFlows = ConcurrentHashMap<String, MutableStateFlow<Bitmap?>>()
+
+    private val memoryCache = object : LinkedHashMap<String, CachedIcon>(MAX_MEMORY_ENTRIES, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, CachedIcon>?): Boolean {
+            if (size > MAX_MEMORY_ENTRIES) {
+                val evictedHost = eldest?.key
+                if (evictedHost != null) {
+                    val flow = hostFlows[evictedHost]
+                    if (flow != null && flow.subscriptionCount.value == 0) {
+                        hostFlows.remove(evictedHost, flow)
+                    }
+                }
+                return true
+            }
+            return false
         }
     }
-
-    private val _revision = MutableStateFlow(0)
-    val revision: StateFlow<Int> = _revision.asStateFlow()
 
     /**
      * Pure-JVM host normalizer safe for both Android runtime and JVM unit tests.
@@ -209,17 +231,82 @@ object FaviconCache {
         return -1
     }
 
+    /**
+     * Computes the largest power-of-two `BitmapFactory.Options.inSampleSize` keeping decoded
+     * dimensions near [targetMaxPx] without allocating multi-megabyte intermediate bitmaps.
+     */
+    internal fun computePowerOfTwoSampleSize(
+        width: Int,
+        height: Int,
+        targetMaxPx: Int = MAX_ICON_DIMENSION_PX,
+    ): Int {
+        if (width <= 0 || height <= 0 || targetMaxPx <= 0) return 1
+        var sampleSize = 1
+        val maxDim = maxOf(width, height)
+        val minDim = minOf(width, height)
+        while ((maxDim / (sampleSize * 2)) >= targetMaxPx && (minDim / (sampleSize * 2)) >= 1) {
+            sampleSize *= 2
+        }
+        return sampleSize
+    }
+
+    /**
+     * Returns a per-host [StateFlow] of the cached [Bitmap] so composables observing one domain
+     * never recompose when unrelated domains finish loading.
+     */
+    fun observeHost(urlOrDomain: String): StateFlow<Bitmap?> {
+        val host = normalizeHost(urlOrDomain)
+        if (host.isEmpty()) return emptyHostFlow
+        pruneUnsubscribedHostFlowsIfNeeded()
+        val flow = hostFlows.computeIfAbsent(host) {
+            MutableStateFlow(getMemoryCachedBitmap(host))
+        }
+        if (flow.value == null) {
+            getMemoryCachedBitmap(host)?.let { flow.value = it }
+        }
+        return flow.asStateFlow()
+    }
+
     fun getMemoryCached(urlOrDomain: String): ImageBitmap? {
         val host = normalizeHost(urlOrDomain)
         if (host.isEmpty()) return null
         synchronized(memoryCache) {
-            return memoryCache.get(host)
+            return memoryCache[host]?.takeUnless { it.bitmap.isRecycled }?.imageBitmap
+        }
+    }
+
+    private fun getMemoryCachedBitmap(host: String): Bitmap? {
+        synchronized(memoryCache) {
+            return memoryCache[host]?.bitmap?.takeUnless { it.isRecycled }
+        }
+    }
+
+    private fun putMemoryCache(host: String, bitmap: Bitmap): ImageBitmap {
+        val imageBitmap = bitmap.asImageBitmap()
+        synchronized(memoryCache) {
+            memoryCache[host] = CachedIcon(bitmap = bitmap, imageBitmap = imageBitmap)
+        }
+        hostFlows[host]?.value = bitmap
+        pruneUnsubscribedHostFlowsIfNeeded()
+        return imageBitmap
+    }
+
+    private fun pruneUnsubscribedHostFlowsIfNeeded() {
+        if (hostFlows.size <= MAX_HOST_FLOW_ENTRIES) return
+        for ((host, flow) in hostFlows) {
+            if (flow.subscriptionCount.value == 0) {
+                val isInMemory = synchronized(memoryCache) { memoryCache.containsKey(host) }
+                if (!isInMemory) {
+                    hostFlows.remove(host, flow)
+                }
+            }
         }
     }
 
     /**
      * Records a live [Bitmap] delivered by `WebChromeClient.onReceivedIcon`.
      * Never persists or shares icons from Private Aperture (`isPrivate == true`).
+     * Offloads all bitmap scaling, immutable-copying, and PNG encoding off the main thread.
      */
     fun onLiveIconReceived(
         urlOrDomain: String,
@@ -233,17 +320,26 @@ object FaviconCache {
         // Avoid replacing a high-res touch icon or crisp built-in mark with a tiny 16x16 legacy ico
         if (resolveBuiltInMark(host) != null && (bitmap.width < 28 || bitmap.height < 28)) return
 
-        val scaled = scaleDownIfNeeded(bitmap)
-        val imageBitmap = scaled.asImageBitmap()
-        synchronized(memoryCache) {
-            memoryCache.put(host, imageBitmap)
-        }
-        failedHostsSession.remove(host)
-        _revision.update { it + 1 }
-
-        val diskCopy = scaled.copy(Bitmap.Config.ARGB_8888, false) ?: return
+        val appCtx = appContext.applicationContext
         scope.launch {
-            writeDiskCache(appContext, host, diskCopy)
+            if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) return@launch
+            val prepared = withContext(Dispatchers.Default) {
+                if (bitmap.isRecycled) return@withContext null
+                val scaled = scaleDownIfNeeded(bitmap)
+                if (scaled.isMutable) {
+                    val immutable = runCatching { scaled.copy(Bitmap.Config.ARGB_8888, false) }.getOrNull()
+                    if (immutable != null && scaled !== bitmap && !scaled.isRecycled) {
+                        scaled.recycle()
+                    }
+                    immutable ?: scaled
+                } else {
+                    scaled
+                }
+            } ?: return@launch
+            if (prepared.isRecycled) return@launch
+            putMemoryCache(host, prepared)
+            failedHostsSession.remove(host)
+            writeDiskCache(appCtx, host, prepared)
         }
     }
 
@@ -280,50 +376,57 @@ object FaviconCache {
 
         if (explicitIconUrl == null) {
             synchronized(memoryCache) {
-                memoryCache.get(host)?.let { return it }
+                memoryCache[host]?.takeUnless { it.bitmap.isRecycled }?.let { return it.imageBitmap }
             }
         }
 
-        // 1. Check local disk cache (`cacheDir/favicons/<sha256>.png`)
+        // 1. Check local disk cache (`cacheDir/favicons/<sha256>.png`) strictly on Dispatchers.IO
         if (explicitIconUrl == null) {
-            readDiskCache(appContext, host)?.let { diskBmp ->
-                val img = diskBmp.asImageBitmap()
-                synchronized(memoryCache) {
-                    memoryCache.put(host, img)
+            val diskBmp = withContext(Dispatchers.IO) {
+                readDiskCache(appContext, host)?.let { decoded ->
+                    val normalized = scaleDownIfNeeded(decoded)
+                    if (normalized !== decoded && !decoded.isRecycled) {
+                        decoded.recycle()
+                    }
+                    normalized
                 }
-                _revision.update { it + 1 }
-                return img
+            }
+            if (diskBmp != null) {
+                return putMemoryCache(host, diskBmp)
             }
         }
 
         if (!allowNetworkFetch) return null
+        val hasBuiltIn = resolveBuiltInMark(host) != null
+        // Skip blind external network probes when a crisp built-in vector brand mark already exists
+        if (hasBuiltIn && explicitIconUrl == null) return null
         if (explicitIconUrl == null && failedHostsSession.contains(host)) return null
 
         val key = if (explicitIconUrl != null) "$host|$explicitIconUrl" else host
         val deferred = inFlightByHost.computeIfAbsent(key) {
             scope.async {
                 try {
-                    val candidates = buildOriginIconCandidates(host, explicitIconUrl)
-                    val hasBuiltIn = resolveBuiltInMark(host) != null
-                    for (candidate in candidates) {
-                        val decoded = downloadAndDecodeBitmap(candidate) ?: continue
-                        if (hasBuiltIn && (decoded.width < 28 || decoded.height < 28)) {
-                            continue
+                    networkFetchSemaphore.withPermit {
+                        val candidates = buildOriginIconCandidates(host, explicitIconUrl)
+                        for (candidate in candidates) {
+                            val decoded = downloadAndDecodeBitmap(candidate) ?: continue
+                            if (hasBuiltIn && (decoded.width < 28 || decoded.height < 28)) {
+                                if (!decoded.isRecycled) decoded.recycle()
+                                continue
+                            }
+                            val normalizedBmp = scaleDownIfNeeded(decoded)
+                            if (normalizedBmp !== decoded && !decoded.isRecycled) {
+                                decoded.recycle()
+                            }
+                            writeDiskCache(appContext, host, normalizedBmp)
+                            failedHostsSession.remove(host)
+                            return@withPermit putMemoryCache(host, normalizedBmp)
                         }
-                        val normalizedBmp = scaleDownIfNeeded(decoded)
-                        writeDiskCache(appContext, host, normalizedBmp)
-                        val img = normalizedBmp.asImageBitmap()
-                        synchronized(memoryCache) {
-                            memoryCache.put(host, img)
+                        if (explicitIconUrl == null) {
+                            failedHostsSession.add(host)
                         }
-                        failedHostsSession.remove(host)
-                        _revision.update { it + 1 }
-                        return@async img
+                        null
                     }
-                    if (explicitIconUrl == null) {
-                        failedHostsSession.add(host)
-                    }
-                    null
                 } finally {
                     inFlightByHost.remove(key)
                 }
@@ -362,13 +465,13 @@ object FaviconCache {
                 val bytes = conn.inputStream.use { readBoundedBytes(it, MAX_DOWNLOAD_BYTES) }
                 if (bytes.size < 16) return null
 
-                val direct = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                if (direct != null && direct.width > 0 && direct.height > 0) {
+                val direct = decodeSampledByteArray(bytes, 0, bytes.size)
+                if (direct != null) {
                     return direct
                 }
                 val pngOffset = findEmbeddedPngOffset(bytes)
                 if (pngOffset >= 0) {
-                    return BitmapFactory.decodeByteArray(bytes, pngOffset, bytes.size - pngOffset)
+                    return decodeSampledByteArray(bytes, pngOffset, bytes.size - pngOffset)
                 }
                 return null
             } catch (_: Throwable) {
@@ -378,6 +481,30 @@ object FaviconCache {
             }
         }
         return null
+    }
+
+    private fun decodeSampledByteArray(
+        bytes: ByteArray,
+        offset: Int,
+        length: Int,
+        targetMaxPx: Int = MAX_ICON_DIMENSION_PX,
+    ): Bitmap? {
+        if (offset < 0 || length <= 0 || offset + length > bytes.size) return null
+        val boundsOpts = BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+        BitmapFactory.decodeByteArray(bytes, offset, length, boundsOpts)
+        if (boundsOpts.outWidth <= 0 || boundsOpts.outHeight <= 0) return null
+
+        val decodeOpts = BitmapFactory.Options().apply {
+            inSampleSize = computePowerOfTwoSampleSize(
+                width = boundsOpts.outWidth,
+                height = boundsOpts.outHeight,
+                targetMaxPx = targetMaxPx,
+            )
+        }
+        val decoded = BitmapFactory.decodeByteArray(bytes, offset, length, decodeOpts)
+        return decoded?.takeIf { it.width > 0 && it.height > 0 }
     }
 
     private fun isDisallowedLocalAddress(host: String): Boolean {
@@ -440,7 +567,15 @@ object FaviconCache {
     private fun readDiskCache(context: Context, host: String): Bitmap? {
         return try {
             val file = diskFileForHost(context, host)
-            if (!file.isFile || file.length() <= 0L) null else BitmapFactory.decodeFile(file.absolutePath)
+            if (!file.isFile || file.length() <= 0L) return null
+            val path = file.absolutePath
+            val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(path, boundsOpts)
+            if (boundsOpts.outWidth <= 0 || boundsOpts.outHeight <= 0) return null
+            val decodeOpts = BitmapFactory.Options().apply {
+                inSampleSize = computePowerOfTwoSampleSize(boundsOpts.outWidth, boundsOpts.outHeight)
+            }
+            BitmapFactory.decodeFile(path, decodeOpts)?.takeIf { it.width > 0 && it.height > 0 }
         } catch (_: Throwable) {
             null
         }
@@ -480,8 +615,6 @@ fun SiteFavicon(
     cornerRadius: Dp = 6.dp,
 ) {
     val context = LocalContext.current
-    val colors = LocalFocalColors.current
-    val cacheRevision by FaviconCache.revision.collectAsState()
 
     val host = remember(urlOrDomain) { FaviconCache.normalizeHost(urlOrDomain) }
     val builtInMark = remember(host) { FaviconCache.resolveBuiltInMark(host) }
@@ -490,22 +623,25 @@ fun SiteFavicon(
         liveBitmap?.takeIf { !it.isRecycled && it.width > 0 && it.height > 0 }?.asImageBitmap()
     }
 
-    val cachedBitmap = remember(host, cacheRevision) {
-        if (host.isEmpty()) null else FaviconCache.getMemoryCached(host)
+    val hostFlow = remember(host) { FaviconCache.observeHost(host) }
+    val cachedRawBitmap by hostFlow.collectAsState()
+    val cachedImageBitmap = remember(cachedRawBitmap) {
+        cachedRawBitmap?.takeIf { !it.isRecycled && it.width > 0 && it.height > 0 }?.asImageBitmap()
     }
 
-    LaunchedEffect(host, allowNetworkFetch) {
-        if (host.isNotEmpty() && cachedBitmap == null) {
+    val shouldAllowNetworkFetch = allowNetworkFetch && builtInMark == null
+    LaunchedEffect(host, shouldAllowNetworkFetch) {
+        if (host.isNotEmpty() && cachedRawBitmap == null) {
             FaviconCache.ensureLoaded(
                 appContext = context.applicationContext,
                 urlOrDomain = host,
-                allowNetworkFetch = allowNetworkFetch,
+                allowNetworkFetch = shouldAllowNetworkFetch,
             )
         }
     }
 
-    val effectiveBitmap = liveImageBitmap ?: cachedBitmap
-    val clipShape = RoundedCornerShape(cornerRadius)
+    val effectiveBitmap = liveImageBitmap ?: cachedImageBitmap
+    val clipShape = remember(cornerRadius) { RoundedCornerShape(cornerRadius) }
 
     Box(
         modifier = modifier
@@ -526,6 +662,7 @@ fun SiteFavicon(
                 drawBuiltInFaviconMark(builtInMark)
             }
         } else {
+            val colors = LocalFocalColors.current
             Box(
                 modifier = Modifier
                     .fillMaxSize()

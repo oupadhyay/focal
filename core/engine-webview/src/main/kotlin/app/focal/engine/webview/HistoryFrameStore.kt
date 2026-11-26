@@ -28,6 +28,8 @@ class HistoryFrameStore(
 
     fun clearForward() = ring.clearForward()
 
+    fun clear() = ring.clearAll()
+
     fun clearAll() = ring.clearAll()
 
     val backSize: Int
@@ -37,7 +39,7 @@ class HistoryFrameStore(
         get() = ring.forwardSize
 
     companion object {
-        const val DEFAULT_MAX_ENTRIES: Int = 6
+        const val DEFAULT_MAX_ENTRIES: Int = 3
     }
 }
 

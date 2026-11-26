@@ -49,6 +49,12 @@ class AdaptiveGlassController(
         /** Switch from Dark Smoked OLED Glass -> Light Alabaster Glass at or above `0.52f` (`0.08f` hysteresis). */
         const val DARK_TO_LIGHT_THRESHOLD: Float = 0.52f
 
+        /** Minimum per-channel RGB delta required to emit a new sampled surface color during scroll. */
+        const val SURFACE_CHANNEL_DELTA_THRESHOLD: Int = 6
+
+        /** Minimum median luminance delta required to emit when glass polarity and surface color are steady. */
+        const val LUMINANCE_EMIT_DELTA_THRESHOLD: Float = 0.04f
+
         /** Pure-JVM pixel rectangle for unit-testable sampling geometry. */
         data class SampleStripBounds(
             val left: Int,
@@ -196,6 +202,54 @@ class AdaptiveGlassController(
             val b = scratchB[mid]
             return (0xFF shl 24) or (r shl 16) or (g shl 8) or b
         }
+
+        /**
+         * Returns `true` when [previousArgb] and [nextArgb] differ meaningfully: either nullability
+         * changed (`null <-> non-null`) or any RGB channel changed by at least
+         * [SURFACE_CHANNEL_DELTA_THRESHOLD] (`6`).
+         */
+        fun hasMeaningfulSurfaceColorChange(
+            previousArgb: Int?,
+            nextArgb: Int?,
+        ): Boolean {
+            if (previousArgb == nextArgb) return false
+            if (previousArgb == null || nextArgb == null) return true
+            val dr = kotlin.math.abs(((previousArgb ushr 16) and 0xFF) - ((nextArgb ushr 16) and 0xFF))
+            if (dr >= SURFACE_CHANNEL_DELTA_THRESHOLD) return true
+            val dg = kotlin.math.abs(((previousArgb ushr 8) and 0xFF) - ((nextArgb ushr 8) and 0xFF))
+            if (dg >= SURFACE_CHANNEL_DELTA_THRESHOLD) return true
+            val db = kotlin.math.abs((previousArgb and 0xFF) - (nextArgb and 0xFF))
+            return db >= SURFACE_CHANNEL_DELTA_THRESHOLD
+        }
+
+        /**
+         * Coalesces steady-color scroll samples to prevent 4Hz idle recomposition churn.
+         *
+         * Returns [previous] unchanged (same instance) unless `isDarkGlass` flips,
+         * `lightStatusBarIcons` flips, `sampledSurfaceArgb` changes meaningfully, or
+         * `abs(medianLuminance - previous.medianLuminance) >= 0.04f`.
+         */
+        fun resolveNextState(
+            previous: GlassLuminanceState,
+            medianLuminance: Float,
+            sampledSurfaceArgb: Int? = previous.sampledSurfaceArgb,
+        ): GlassLuminanceState {
+            val clampedLuminance = medianLuminance.coerceIn(0f, 1f)
+            val nextDark = evaluateDarkGlassWithHysteresis(previous.isDarkGlass, clampedLuminance)
+            val nextLightStatusBarIcons = nextDark
+            val shouldEmit =
+                nextDark != previous.isDarkGlass ||
+                    nextLightStatusBarIcons != previous.lightStatusBarIcons ||
+                    hasMeaningfulSurfaceColorChange(previous.sampledSurfaceArgb, sampledSurfaceArgb) ||
+                    kotlin.math.abs(clampedLuminance - previous.medianLuminance) >= LUMINANCE_EMIT_DELTA_THRESHOLD
+            if (!shouldEmit) return previous
+            return GlassLuminanceState(
+                isDarkGlass = nextDark,
+                medianLuminance = clampedLuminance,
+                lightStatusBarIcons = nextLightStatusBarIcons,
+                sampledSurfaceArgb = sampledSurfaceArgb,
+            )
+        }
     }
 
     private data class PendingSampleRequest(
@@ -294,13 +348,14 @@ class AdaptiveGlassController(
         sampledSurfaceArgb: Int? = _state.value.sampledSurfaceArgb,
     ) {
         val prev = _state.value
-        val nextDark = evaluateDarkGlassWithHysteresis(prev.isDarkGlass, medianLuminance)
-        _state.value = GlassLuminanceState(
-            isDarkGlass = nextDark,
-            medianLuminance = medianLuminance.coerceIn(0f, 1f),
-            lightStatusBarIcons = nextDark,
+        val next = resolveNextState(
+            previous = prev,
+            medianLuminance = medianLuminance,
             sampledSurfaceArgb = sampledSurfaceArgb,
         )
+        if (next !== prev) {
+            _state.value = next
+        }
     }
 
     private fun requestSampleInternal(

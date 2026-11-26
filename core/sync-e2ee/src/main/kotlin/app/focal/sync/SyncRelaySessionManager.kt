@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -17,6 +18,8 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import okhttp3.OkHttpClient
@@ -101,7 +104,10 @@ class AndroidKeyStoreSyncStateStore(
         private const val KEY_ALIAS = "focal_sync_session_aes256_v1"
     }
 
-    private val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val appContext = context.applicationContext
+    private val prefs by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    }
 
     @Synchronized
     override fun load(): PersistedSyncSessionState? {
@@ -192,17 +198,35 @@ class SyncRelaySessionManager(
     private val allowInsecureLocalhost: Boolean = false,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
 ) {
-    private val okHttpClient = OkHttpClient.Builder()
-        .pingInterval(25, TimeUnit.SECONDS)
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .build()
+    private companion object {
+        const val PERSIST_DEBOUNCE_MS = 250L
+    }
 
+    private val okHttpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .pingInterval(25, TimeUnit.SECONDS)
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .build()
+    }
+
+    private val usesAsyncPersistence: Boolean = stateStore !is InMemorySyncStateStore
+    private val stateLock = Any()
+    private val persistMutex = Mutex()
     private val replayTracker = ReplayTracker()
     private val outboundSeq = AtomicLong(1L)
     private val connectionGeneration = AtomicLong(0L)
     private val reconnectAttempt = AtomicInteger(0)
 
+    private val explicitDeviceId: String? = deviceId?.takeIf { it.isNotBlank() }
+
+    @Volatile
+    private var _deviceId: String = explicitDeviceId ?: "android-${UUID.randomUUID().toString().take(8)}"
+
     val deviceId: String
+        get() = _deviceId
+
+    @Volatile
+    private var stateMutatedByUser: Boolean = false
 
     @Volatile
     private var activeSecretBase64Url: String? = null
@@ -222,6 +246,9 @@ class SyncRelaySessionManager(
     @Volatile
     private var reconnectJob: Job? = null
 
+    @Volatile
+    private var debouncedPersistJob: Job? = null
+
     private val _state = MutableStateFlow(SyncSessionUiState())
     val state: StateFlow<SyncSessionUiState> = _state.asStateFlow()
 
@@ -232,45 +259,60 @@ class SyncRelaySessionManager(
     val incomingSpacesSnapshots: SharedFlow<SyncEvent.SpacesSnapshotEvent> =
         _incomingSpacesSnapshots.asSharedFlow()
 
-    init {
-        val restored = stateStore.load()
-        this.deviceId = deviceId
-            ?: restored?.deviceId?.takeIf { it.isNotBlank() }
-            ?: "android-${UUID.randomUUID().toString().take(8)}"
+    private val initJob: Job
 
-        if (restored != null) {
-            outboundSeq.set(restored.outboundSeq.coerceAtLeast(1L))
-            replayTracker.restore(restored.replaySnapshot)
-            val savedSecretB64 = restored.secretBase64Url
-            if (!savedSecretB64.isNullOrBlank()) {
-                try {
-                    val secretBytes = FocalSyncCrypto.base64UrlToBytes(savedSecretB64)
-                    if (secretBytes.size == FocalSyncCrypto.SECRET_BYTE_LENGTH) {
-                        val keys = FocalSyncCrypto.deriveFocalKeys(secretBytes)
-                        val relayUrl = restored.relayBaseUrl?.takeIf { it.isNotBlank() } ?: defaultRelayBaseUrl
-                        activeSecretBase64Url = savedSecretB64
-                        activeRelayBaseUrl = relayUrl
-                        activeKeys = keys
-                        val customRelay = relayUrl.takeIf {
-                            !it.trimEnd('/').equals(defaultRelayBaseUrl.trimEnd('/'), ignoreCase = true)
-                        }
-                        _state.value = SyncSessionUiState(
-                            status = SyncConnectionStatus.PAIRING_READY,
-                            pairingUri = FocalSyncCrypto.formatPairingUri(secretBytes, customRelay),
-                            sasVerificationCode = keys.sas,
-                            roomIdShort = keys.roomId.take(12),
-                        )
-                        if (autoConnectRestoredSession) {
-                            connectWebSocket(relayUrl, keys)
+    init {
+        if (!usesAsyncPersistence) {
+            val restored = stateStore.load()
+            val restoredDeviceId = restored?.deviceId?.takeIf { it.isNotBlank() }
+            if (explicitDeviceId == null && restoredDeviceId != null) {
+                _deviceId = restoredDeviceId
+            }
+            if (restored != null) {
+                val pendingAutoConnect = applyRestoredStateLocked(restored)
+                if (pendingAutoConnect != null) {
+                    connectWebSocket(pendingAutoConnect.first, pendingAutoConnect.second)
+                }
+            } else {
+                persistCurrentState(immediate = true)
+            }
+            initJob = CompletableDeferred(Unit)
+        } else {
+            // Defer AndroidKeyStore / SharedPreferences hydration and first-launch TEE key
+            // generation strictly off the main thread during Application.onCreate().
+            initJob = scope.launch(Dispatchers.IO) {
+                val restored = stateStore.load()
+                var pendingAutoConnect: Pair<String, DerivedFocalKeys>? = null
+                var initialSnapshotToSave: PersistedSyncSessionState? = null
+                synchronized(stateLock) {
+                    if (stateMutatedByUser) return@launch
+                    val restoredDeviceId = restored?.deviceId?.takeIf { it.isNotBlank() }
+                    if (explicitDeviceId == null && restoredDeviceId != null) {
+                        _deviceId = restoredDeviceId
+                    }
+                    if (restored != null) {
+                        pendingAutoConnect = applyRestoredStateLocked(restored)
+                    } else {
+                        initialSnapshotToSave = buildPersistedSnapshotLocked()
+                    }
+                }
+                initialSnapshotToSave?.let { snapshot ->
+                    persistMutex.withLock {
+                        if (!stateMutatedByUser) {
+                            stateStore.save(snapshot)
                         }
                     }
-                } catch (_: Exception) {
-                    // Ignore corrupted persisted secret and start unpaired
+                }
+                pendingAutoConnect?.let { (relayUrl, keys) ->
+                    connectWebSocket(relayUrl, keys)
                 }
             }
-        } else {
-            persistCurrentState()
         }
+    }
+
+    /** Suspends until asynchronous KeyStore/disk state hydration completes. */
+    suspend fun awaitInitialized() {
+        initJob.join()
     }
 
     val currentOutboundSeq: Long
@@ -284,12 +326,15 @@ class SyncRelaySessionManager(
         val secretB64 = FocalSyncCrypto.bytesToBase64Url(secret)
         val uri = FocalSyncCrypto.formatPairingUri(secret)
         val keys = FocalSyncCrypto.deriveFocalKeys(secret)
-        activeSecretBase64Url = secretB64
-        activeRelayBaseUrl = defaultRelayBaseUrl
-        activeKeys = keys
-        replayTracker.clear()
-        outboundSeq.set(1L)
-        persistCurrentState()
+        synchronized(stateLock) {
+            stateMutatedByUser = true
+            activeSecretBase64Url = secretB64
+            activeRelayBaseUrl = defaultRelayBaseUrl
+            activeKeys = keys
+            replayTracker.clear()
+            outboundSeq.set(1L)
+        }
+        persistCurrentState(immediate = true)
 
         _state.value = SyncSessionUiState(
             status = SyncConnectionStatus.PAIRING_READY,
@@ -314,12 +359,15 @@ class SyncRelaySessionManager(
         )
         val keys = FocalSyncCrypto.deriveFocalKeys(parsed.secret)
         val effectiveRelay = parsed.relayUrl ?: defaultRelayBaseUrl
-        activeSecretBase64Url = parsed.secretBase64Url
-        activeRelayBaseUrl = effectiveRelay
-        activeKeys = keys
-        replayTracker.clear()
-        outboundSeq.set(1L)
-        persistCurrentState()
+        synchronized(stateLock) {
+            stateMutatedByUser = true
+            activeSecretBase64Url = parsed.secretBase64Url
+            activeRelayBaseUrl = effectiveRelay
+            activeKeys = keys
+            replayTracker.clear()
+            outboundSeq.set(1L)
+        }
+        persistCurrentState(immediate = true)
 
         _state.update {
             it.copy(
@@ -340,7 +388,7 @@ class SyncRelaySessionManager(
         val keys = activeKeys ?: return false
         val ws = webSocket ?: return false
         val nextSeq = outboundSeq.getAndIncrement()
-        persistCurrentState()
+        persistCurrentState(immediate = false)
         val envelope = EncryptedEnvelope(
             seq = nextSeq,
             senderId = deviceId,
@@ -393,7 +441,7 @@ class SyncRelaySessionManager(
                 roomId = keys.roomId,
                 replayTracker = replayTracker,
             )
-            persistCurrentState()
+            persistCurrentState(immediate = false)
             if (envelope.senderId == deviceId) return
 
             when (val ev = envelope.event) {
@@ -429,6 +477,41 @@ class SyncRelaySessionManager(
         }
     }
 
+    private fun applyRestoredStateLocked(
+        restored: PersistedSyncSessionState,
+    ): Pair<String, DerivedFocalKeys>? {
+        outboundSeq.set(restored.outboundSeq.coerceAtLeast(1L))
+        replayTracker.restore(restored.replaySnapshot)
+        val savedSecretB64 = restored.secretBase64Url
+        if (!savedSecretB64.isNullOrBlank()) {
+            try {
+                val secretBytes = FocalSyncCrypto.base64UrlToBytes(savedSecretB64)
+                if (secretBytes.size == FocalSyncCrypto.SECRET_BYTE_LENGTH) {
+                    val keys = FocalSyncCrypto.deriveFocalKeys(secretBytes)
+                    val relayUrl = restored.relayBaseUrl?.takeIf { it.isNotBlank() } ?: defaultRelayBaseUrl
+                    activeSecretBase64Url = savedSecretB64
+                    activeRelayBaseUrl = relayUrl
+                    activeKeys = keys
+                    val customRelay = relayUrl.takeIf {
+                        !it.trimEnd('/').equals(defaultRelayBaseUrl.trimEnd('/'), ignoreCase = true)
+                    }
+                    _state.value = SyncSessionUiState(
+                        status = SyncConnectionStatus.PAIRING_READY,
+                        pairingUri = FocalSyncCrypto.formatPairingUri(secretBytes, customRelay),
+                        sasVerificationCode = keys.sas,
+                        roomIdShort = keys.roomId.take(12),
+                    )
+                    if (autoConnectRestoredSession && !manualDisconnect) {
+                        return relayUrl to keys
+                    }
+                }
+            } catch (_: Exception) {
+                // Ignore corrupted persisted secret and start unpaired
+            }
+        }
+        return null
+    }
+
     private fun connectWebSocket(relayBaseUrl: String, keys: DerivedFocalKeys) {
         manualDisconnect = false
         activeRelayBaseUrl = relayBaseUrl
@@ -439,7 +522,7 @@ class SyncRelaySessionManager(
 
     private fun openWebSocketInternal(relayBaseUrl: String, keys: DerivedFocalKeys) {
         val generation = connectionGeneration.incrementAndGet()
-        scope.launch {
+        scope.launch(Dispatchers.IO) {
             webSocket?.cancel()
             _state.update { it.copy(status = SyncConnectionStatus.CONNECTING) }
             val wsBase = relayBaseUrl.trimEnd('/')
@@ -488,7 +571,7 @@ class SyncRelaySessionManager(
         val baseDelayMs = (1_000L shl attempt).coerceAtMost(30_000L)
         val jitterMs = (System.nanoTime() and 0xFFL)
         reconnectJob?.cancel()
-        reconnectJob = scope.launch {
+        reconnectJob = scope.launch(Dispatchers.IO) {
             delay(baseDelayMs + jitterMs)
             if (!manualDisconnect && connectionGeneration.get() == expectedGeneration) {
                 val keys = activeKeys ?: return@launch
@@ -498,12 +581,19 @@ class SyncRelaySessionManager(
     }
 
     fun disconnect() {
-        manualDisconnect = true
+        val hadPendingPersist: Boolean
+        synchronized(stateLock) {
+            manualDisconnect = true
+            hadPendingPersist = debouncedPersistJob?.isActive == true
+        }
         connectionGeneration.incrementAndGet()
         reconnectJob?.cancel()
         reconnectJob = null
         webSocket?.close(1000, "Client closed")
         webSocket = null
+        if (hadPendingPersist && usesAsyncPersistence) {
+            persistCurrentState(immediate = true)
+        }
         if (activeKeys != null) {
             _state.update { it.copy(status = SyncConnectionStatus.DISCONNECTED) }
         }
@@ -511,23 +601,58 @@ class SyncRelaySessionManager(
 
     fun unpair() {
         disconnect()
-        activeKeys = null
-        activeSecretBase64Url = null
-        replayTracker.clear()
-        outboundSeq.set(1L)
-        persistCurrentState()
+        synchronized(stateLock) {
+            stateMutatedByUser = true
+            activeKeys = null
+            activeSecretBase64Url = null
+            replayTracker.clear()
+            outboundSeq.set(1L)
+        }
+        persistCurrentState(immediate = true)
         _state.value = SyncSessionUiState(status = SyncConnectionStatus.UNPAIRED)
     }
 
-    private fun persistCurrentState() {
-        stateStore.save(
-            PersistedSyncSessionState(
-                deviceId = deviceId,
-                secretBase64Url = activeSecretBase64Url,
-                relayBaseUrl = activeRelayBaseUrl.takeIf { activeSecretBase64Url != null },
-                outboundSeq = outboundSeq.get(),
-                replaySnapshot = replayTracker.snapshot(),
-            ),
+    private fun persistCurrentState(immediate: Boolean = false) {
+        if (!usesAsyncPersistence) {
+            stateStore.save(buildPersistedSnapshot())
+            return
+        }
+        if (immediate) {
+            synchronized(stateLock) {
+                debouncedPersistJob?.cancel()
+                debouncedPersistJob = null
+            }
+            scope.launch(Dispatchers.IO) {
+                initJob.join()
+                persistMutex.withLock {
+                    stateStore.save(buildPersistedSnapshot())
+                }
+            }
+        } else {
+            synchronized(stateLock) {
+                debouncedPersistJob?.cancel()
+                debouncedPersistJob = scope.launch(Dispatchers.IO) {
+                    delay(PERSIST_DEBOUNCE_MS)
+                    initJob.join()
+                    persistMutex.withLock {
+                        stateStore.save(buildPersistedSnapshot())
+                    }
+                }
+            }
+        }
+    }
+
+    private fun buildPersistedSnapshot(): PersistedSyncSessionState = synchronized(stateLock) {
+        buildPersistedSnapshotLocked()
+    }
+
+    private fun buildPersistedSnapshotLocked(): PersistedSyncSessionState {
+        return PersistedSyncSessionState(
+            deviceId = _deviceId,
+            secretBase64Url = activeSecretBase64Url,
+            relayBaseUrl = activeRelayBaseUrl.takeIf { activeSecretBase64Url != null },
+            outboundSeq = outboundSeq.get(),
+            replaySnapshot = replayTracker.snapshot(),
         )
     }
 

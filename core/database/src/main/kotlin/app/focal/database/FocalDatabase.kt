@@ -16,7 +16,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         HistoryEntryEntity::class,
         DownloadRecordEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class FocalDatabase : RoomDatabase() {
@@ -103,6 +103,25 @@ abstract class FocalDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Non-destructive migration adding composite indices on `tab_metadata` and `bookmarks`
+         * to eliminate full-table scans and temp B-tree sorts on active tabs, archived tabs, and
+         * quick-search pinned squircles.
+         */
+        val MIGRATION_3_4: Migration = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_tab_metadata_isArchived_lastActiveEpochMs` ON `tab_metadata` (`isArchived`, `lastActiveEpochMs`)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_tab_metadata_isArchived_archivedAtEpochMs` ON `tab_metadata` (`isArchived`, `archivedAtEpochMs`)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_bookmarks_isPinnedSquircle_sortOrder` ON `bookmarks` (`isPinnedSquircle`, `sortOrder`)",
+                )
+            }
+        }
+
         @Volatile
         private var instance: FocalDatabase? = null
 
@@ -113,7 +132,7 @@ abstract class FocalDatabase : RoomDatabase() {
                     FocalDatabase::class.java,
                     DB_NAME,
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .fallbackToDestructiveMigration()
                     .build()
                     .also { instance = it }

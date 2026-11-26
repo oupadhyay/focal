@@ -82,7 +82,6 @@ object LocalSearchSuggester {
     private const val AUTOCOMPLETE_BUILTIN_BASE = 100.0
 
     private val WHITESPACE_REGEX = Regex("\\s+")
-    private val WORD_SEPARATOR_REGEX = Regex("[\\s/_.:\\-–—|·,()\\[\\]]+")
 
     val BuiltInPopularHosts: List<String> = listOf(
         "github.com",
@@ -111,150 +110,260 @@ object LocalSearchSuggester {
         val tokens = queryLower.split(WHITESPACE_REGEX).filter { it.isNotEmpty() }
         if (tokens.isEmpty()) return LocalSuggestionResult.Empty
 
-        val activeTabs = openTabs.filter { tab ->
-            !tab.isArchived && isNavigableUrl(tab.url)
+        val canAutocomplete = query.none { it.isWhitespace() } &&
+            queryLower.length >= 2 &&
+            "://" !in queryLower &&
+            '/' !in queryLower &&
+            '?' !in queryLower &&
+            '#' !in queryLower
+
+        val cappedMaxResults = maxResults.coerceAtLeast(0)
+        val needSuggestions = cappedMaxResults > 0
+        val singleToken = tokens.size == 1
+        val hostQueryHasPathOrPort = hostQuery.isNotEmpty() &&
+            ('/' in hostQuery || '?' in hostQuery || ':' in hostQuery)
+
+        // Single pass over openTabs: compute max timestamp, autocomplete hits, and scored suggestions together.
+        var maxTabActiveMs = 0L
+        var hasValidTab = false
+        val tabAutocompleteMatches = if (canAutocomplete) ArrayList<RawAutocompleteHit>(4) else null
+        val scoredTabs = if (needSuggestions) ArrayList<ScoredCandidate>(minOf(openTabs.size, 16)) else null
+
+        for (tab in openTabs) {
+            if (tab.isArchived || !isNavigableUrl(tab.url)) continue
+            val ts = tab.lastActiveEpochMs
+            if (!hasValidTab || ts > maxTabActiveMs) {
+                maxTabActiveMs = ts
+                hasValidTab = true
+            }
+            val rawUrl = tab.url.trim()
+            val effectiveDomain = normalizeDomainOrExtract(tab.domain, rawUrl)
+
+            if (
+                tabAutocompleteMatches != null &&
+                effectiveDomain.length > queryLower.length &&
+                effectiveDomain.startsWith(queryLower)
+            ) {
+                tabAutocompleteMatches.add(
+                    RawAutocompleteHit(
+                        host = effectiveDomain,
+                        rawUrl = rawUrl,
+                        baseScore = AUTOCOMPLETE_TAB_BASE,
+                        timestampMs = ts,
+                    ),
+                )
+            }
+
+            if (scoredTabs != null) {
+                val displayTitle = tab.title.trim().ifBlank { effectiveDomain.ifBlank { rawUrl } }
+                val matchScore = scoreTextMatch(
+                    queryLower = queryLower,
+                    hostQuery = hostQuery,
+                    hostQueryHasPathOrPort = hostQueryHasPathOrPort,
+                    tokens = tokens,
+                    singleToken = singleToken,
+                    title = displayTitle,
+                    domainLower = effectiveDomain,
+                    rawUrl = rawUrl,
+                )
+                if (matchScore > 0.0) {
+                    val space = spacesById[tab.spaceId]
+                    scoredTabs.add(
+                        ScoredCandidate(
+                            normalizedUrl = normalizeUrlForDedup(rawUrl),
+                            score = OPEN_TAB_TIER_BOOST + matchScore,
+                            recencyTieBreakMs = ts,
+                            idTieBreak = tab.id,
+                            suggestion = LocalSearchSuggestion.SwitchToTab(
+                                tabId = tab.id,
+                                title = displayTitle,
+                                domain = effectiveDomain,
+                                url = rawUrl,
+                                spaceName = space?.name,
+                                spaceAmbientHex = space?.ambientHex,
+                            ),
+                        ),
+                    )
+                }
+            }
         }
-        val validBookmarks = bookmarks.filter { bookmark ->
-            !bookmark.isFolder && isNavigableUrl(bookmark.url)
-        }
-        val validHistory = history.filter { entry ->
-            isNavigableUrl(entry.url)
+        if (scoredTabs != null && scoredTabs.isNotEmpty() && maxTabActiveMs > 0L) {
+            for (candidate in scoredTabs) {
+                candidate.score += computeRecencyScore(
+                    timestampMs = candidate.recencyTieBreakMs,
+                    referenceMaxMs = maxTabActiveMs,
+                    maxBonus = 50.0,
+                )
+            }
         }
 
-        val inlineAutocomplete = if (query.none { it.isWhitespace() }) {
-            resolveInlineAutocomplete(
+        // Single pass over bookmarks.
+        var maxBookmarkUpdatedMs = 0L
+        var hasValidBookmark = false
+        val bookmarkAutocompleteMatches = if (canAutocomplete) ArrayList<RawAutocompleteHit>(4) else null
+        val scoredBookmarks = if (needSuggestions) ArrayList<ScoredCandidate>(minOf(bookmarks.size, 16)) else null
+
+        for (bookmark in bookmarks) {
+            if (bookmark.isFolder || !isNavigableUrl(bookmark.url)) continue
+            val ts = bookmark.updatedAtEpochMs
+            if (!hasValidBookmark || ts > maxBookmarkUpdatedMs) {
+                maxBookmarkUpdatedMs = ts
+                hasValidBookmark = true
+            }
+            val rawUrl = bookmark.url?.trim().orEmpty()
+            val effectiveDomain = extractHost(rawUrl)
+
+            if (
+                bookmarkAutocompleteMatches != null &&
+                effectiveDomain.length > queryLower.length &&
+                effectiveDomain.startsWith(queryLower)
+            ) {
+                val pinnedAutoBonus = if (bookmark.isPinnedSquircle) 40.0 else 0.0
+                bookmarkAutocompleteMatches.add(
+                    RawAutocompleteHit(
+                        host = effectiveDomain,
+                        rawUrl = rawUrl,
+                        baseScore = AUTOCOMPLETE_BOOKMARK_BASE + pinnedAutoBonus,
+                        timestampMs = ts,
+                    ),
+                )
+            }
+
+            if (scoredBookmarks != null) {
+                val displayTitle = bookmark.title.trim().ifBlank { effectiveDomain.ifBlank { rawUrl } }
+                val matchScore = scoreTextMatch(
+                    queryLower = queryLower,
+                    hostQuery = hostQuery,
+                    hostQueryHasPathOrPort = hostQueryHasPathOrPort,
+                    tokens = tokens,
+                    singleToken = singleToken,
+                    title = displayTitle,
+                    domainLower = effectiveDomain,
+                    rawUrl = rawUrl,
+                )
+                if (matchScore > 0.0) {
+                    val pinnedBonus = if (bookmark.isPinnedSquircle) 25.0 else 0.0
+                    scoredBookmarks.add(
+                        ScoredCandidate(
+                            normalizedUrl = normalizeUrlForDedup(rawUrl),
+                            score = BOOKMARK_TIER_BOOST + matchScore + pinnedBonus,
+                            recencyTieBreakMs = ts,
+                            idTieBreak = bookmark.id,
+                            suggestion = LocalSearchSuggestion.BookmarkMatch(
+                                bookmarkId = bookmark.id,
+                                title = displayTitle,
+                                domain = effectiveDomain,
+                                url = rawUrl,
+                            ),
+                        ),
+                    )
+                }
+            }
+        }
+        if (scoredBookmarks != null && scoredBookmarks.isNotEmpty() && maxBookmarkUpdatedMs > 0L) {
+            for (candidate in scoredBookmarks) {
+                candidate.score += computeRecencyScore(
+                    timestampMs = candidate.recencyTieBreakMs,
+                    referenceMaxMs = maxBookmarkUpdatedMs,
+                    maxBonus = 25.0,
+                )
+            }
+        }
+
+        // Single pass over history.
+        var maxHistoryVisitedMs = 0L
+        var hasValidHistory = false
+        val historyAutocompleteMatches = if (canAutocomplete) ArrayList<RawAutocompleteHit>(8) else null
+        val scoredHistory = if (needSuggestions) ArrayList<ScoredCandidate>(minOf(history.size, 32)) else null
+
+        for (entry in history) {
+            if (!isNavigableUrl(entry.url)) continue
+            val ts = entry.visitedAtEpochMs
+            if (!hasValidHistory || ts > maxHistoryVisitedMs) {
+                maxHistoryVisitedMs = ts
+                hasValidHistory = true
+            }
+            val rawUrl = entry.url.trim()
+            val effectiveDomain = normalizeDomainOrExtract(entry.domain, rawUrl)
+
+            if (
+                historyAutocompleteMatches != null &&
+                effectiveDomain.length > queryLower.length &&
+                effectiveDomain.startsWith(queryLower)
+            ) {
+                val visits = entry.visitCount.coerceAtLeast(1)
+                val visitBonus = ln(visits.toDouble() + 1.0) * 40.0
+                historyAutocompleteMatches.add(
+                    RawAutocompleteHit(
+                        host = effectiveDomain,
+                        rawUrl = rawUrl,
+                        baseScore = AUTOCOMPLETE_HISTORY_BASE + visitBonus,
+                        timestampMs = ts,
+                    ),
+                )
+            }
+
+            if (scoredHistory != null) {
+                val displayTitle = entry.title.trim().ifBlank { effectiveDomain.ifBlank { rawUrl } }
+                val matchScore = scoreTextMatch(
+                    queryLower = queryLower,
+                    hostQuery = hostQuery,
+                    hostQueryHasPathOrPort = hostQueryHasPathOrPort,
+                    tokens = tokens,
+                    singleToken = singleToken,
+                    title = displayTitle,
+                    domainLower = effectiveDomain,
+                    rawUrl = rawUrl,
+                )
+                if (matchScore > 0.0) {
+                    val visits = entry.visitCount.coerceAtLeast(1)
+                    val visitBonus = ln(visits.toDouble() + 1.0) * 55.0
+                    scoredHistory.add(
+                        ScoredCandidate(
+                            normalizedUrl = normalizeUrlForDedup(rawUrl),
+                            score = HISTORY_TIER_BOOST + matchScore + visitBonus,
+                            recencyTieBreakMs = ts,
+                            idTieBreak = entry.id,
+                            suggestion = LocalSearchSuggestion.HistoryMatch(
+                                historyId = entry.id,
+                                title = displayTitle,
+                                domain = effectiveDomain,
+                                url = rawUrl,
+                                visitCount = entry.visitCount,
+                            ),
+                        ),
+                    )
+                }
+            }
+        }
+        if (scoredHistory != null && scoredHistory.isNotEmpty() && maxHistoryVisitedMs > 0L) {
+            for (candidate in scoredHistory) {
+                candidate.score += computeRecencyScore(
+                    timestampMs = candidate.recencyTieBreakMs,
+                    referenceMaxMs = maxHistoryVisitedMs,
+                    maxBonus = 100.0,
+                )
+            }
+        }
+
+        val inlineAutocomplete = if (canAutocomplete) {
+            finalizeInlineAutocomplete(
                 queryLower = queryLower,
-                openTabs = activeTabs,
-                bookmarks = validBookmarks,
-                history = validHistory,
+                bookmarkHits = bookmarkAutocompleteMatches!!,
+                maxBookmarkUpdatedMs = maxBookmarkUpdatedMs,
+                tabHits = tabAutocompleteMatches!!,
+                maxTabActiveMs = maxTabActiveMs,
+                historyHits = historyAutocompleteMatches!!,
+                maxHistoryVisitedMs = maxHistoryVisitedMs,
             )
         } else {
             null
         }
 
-        val cappedMaxResults = maxResults.coerceAtLeast(0)
-        if (cappedMaxResults == 0) {
+        if (!needSuggestions) {
             return LocalSuggestionResult(
                 suggestions = emptyList(),
                 inlineAutocomplete = inlineAutocomplete,
-            )
-        }
-
-        val maxTabActiveMs = activeTabs.maxOfOrNull { it.lastActiveEpochMs } ?: 0L
-        val maxBookmarkUpdatedMs = validBookmarks.maxOfOrNull { it.updatedAtEpochMs } ?: 0L
-        val maxHistoryVisitedMs = validHistory.maxOfOrNull { it.visitedAtEpochMs } ?: 0L
-
-        val scoredTabs = ArrayList<ScoredCandidate>(activeTabs.size)
-        for (tab in activeTabs) {
-            val effectiveDomain = normalizeDomainOrExtract(tab.domain, tab.url)
-            val displayTitle = tab.title.trim().ifBlank { effectiveDomain.ifBlank { tab.url.trim() } }
-            val matchScore = scoreTextMatch(
-                queryLower = queryLower,
-                hostQuery = hostQuery,
-                tokens = tokens,
-                title = displayTitle,
-                domain = effectiveDomain,
-                url = tab.url,
-            )
-            if (matchScore <= 0.0) continue
-
-            val recencyBonus = computeRecencyScore(
-                timestampMs = tab.lastActiveEpochMs,
-                referenceMaxMs = maxTabActiveMs,
-                maxBonus = 50.0,
-            )
-            val space = spacesById[tab.spaceId]
-            scoredTabs.add(
-                ScoredCandidate(
-                    normalizedUrl = normalizeUrlForDedup(tab.url),
-                    score = OPEN_TAB_TIER_BOOST + matchScore + recencyBonus,
-                    recencyTieBreakMs = tab.lastActiveEpochMs,
-                    idTieBreak = tab.id,
-                    suggestion = LocalSearchSuggestion.SwitchToTab(
-                        tabId = tab.id,
-                        title = displayTitle,
-                        domain = effectiveDomain,
-                        url = tab.url.trim(),
-                        spaceName = space?.name,
-                        spaceAmbientHex = space?.ambientHex,
-                    ),
-                ),
-            )
-        }
-
-        val scoredBookmarks = ArrayList<ScoredCandidate>(validBookmarks.size)
-        for (bookmark in validBookmarks) {
-            val rawUrl = bookmark.url?.trim().orEmpty()
-            val effectiveDomain = extractHost(rawUrl)
-            val displayTitle = bookmark.title.trim().ifBlank { effectiveDomain.ifBlank { rawUrl } }
-            val matchScore = scoreTextMatch(
-                queryLower = queryLower,
-                hostQuery = hostQuery,
-                tokens = tokens,
-                title = displayTitle,
-                domain = effectiveDomain,
-                url = rawUrl,
-            )
-            if (matchScore <= 0.0) continue
-
-            val pinnedBonus = if (bookmark.isPinnedSquircle) 25.0 else 0.0
-            val recencyBonus = computeRecencyScore(
-                timestampMs = bookmark.updatedAtEpochMs,
-                referenceMaxMs = maxBookmarkUpdatedMs,
-                maxBonus = 25.0,
-            )
-            scoredBookmarks.add(
-                ScoredCandidate(
-                    normalizedUrl = normalizeUrlForDedup(rawUrl),
-                    score = BOOKMARK_TIER_BOOST + matchScore + pinnedBonus + recencyBonus,
-                    recencyTieBreakMs = bookmark.updatedAtEpochMs,
-                    idTieBreak = bookmark.id,
-                    suggestion = LocalSearchSuggestion.BookmarkMatch(
-                        bookmarkId = bookmark.id,
-                        title = displayTitle,
-                        domain = effectiveDomain,
-                        url = rawUrl,
-                    ),
-                ),
-            )
-        }
-
-        val scoredHistory = ArrayList<ScoredCandidate>(validHistory.size)
-        for (entry in validHistory) {
-            val rawUrl = entry.url.trim()
-            val effectiveDomain = normalizeDomainOrExtract(entry.domain, rawUrl)
-            val displayTitle = entry.title.trim().ifBlank { effectiveDomain.ifBlank { rawUrl } }
-            val matchScore = scoreTextMatch(
-                queryLower = queryLower,
-                hostQuery = hostQuery,
-                tokens = tokens,
-                title = displayTitle,
-                domain = effectiveDomain,
-                url = rawUrl,
-            )
-            if (matchScore <= 0.0) continue
-
-            val visits = entry.visitCount.coerceAtLeast(1)
-            val visitBonus = ln(visits.toDouble() + 1.0) * 55.0
-            val recencyBonus = computeRecencyScore(
-                timestampMs = entry.visitedAtEpochMs,
-                referenceMaxMs = maxHistoryVisitedMs,
-                maxBonus = 100.0,
-            )
-            scoredHistory.add(
-                ScoredCandidate(
-                    normalizedUrl = normalizeUrlForDedup(rawUrl),
-                    score = HISTORY_TIER_BOOST + matchScore + visitBonus + recencyBonus,
-                    recencyTieBreakMs = entry.visitedAtEpochMs,
-                    idTieBreak = entry.id,
-                    suggestion = LocalSearchSuggestion.HistoryMatch(
-                        historyId = entry.id,
-                        title = displayTitle,
-                        domain = effectiveDomain,
-                        url = rawUrl,
-                        visitCount = entry.visitCount,
-                    ),
-                ),
             )
         }
 
@@ -262,9 +371,9 @@ object LocalSearchSuggester {
             .thenByDescending { it.recencyTieBreakMs }
             .thenBy { it.idTieBreak }
 
-        scoredTabs.sortWith(comparator)
-        scoredBookmarks.sortWith(comparator)
-        scoredHistory.sortWith(comparator)
+        scoredTabs!!.sortWith(comparator)
+        scoredBookmarks!!.sortWith(comparator)
+        scoredHistory!!.sortWith(comparator)
 
         val seenUrls = HashSet<String>(cappedMaxResults * 2)
         val merged = ArrayList<LocalSearchSuggestion>(cappedMaxResults)
@@ -352,22 +461,20 @@ object LocalSearchSuggester {
         return if ('.' in clean || clean == "localhost") clean else ""
     }
 
-    private fun resolveInlineAutocomplete(
+    private fun finalizeInlineAutocomplete(
         queryLower: String,
-        openTabs: List<TabMetadataEntity>,
-        bookmarks: List<BookmarkEntity>,
-        history: List<HistoryEntryEntity>,
+        bookmarkHits: List<RawAutocompleteHit>,
+        maxBookmarkUpdatedMs: Long,
+        tabHits: List<RawAutocompleteHit>,
+        maxTabActiveMs: Long,
+        historyHits: List<RawAutocompleteHit>,
+        maxHistoryVisitedMs: Long,
     ): InlineUrlAutocomplete? {
-        if (queryLower.length < 2) return null
-        if ("://" in queryLower || '/' in queryLower || '?' in queryLower || '#' in queryLower) {
-            return null
-        }
-
         val candidatesByHost = LinkedHashMap<String, AutocompleteCandidate>()
 
         fun consider(host: String, rawUrl: String?, score: Double) {
             if (host.length <= queryLower.length || !host.startsWith(queryLower)) return
-            val scheme = if (rawUrl != null && rawUrl.trim().startsWith("http://", ignoreCase = true)) {
+            val scheme = if (rawUrl != null && rawUrl.startsWith("http://", ignoreCase = true)) {
                 "http"
             } else {
                 "https"
@@ -383,37 +490,26 @@ object LocalSearchSuggester {
             }
         }
 
-        val maxBookmarkUpdatedMs = bookmarks.maxOfOrNull { it.updatedAtEpochMs } ?: 0L
-        for (bookmark in bookmarks) {
-            val rawUrl = bookmark.url?.trim().orEmpty()
-            val host = extractHost(rawUrl)
-            if (host.isEmpty()) continue
-            val pinnedBonus = if (bookmark.isPinnedSquircle) 40.0 else 0.0
-            val recencyBonus = computeRecencyScore(bookmark.updatedAtEpochMs, maxBookmarkUpdatedMs, 20.0)
-            consider(host, rawUrl, AUTOCOMPLETE_BOOKMARK_BASE + pinnedBonus + recencyBonus)
+        for (hit in bookmarkHits) {
+            val recencyBonus = computeRecencyScore(hit.timestampMs, maxBookmarkUpdatedMs, 20.0)
+            consider(hit.host, hit.rawUrl, hit.baseScore + recencyBonus)
         }
 
-        val maxTabActiveMs = openTabs.maxOfOrNull { it.lastActiveEpochMs } ?: 0L
-        for (tab in openTabs) {
-            val host = normalizeDomainOrExtract(tab.domain, tab.url)
-            if (host.isEmpty()) continue
-            val recencyBonus = computeRecencyScore(tab.lastActiveEpochMs, maxTabActiveMs, 25.0)
-            consider(host, tab.url, AUTOCOMPLETE_TAB_BASE + recencyBonus)
+        for (hit in tabHits) {
+            val recencyBonus = computeRecencyScore(hit.timestampMs, maxTabActiveMs, 25.0)
+            consider(hit.host, hit.rawUrl, hit.baseScore + recencyBonus)
         }
 
-        val maxHistoryVisitedMs = history.maxOfOrNull { it.visitedAtEpochMs } ?: 0L
-        for (entry in history) {
-            val host = normalizeDomainOrExtract(entry.domain, entry.url)
-            if (host.isEmpty()) continue
-            val visits = entry.visitCount.coerceAtLeast(1)
-            val visitBonus = ln(visits.toDouble() + 1.0) * 40.0
-            val recencyBonus = computeRecencyScore(entry.visitedAtEpochMs, maxHistoryVisitedMs, 50.0)
-            consider(host, entry.url, AUTOCOMPLETE_HISTORY_BASE + visitBonus + recencyBonus)
+        for (hit in historyHits) {
+            val recencyBonus = computeRecencyScore(hit.timestampMs, maxHistoryVisitedMs, 50.0)
+            consider(hit.host, hit.rawUrl, hit.baseScore + recencyBonus)
         }
 
         BuiltInPopularHosts.forEachIndexed { index, host ->
-            val rankBonus = (BuiltInPopularHosts.size - index).toDouble()
-            consider(host, "https://$host", AUTOCOMPLETE_BUILTIN_BASE + rankBonus)
+            if (host.length > queryLower.length && host.startsWith(queryLower)) {
+                val rankBonus = (BuiltInPopularHosts.size - index).toDouble()
+                consider(host, "https://$host", AUTOCOMPLETE_BUILTIN_BASE + rankBonus)
+            }
         }
 
         val best = candidatesByHost.values.maxWithOrNull(
@@ -432,31 +528,32 @@ object LocalSearchSuggester {
     private fun scoreTextMatch(
         queryLower: String,
         hostQuery: String,
+        hostQueryHasPathOrPort: Boolean,
         tokens: List<String>,
+        singleToken: Boolean,
         title: String,
-        domain: String,
-        url: String,
+        domainLower: String,
+        rawUrl: String,
     ): Double {
-        val titleLower = title.lowercase()
-        val domainLower = domain.lowercase()
-        val urlLower = url.trim().lowercase()
-        val normalizedUrlLower = normalizeUrlForDedup(url).lowercase()
-
-        if (tokens.size == 1) {
-            val domainStem = domainLower.substringBefore('.')
-            return when {
-                hostQuery.isNotEmpty() && (domainLower == hostQuery || domainStem == hostQuery) -> 540.0
-                hostQuery.isNotEmpty() && domainLower.startsWith(hostQuery) -> 460.0
-                hostQuery.isNotEmpty() && hasDomainLabelPrefix(domainLower, hostQuery) -> 380.0
-                titleLower.startsWith(queryLower) -> 340.0
-                hasWordPrefix(titleLower, queryLower) -> 280.0
-                hostQuery.isNotEmpty() && normalizedUrlLower.startsWith(hostQuery) -> 240.0
-                urlLower.startsWith(queryLower) -> 220.0
-                hostQuery.isNotEmpty() && domainLower.contains(hostQuery) -> 140.0
-                titleLower.contains(queryLower) -> 100.0
-                urlLower.contains(queryLower) -> 60.0
-                else -> 0.0
+        if (singleToken) {
+            if (hostQuery.isNotEmpty()) {
+                if (domainLower == hostQuery || domainStemEquals(domainLower, hostQuery)) return 540.0
+                if (domainLower.startsWith(hostQuery)) return 460.0
+                if (hasDomainLabelPrefix(domainLower, hostQuery)) return 380.0
             }
+            if (title.startsWith(queryLower, ignoreCase = true)) return 340.0
+            if (hasWordPrefix(title, queryLower)) return 280.0
+            if (
+                hostQuery.isNotEmpty() &&
+                (hostQueryHasPathOrPort || domainLower.isEmpty() || rawUrl.contains(hostQuery, ignoreCase = true))
+            ) {
+                if (normalizeUrlForDedup(rawUrl).startsWith(hostQuery, ignoreCase = true)) return 240.0
+            }
+            if (rawUrl.startsWith(queryLower, ignoreCase = true)) return 220.0
+            if (hostQuery.isNotEmpty() && domainLower.contains(hostQuery)) return 140.0
+            if (title.contains(queryLower, ignoreCase = true)) return 100.0
+            if (rawUrl.contains(queryLower, ignoreCase = true)) return 60.0
+            return 0.0
         }
 
         // Multi-token query: every token must match title, domain, or URL.
@@ -464,22 +561,28 @@ object LocalSearchSuggester {
         for (token in tokens) {
             val tokenMatch = when {
                 domainLower.startsWith(token) || hasDomainLabelPrefix(domainLower, token) -> 95.0
-                titleLower.startsWith(token) || hasWordPrefix(titleLower, token) -> 85.0
+                title.startsWith(token, ignoreCase = true) || hasWordPrefix(title, token) -> 85.0
                 domainLower.contains(token) -> 60.0
-                titleLower.contains(token) -> 50.0
-                urlLower.contains(token) -> 35.0
+                title.contains(token, ignoreCase = true) -> 50.0
+                rawUrl.contains(token, ignoreCase = true) -> 35.0
                 else -> return 0.0
             }
             tokenScoreSum += tokenMatch
         }
 
         val phraseBonus = when {
-            titleLower.startsWith(queryLower) -> 140.0
-            titleLower.contains(queryLower) -> 90.0
-            urlLower.contains(queryLower) -> 45.0
+            title.startsWith(queryLower, ignoreCase = true) -> 140.0
+            title.contains(queryLower, ignoreCase = true) -> 90.0
+            rawUrl.contains(queryLower, ignoreCase = true) -> 45.0
             else -> 0.0
         }
         return (tokenScoreSum / tokens.size) * 2.2 + phraseBonus
+    }
+
+    private fun domainStemEquals(domainLower: String, hostQuery: String): Boolean {
+        val dot = domainLower.indexOf('.')
+        val stemLen = if (dot < 0) domainLower.length else dot
+        return stemLen == hostQuery.length && domainLower.regionMatches(0, hostQuery, 0, stemLen)
     }
 
     private fun hasDomainLabelPrefix(domainLower: String, prefix: String): Boolean {
@@ -497,11 +600,28 @@ object LocalSearchSuggester {
         return false
     }
 
-    private fun hasWordPrefix(textLower: String, prefix: String): Boolean {
-        if (textLower.isEmpty() || prefix.isEmpty()) return false
-        return textLower
-            .split(WORD_SEPARATOR_REGEX)
-            .any { word -> word.isNotEmpty() && word.startsWith(prefix) }
+    private fun isWordSeparator(c: Char): Boolean =
+        c.isWhitespace() ||
+            c == '/' || c == '_' || c == '.' || c == ':' ||
+            c == '-' || c == '–' || c == '—' || c == '|' ||
+            c == '·' || c == ',' || c == '(' || c == ')' ||
+            c == '[' || c == ']'
+
+    private fun hasWordPrefix(text: String, prefixLower: String): Boolean {
+        if (text.isEmpty() || prefixLower.isEmpty()) return false
+        val len = text.length
+        val pLen = prefixLower.length
+        var i = 0
+        while (i < len) {
+            while (i < len && isWordSeparator(text[i])) i++
+            if (i >= len) break
+            val wordStart = i
+            while (i < len && !isWordSeparator(text[i])) i++
+            if (i - wordStart >= pLen && text.regionMatches(wordStart, prefixLower, 0, pLen, ignoreCase = true)) {
+                return true
+            }
+        }
+        return false
     }
 
     private fun computeRecencyScore(
@@ -550,12 +670,19 @@ object LocalSearchSuggester {
         return !trimmed.equals("about:blank", ignoreCase = true)
     }
 
-    private data class ScoredCandidate(
+    private class ScoredCandidate(
         val normalizedUrl: String,
-        val score: Double,
+        var score: Double,
         val recencyTieBreakMs: Long,
         val idTieBreak: String,
         val suggestion: LocalSearchSuggestion,
+    )
+
+    private class RawAutocompleteHit(
+        val host: String,
+        val rawUrl: String,
+        val baseScore: Double,
+        val timestampMs: Long,
     )
 
     private data class AutocompleteCandidate(

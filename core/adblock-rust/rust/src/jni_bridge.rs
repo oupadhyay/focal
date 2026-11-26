@@ -21,9 +21,11 @@
 use crate::url_cleaner::clean_url;
 use crate::FocalAdblockEngine;
 use jni::objects::{JByteArray, JClass, JObject, JObjectArray, JString};
+use jni::strings::JavaStr;
 use jni::sys::{jboolean, jbyteArray, jlong, jobjectArray, jsize, jstring, JNI_FALSE, JNI_TRUE};
 use jni::JNIEnv;
 use once_cell::sync::Lazy;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
@@ -92,13 +94,26 @@ pub fn active_engine_handle_count() -> usize {
         .len()
 }
 
-/// Safely extracts a UTF-8 Rust `String` from a potentially-null `JString`.
+/// Safely acquires a borrowed [`JavaStr`] from a potentially-null `JString` without allocating a `String`.
 #[inline]
-fn read_nullable_jstring(env: &mut JNIEnv<'_>, input: &JString<'_>) -> Option<String> {
+fn get_nullable_jstr<'local, 'other_local: 'obj_ref, 'obj_ref>(
+    env: &mut JNIEnv<'local>,
+    input: &'obj_ref JString<'other_local>,
+) -> Option<JavaStr<'local, 'other_local, 'obj_ref>> {
     if input.is_null() {
         return None;
     }
-    env.get_string(input).ok().map(Into::into)
+    env.get_string(input).ok()
+}
+
+/// Borrows `&str` directly from a [`JavaStr`] via `CStr::to_str()` on valid UTF-8, falling back
+/// to Modified-UTF-8 / CESU-8 decoding only when surrogate sequences are present.
+#[inline]
+fn borrow_jstr<'a>(java_str: &'a JavaStr<'_, '_, '_>) -> Cow<'a, str> {
+    match java_str.to_str() {
+        Ok(slice) => Cow::Borrowed(slice),
+        Err(_) => Cow::from(java_str),
+    }
 }
 
 /// Allocates a Java `String` or returns `null` on JNI allocation failure.
@@ -324,7 +339,11 @@ pub extern "system" fn Java_app_focal_adblock_RustAdblockBridge_nativeLoadCustom
         let Some(engine) = lookup_engine_handle(engine_handle) else {
             return JNI_FALSE;
         };
-        let raw_rules = read_nullable_jstring(&mut env, &rules_text).unwrap_or_default();
+        let rules_jstr = get_nullable_jstr(&mut env, &rules_text);
+        let raw_rules = rules_jstr
+            .as_ref()
+            .map(borrow_jstr)
+            .unwrap_or(Cow::Borrowed(""));
         let lines: Vec<&str> = raw_rules.lines().collect();
         engine.reload_with_rules(&lines, include_starter != JNI_FALSE);
         JNI_TRUE
@@ -345,12 +364,21 @@ pub extern "system" fn Java_app_focal_adblock_RustAdblockBridge_nativeShouldBloc
         let Some(engine) = lookup_engine_handle(engine_handle) else {
             return JNI_FALSE;
         };
-        let Some(req_url) = read_nullable_jstring(&mut env, &request_url) else {
+        let Some(req_jstr) = get_nullable_jstr(&mut env, &request_url) else {
             return JNI_FALSE;
         };
-        let src_url = read_nullable_jstring(&mut env, &source_url).unwrap_or_default();
-        let res_type =
-            read_nullable_jstring(&mut env, &resource_type).unwrap_or_else(|| "other".to_string());
+        let src_jstr = get_nullable_jstr(&mut env, &source_url);
+        let res_jstr = get_nullable_jstr(&mut env, &resource_type);
+
+        let req_url = borrow_jstr(&req_jstr);
+        let src_url = src_jstr
+            .as_ref()
+            .map(borrow_jstr)
+            .unwrap_or(Cow::Borrowed(""));
+        let res_type = res_jstr
+            .as_ref()
+            .map(borrow_jstr)
+            .unwrap_or(Cow::Borrowed("other"));
 
         if engine
             .check_network_request(&req_url, &src_url, &res_type)
@@ -379,14 +407,26 @@ pub extern "system" fn Java_app_focal_adblock_RustAdblockBridge_nativeCheckNetwo
         let Some(engine) = lookup_engine_handle(engine_handle) else {
             return ptr::null_mut();
         };
-        let Some(req_url) = read_nullable_jstring(&mut env, &request_url) else {
-            return ptr::null_mut();
-        };
-        let src_url = read_nullable_jstring(&mut env, &source_url).unwrap_or_default();
-        let res_type =
-            read_nullable_jstring(&mut env, &resource_type).unwrap_or_else(|| "other".to_string());
 
-        let decision = engine.check_network_request(&req_url, &src_url, &res_type);
+        let decision = {
+            let Some(req_jstr) = get_nullable_jstr(&mut env, &request_url) else {
+                return ptr::null_mut();
+            };
+            let src_jstr = get_nullable_jstr(&mut env, &source_url);
+            let res_jstr = get_nullable_jstr(&mut env, &resource_type);
+
+            let req_url = borrow_jstr(&req_jstr);
+            let src_url = src_jstr
+                .as_ref()
+                .map(borrow_jstr)
+                .unwrap_or(Cow::Borrowed(""));
+            let res_type = res_jstr
+                .as_ref()
+                .map(borrow_jstr)
+                .unwrap_or(Cow::Borrowed("other"));
+
+            engine.check_network_request(&req_url, &src_url, &res_type)
+        };
         if !decision.matched {
             return ptr::null_mut();
         }
@@ -412,10 +452,13 @@ pub extern "system" fn Java_app_focal_adblock_RustAdblockBridge_nativeGetCosmeti
         let Some(engine) = lookup_engine_handle(engine_handle) else {
             return into_raw_jstring(&env, "");
         };
-        let Some(page_url) = read_nullable_jstring(&mut env, &url) else {
-            return into_raw_jstring(&env, "");
+        let css = {
+            let Some(url_jstr) = get_nullable_jstr(&mut env, &url) else {
+                return into_raw_jstring(&env, "");
+            };
+            let page_url = borrow_jstr(&url_jstr);
+            engine.cosmetic_css_for_url(&page_url)
         };
-        let css = engine.cosmetic_css_for_url(&page_url);
         into_raw_jstring(&env, &css)
     })
 }
@@ -435,20 +478,31 @@ pub extern "system" fn Java_app_focal_adblock_RustAdblockBridge_nativeHiddenClas
         let Some(engine) = lookup_engine_handle(engine_handle) else {
             return into_raw_jstring(&env, "");
         };
-        let Some(page_url) = read_nullable_jstring(&mut env, &url) else {
-            return into_raw_jstring(&env, "");
+        let css = {
+            let Some(url_jstr) = get_nullable_jstr(&mut env, &url) else {
+                return into_raw_jstring(&env, "");
+            };
+            let classes_jstr = get_nullable_jstr(&mut env, &classes_tab_separated);
+            let ids_jstr = get_nullable_jstr(&mut env, &ids_tab_separated);
+
+            let page_url = borrow_jstr(&url_jstr);
+            let raw_classes = classes_jstr
+                .as_ref()
+                .map(borrow_jstr)
+                .unwrap_or(Cow::Borrowed(""));
+            let raw_ids = ids_jstr
+                .as_ref()
+                .map(borrow_jstr)
+                .unwrap_or(Cow::Borrowed(""));
+
+            let classes = parse_tab_separated_tokens(&raw_classes);
+            let ids = parse_tab_separated_tokens(&raw_ids);
+            if classes.is_empty() && ids.is_empty() {
+                String::new()
+            } else {
+                engine.cosmetic_css_for_classes_and_ids(&page_url, &classes, &ids)
+            }
         };
-        let raw_classes =
-            read_nullable_jstring(&mut env, &classes_tab_separated).unwrap_or_default();
-        let raw_ids = read_nullable_jstring(&mut env, &ids_tab_separated).unwrap_or_default();
-
-        let classes = parse_tab_separated_tokens(&raw_classes);
-        let ids = parse_tab_separated_tokens(&raw_ids);
-        if classes.is_empty() && ids.is_empty() {
-            return into_raw_jstring(&env, "");
-        }
-
-        let css = engine.cosmetic_css_for_classes_and_ids(&page_url, &classes, &ids);
         into_raw_jstring(&env, &css)
     })
 }
@@ -466,8 +520,14 @@ pub extern "system" fn Java_app_focal_adblock_RustAdblockBridge_nativeCleanUrl(
     raw_url: JString<'_>,
 ) -> jobjectArray {
     ffi_catch_unwind(ptr::null_mut(), || {
-        let input = read_nullable_jstring(&mut env, &raw_url).unwrap_or_default();
-        let (clean, stripped) = clean_url(&input);
+        let (clean, stripped) = {
+            let input_jstr = get_nullable_jstr(&mut env, &raw_url);
+            let input = input_jstr
+                .as_ref()
+                .map(borrow_jstr)
+                .unwrap_or(Cow::Borrowed(""));
+            clean_url(&input)
+        };
 
         let total_len = 1usize.saturating_add(stripped.len());
         let elements =

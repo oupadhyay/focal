@@ -1,6 +1,8 @@
 package app.focal
 
 import android.app.Application
+import android.util.Log
+import androidx.work.Configuration
 import app.focal.adblock.AdblockController
 import app.focal.adblock.NativeAdblockController
 import app.focal.ai.LocalSummarizer
@@ -23,10 +25,15 @@ import java.io.File
  * - `WebViewBrowserEngine` (`WarmWebViewPool` scheduled on idle after first frame)
  * - Room `FocalDatabase` seeded with `Personal`, `Work`, and `Reading` Spaces
  * - 100% On-Device `LocalSummarizer` (`AICore` / `LiteRT-LM` / Offline RAM + `ParagraphGrounder`)
- * - Zero-Account E2EE `SyncRelaySessionManager` (AndroidKeyStore-encrypted persistent session)
- * - `AutoArchiveTabsWorker` (`WorkManager` 24h sweep protecting unsent form drafts)
+ * - Zero-Account E2EE `SyncRelaySessionManager` (lazy off-main-thread AndroidKeyStore hydration)
+ * - `AutoArchiveTabsWorker` (lazy on-demand `WorkManager` via `Configuration.Provider` on `Dispatchers.IO`)
  */
-class FocalApplication : Application() {
+class FocalApplication : Application(), Configuration.Provider {
+
+    override val workManagerConfiguration: Configuration
+        get() = Configuration.Builder()
+            .setMinimumLoggingLevel(Log.WARN)
+            .build()
 
     val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
