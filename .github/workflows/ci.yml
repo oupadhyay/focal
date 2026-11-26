@@ -232,6 +232,12 @@ jobs:
           EOF
           chmod +x run-emulator-tests.sh
 
+      - name: Free runner disk space for AVD userdata partition
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android/sdk/ndk /opt/hostedtoolcache/CodeQL /usr/local/share/boost /opt/ghc || true
+          df -h /
+
       - name: Run FocalEmulatorVerificationTest on headless KVM API 34 emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -240,12 +246,13 @@ jobs:
           arch: x86_64
           profile: pixel_6
           ram-size: 4096M
+          disk-size: 4096M
           cores: 4
           disable-animations: true
           disable-spellchecker: true
           enable-hw-keyboard: false
           emulator-boot-timeout: 300
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -camera-back none -camera-front none
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -no-metrics -camera-back none -camera-front none
           script: bash ./run-emulator-tests.sh
 
       - name: Upload real Android Emulator screenshots and logs
