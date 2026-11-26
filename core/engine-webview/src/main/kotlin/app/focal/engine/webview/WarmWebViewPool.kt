@@ -58,8 +58,9 @@ class WarmWebViewPool(
      * Cold-launch provider warmup: loads Chromium's WebView APK & native binaries strictly on a
      * background daemon thread (`setShouldRunUiThreadStartUpTasks(false)`), keeping 0ms of
      * synchronous Chromium initialization off the main thread during initial `FocusEvent` and
-     * `SearchSheet` / IME launch, then immediately schedules a main-looper idle pre-inflation so
-     * the user's first navigation acquires an already-warm pooled [WebView].
+     * `SearchSheet` / IME launch. Standby `WebView` pre-inflation ([scheduleIdleWarmup]) is
+     * deferred until after the first tab acquires a live `WebView` (subsequent inflations take
+     * `< 15ms` without risking a cold-boot ANR during window focus).
      */
     @androidx.annotation.OptIn(WebViewCompat.ExperimentalAsyncStartUp::class)
     fun scheduleBackgroundProviderWarmup() {
@@ -71,11 +72,7 @@ class WarmWebViewPool(
                 .setShouldRunUiThreadStartUpTasks(false)
                 .build()
             WebViewCompat.startUpWebView(config) {
-                // Background Chromium package & native binary warmup finished with zero UI-thread stall;
-                // pre-inflate a warm WebView on the main looper idle queue before first navigation.
-                if (!shutDown.get()) {
-                    scheduleIdleWarmup()
-                }
+                // Background Chromium package & native binary warmup finished with zero UI-thread stall.
             }
         } catch (_: Throwable) {
             // Headless JVM / older WebView APKs fall back cleanly to on-demand WebView creation
