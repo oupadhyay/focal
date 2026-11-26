@@ -20,7 +20,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Focal">
 
-        <!-- Lazy on-demand WorkManager init off cold-start main thread -->
+        <!-- Lazy on-demand WorkManager init & remove GMS FontsProvider EmojiCompat IPC off cold-start main thread -->
         <provider
             android:name="androidx.startup.InitializationProvider"
             android:authorities="${applicationId}.androidx-startup"
@@ -28,6 +28,10 @@
             tools:node="merge">
             <meta-data
                 android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+            <meta-data
+                android:name="androidx.emoji2.text.EmojiCompatInitializer"
                 android:value="androidx.startup"
                 tools:node="remove" />
         </provider>
