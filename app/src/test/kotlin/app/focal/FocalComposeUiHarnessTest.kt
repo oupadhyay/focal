@@ -1222,6 +1222,34 @@ class FocalComposeUiHarnessTest {
         composeRule.onNodeWithText("Auto-Check for Updates").performScrollTo().performClick()
         composeRule.waitForIdle()
         assertFalse(latestSettings.autoCheckUpdatesEnabled)
+
+        // Verify UpToDate combines version number, "Up to date", and "Check Again" onto one row
+        pillState = UpdateBannerState.UpToDate(currentVersion = "0.1.72")
+        composeRule.waitForIdle()
+        val upToDateSnap = composeRule.captureSnapshotPng("17b_settings_up_to_date.png")
+        assertTrue(upToDateSnap.length() > 1_000L)
+        composeRule.onNodeWithText("Up to date").assertIsDisplayed()
+        composeRule.onNodeWithText("Check Again").assertIsDisplayed()
+        val versionBounds = composeRule
+            .onNodeWithText("Focal v0.1.71", useUnmergedTree = true)
+            .fetchSemanticsNode()
+            .boundsInRoot
+        val upToDateBounds = composeRule
+            .onNodeWithText("Up to date", useUnmergedTree = true)
+            .fetchSemanticsNode()
+            .boundsInRoot
+        val checkAgainBounds = composeRule
+            .onNodeWithText("Check Again", useUnmergedTree = true)
+            .fetchSemanticsNode()
+            .boundsInRoot
+        assertTrue(
+            "Expected Focal version and 'Up to date' to share a single line (versionCenterY=${versionBounds.center.y}, upToDateCenterY=${upToDateBounds.center.y})",
+            kotlin.math.abs(versionBounds.center.y - upToDateBounds.center.y) < 8f,
+        )
+        assertTrue(
+            "Expected Focal version and 'Check Again' pill to share a single header row (versionCenterY=${versionBounds.center.y}, checkAgainCenterY=${checkAgainBounds.center.y})",
+            kotlin.math.abs(versionBounds.center.y - checkAgainBounds.center.y) < 48f,
+        )
     }
 
     @Test

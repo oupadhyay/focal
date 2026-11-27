@@ -680,7 +680,7 @@ fun GlobalSettingsSheet(
                                     ) {
                                         Row(
                                             verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(7.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
                                         ) {
                                             Icon(
                                                 imageVector = FocalGlyphs.Aperture,
@@ -697,8 +697,41 @@ fun GlobalSettingsSheet(
                                                 ),
                                                 color = colors.inkPrimary,
                                                 maxLines = 1,
+                                                softWrap = false,
                                                 overflow = TextOverflow.Ellipsis,
                                             )
+                                            if (updateState is UpdateBannerState.UpToDate) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                                    modifier = Modifier
+                                                        .weight(1f, fill = false)
+                                                        .testTag("settings_update_up_to_date_inline"),
+                                                ) {
+                                                    Text(
+                                                        text = "·",
+                                                        style = typography.captionMetadata,
+                                                        color = colors.inkSecondary.copy(alpha = 0.6f),
+                                                        maxLines = 1,
+                                                    )
+                                                    Icon(
+                                                        imageVector = FocalGlyphs.Check,
+                                                        contentDescription = null,
+                                                        tint = colors.inkSecondary,
+                                                        modifier = Modifier.size(13.dp),
+                                                    )
+                                                    Text(
+                                                        text = "Up to date",
+                                                        style = typography.captionMetadata.copy(
+                                                            fontWeight = FontWeight.Medium,
+                                                        ),
+                                                        color = colors.inkSecondary,
+                                                        maxLines = 1,
+                                                        softWrap = false,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                    )
+                                                }
+                                            }
                                         }
                                         if (totalBlockedTrackers > 0L) {
                                             val formattedCount = remember(totalBlockedTrackers) {
@@ -748,7 +781,15 @@ fun GlobalSettingsSheet(
                                             )
                                         }
 
-                                        is UpdateBannerState.UpToDate,
+                                        is UpdateBannerState.UpToDate -> {
+                                            Spacer(Modifier.width(8.dp))
+                                            SettingsPillButton(
+                                                label = "Check Again",
+                                                active = false,
+                                                onClick = onCheckForUpdates,
+                                            )
+                                        }
+
                                         is UpdateBannerState.Available,
                                         is UpdateBannerState.Downloading,
                                         is UpdateBannerState.Verifying,
@@ -762,40 +803,8 @@ fun GlobalSettingsSheet(
                                 when (updateState) {
                                     UpdateBannerState.Idle,
                                     UpdateBannerState.Checking,
+                                    is UpdateBannerState.UpToDate,
                                     -> Unit
-
-                                    is UpdateBannerState.UpToDate -> {
-                                        FocalHairlineDivider(insetStart = 0.dp)
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically,
-                                        ) {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                            ) {
-                                                Icon(
-                                                    imageVector = FocalGlyphs.Check,
-                                                    contentDescription = null,
-                                                    tint = colors.inkSecondary,
-                                                    modifier = Modifier.size(14.dp),
-                                                )
-                                                Text(
-                                                    text = "Up to date",
-                                                    style = typography.captionMetadata.copy(
-                                                        fontWeight = FontWeight.Medium,
-                                                    ),
-                                                    color = colors.inkSecondary,
-                                                )
-                                            }
-                                            SettingsPillButton(
-                                                label = "Check Again",
-                                                active = false,
-                                                onClick = onCheckForUpdates,
-                                            )
-                                        }
-                                    }
 
                                     is UpdateBannerState.Available -> {
                                         FocalHairlineDivider(insetStart = 0.dp)

@@ -2318,6 +2318,14 @@ internal fun FocalUpdateAvailablePill(
     onDismissPill: (tagName: String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    if (updateState !is UpdateBannerState.Available &&
+        updateState !is UpdateBannerState.Downloading &&
+        updateState !is UpdateBannerState.Verifying &&
+        updateState !is UpdateBannerState.PermissionRequired &&
+        updateState !is UpdateBannerState.Installing
+    ) {
+        return
+    }
     val colors = FocalTheme.colors
     val typography = FocalTheme.typography
     val pillShape = RoundedCornerShape(24.dp)
