@@ -168,7 +168,11 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         if (savedInstanceState == null) {
-            pendingExternalUri = intent?.dataString
+            pendingExternalUri = FocalExternalIntentAndDownloadMath.extractLaunchUrl(
+                action = intent?.action,
+                dataString = intent?.dataString,
+                sharedText = intent?.getStringExtra(Intent.EXTRA_TEXT),
+            )
             pendingLaunchMode = intent?.getStringExtra(FocalQuickLaunchWidget.EXTRA_LAUNCH_MODE)
         }
         isInPipModeState = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode
@@ -214,7 +218,11 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        pendingExternalUri = intent.dataString
+        pendingExternalUri = FocalExternalIntentAndDownloadMath.extractLaunchUrl(
+            action = intent.action,
+            dataString = intent.dataString,
+            sharedText = intent.getStringExtra(Intent.EXTRA_TEXT),
+        )
         pendingLaunchMode = intent.getStringExtra(FocalQuickLaunchWidget.EXTRA_LAUNCH_MODE)
     }
 
@@ -897,6 +905,14 @@ private fun FocalRootCoordinator(
         }
     }
 
+    var downloadStartedToastFileName by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(downloadStartedToastFileName) {
+        if (downloadStartedToastFileName != null) {
+            delay(3_800L)
+            downloadStartedToastFileName = null
+        }
+    }
+
     // Sync active EngineSession UI events (Link Peek, Scroll Luminance, Navigation, PageLoaded, Downloads, Uploads, Permissions, Zapper)
     LaunchedEffect(activeSession) {
         val session = activeSession ?: return@LaunchedEffect
@@ -958,9 +974,12 @@ private fun FocalRootCoordinator(
                         event = event,
                         isPrivateSession = session.isPrivate,
                     )
-                    if (!session.isPrivate && record != null) {
-                        scope.launch(Dispatchers.IO) {
-                            database.downloadRecordDao().upsert(record)
+                    if (record != null) {
+                        downloadStartedToastFileName = record.fileName
+                        if (!session.isPrivate) {
+                            scope.launch(Dispatchers.IO) {
+                                database.downloadRecordDao().upsert(record)
+                            }
                         }
                     }
                 }
@@ -1908,6 +1927,25 @@ private fun FocalRootCoordinator(
                                     .statusBarsPadding()
                                     .padding(top = 10.dp, start = 16.dp, end = 16.dp),
                             )
+                        } else if (
+                            !isInPictureInPictureMode &&
+                            overlaySheet == ActiveOverlaySheet.None &&
+                            downloadStartedToastFileName != null
+                        ) {
+                            val activeDownloadName = downloadStartedToastFileName.orEmpty()
+                            FocalDownloadStartedPill(
+                                fileName = activeDownloadName,
+                                showDownloadsButton = !isPrivateAperture,
+                                onOpenDownloads = {
+                                    downloadStartedToastFileName = null
+                                    sessionVm.setOverlaySheet(ActiveOverlaySheet.Downloads)
+                                },
+                                onDismiss = { downloadStartedToastFileName = null },
+                                modifier = Modifier
+                                    .align(Alignment.TopCenter)
+                                    .statusBarsPadding()
+                                    .padding(top = 10.dp, start = 16.dp, end = 16.dp),
+                            )
                         }
 
                         // Native Site Permission Confirmation Sheet (Camera, Mic, Location, Protected Media)
@@ -2114,18 +2152,36 @@ private fun enqueueSafeBrowserDownload(
     }
     return try {
         val uri = Uri.parse(rawUrl)
-        val fileName = URLUtil.guessFileName(
+        val dispositionFileName = FocalExternalIntentAndDownloadMath.extractContentDispositionFileName(
+            event.contentDisposition,
+        )
+        val initialMime = FocalExternalIntentAndDownloadMath.resolveDownloadMimeType(
+            url = rawUrl,
+            fileNameHint = dispositionFileName,
+            serverMimeType = event.mimeType,
+        )
+        val guessedName = URLUtil.guessFileName(
             rawUrl,
             event.contentDisposition?.takeIf { it.isNotBlank() },
-            event.mimeType?.takeIf { it.isNotBlank() },
+            initialMime?.takeIf { it.isNotBlank() },
+        )
+        val fileName = FocalExternalIntentAndDownloadMath.preserveKnownFileExtension(
+            url = rawUrl,
+            guessedFileName = guessedName,
+            contentDispositionFileName = dispositionFileName,
+        )
+        val effectiveMime = FocalExternalIntentAndDownloadMath.resolveDownloadMimeType(
+            url = rawUrl,
+            fileNameHint = fileName,
+            serverMimeType = event.mimeType,
         )
         val request = DownloadManager.Request(uri)
             .setTitle(fileName)
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
             .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
 
-        if (!event.mimeType.isNullOrBlank()) {
-            request.setMimeType(event.mimeType)
+        if (!effectiveMime.isNullOrBlank()) {
+            request.setMimeType(effectiveMime)
         }
         if (!event.userAgent.isNullOrBlank()) {
             request.addRequestHeader("User-Agent", event.userAgent)
@@ -2141,7 +2197,7 @@ private fun enqueueSafeBrowserDownload(
             id = "dl-${UUID.randomUUID()}",
             url = rawUrl,
             fileName = fileName,
-            mimeType = event.mimeType?.takeIf { it.isNotBlank() },
+            mimeType = effectiveMime,
             originDomain = uri.host?.removePrefix("www.").orEmpty(),
             downloadManagerId = downloadId,
             createdAtEpochMs = System.currentTimeMillis(),
@@ -2173,9 +2229,12 @@ private fun openDownloadedFileOrFallback(
     if (dm != null && record.downloadManagerId >= 0L) {
         val localUri = runCatching { dm.getUriForDownloadedFile(record.downloadManagerId) }.getOrNull()
         if (localUri != null) {
-            val mime = record.mimeType
-                ?: runCatching { dm.getMimeTypeForDownloadedFile(record.downloadManagerId) }.getOrNull()
-                ?: "*/*"
+            val dmMime = runCatching { dm.getMimeTypeForDownloadedFile(record.downloadManagerId) }.getOrNull()
+            val mime = FocalExternalIntentAndDownloadMath.resolveDownloadMimeType(
+                url = record.url,
+                fileNameHint = record.fileName,
+                serverMimeType = record.mimeType ?: dmMime,
+            ) ?: "*/*"
             val viewIntent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(localUri, mime)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -2430,4 +2489,221 @@ internal fun FocalUpdateAvailablePill(
         }
     }
 }
+
+/**
+ * Pure intent-URL extraction and download MIME/extension resolution helpers so external
+ * `ACTION_VIEW` (including GitHub Release asset downloads with explicit MIME types) and
+ * `ACTION_SEND` shared links open cleanly and keep their real `.apk`/`.zip`/`.pdf` metadata.
+ */
+internal object FocalExternalIntentAndDownloadMath {
+    private val HTTP_URL_REGEX = Regex("""https?://[^\s<>"]+""", RegexOption.IGNORE_CASE)
+    private val DISPOSITION_EXT_FILENAME_REGEX = Regex(
+        """filename\*\s*=\s*(?:[^']*''?)([^;\r\n]+)""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val DISPOSITION_FILENAME_REGEX = Regex(
+        """filename\s*=\s*(?:"([^"\r\n]+)"|([^;\r\n]+))""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val GENERIC_MIMES = setOf(
+        "application/octet-stream",
+        "binary/octet-stream",
+        "application/unknown",
+        "*/*",
+    )
+
+    fun extractLaunchUrl(
+        action: String?,
+        dataString: String?,
+        sharedText: String?,
+    ): String? {
+        val direct = dataString?.trim().orEmpty()
+        if (direct.startsWith("https://", ignoreCase = true) ||
+            direct.startsWith("http://", ignoreCase = true) ||
+            direct.startsWith("focal-pair://", ignoreCase = true)
+        ) {
+            return direct
+        }
+        if (action == Intent.ACTION_SEND && !sharedText.isNullOrBlank()) {
+            val match = HTTP_URL_REGEX.find(sharedText)?.value ?: return null
+            return match.trimEnd('.', ',', ';', ':', ')', ']', '}')
+        }
+        return null
+    }
+
+    fun extractContentDispositionFileName(contentDisposition: String?): String? {
+        if (contentDisposition.isNullOrBlank()) return null
+        val extMatch = DISPOSITION_EXT_FILENAME_REGEX.find(contentDisposition)?.groupValues?.getOrNull(1)
+        val rawName = if (!extMatch.isNullOrBlank()) {
+            runCatching { Uri.decode(extMatch.trim().trim('"', '\'')) }.getOrNull() ?: extMatch.trim()
+        } else {
+            val stdMatch = DISPOSITION_FILENAME_REGEX.find(contentDisposition)
+            (stdMatch?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }
+                ?: stdMatch?.groupValues?.getOrNull(2))
+                ?.trim()
+                ?.trim('"', '\'')
+        }
+        return rawName
+            ?.substringAfterLast('/')
+            ?.substringAfterLast('\\')
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() && !it.startsWith(".") }
+    }
+
+    fun resolveDownloadMimeType(
+        url: String,
+        fileNameHint: String?,
+        serverMimeType: String?,
+    ): String? {
+        val cleanedServer = serverMimeType
+            ?.substringBefore(';')
+            ?.trim()
+            ?.lowercase(Locale.ROOT)
+            ?.takeIf { it.isNotEmpty() }
+        if (cleanedServer != null && cleanedServer !in GENERIC_MIMES) {
+            return cleanedServer
+        }
+        val inferred = inferMimeFromNameOrUrl(fileNameHint) ?: inferMimeFromNameOrUrl(url)
+        return inferred ?: cleanedServer
+    }
+
+    fun preserveKnownFileExtension(
+        url: String,
+        guessedFileName: String,
+        contentDispositionFileName: String? = null,
+    ): String {
+        if (!guessedFileName.endsWith(".bin", ignoreCase = true)) return guessedFileName
+        val withoutBin = guessedFileName.dropLast(4)
+        if (KNOWN_EXTENSIONS.any { withoutBin.endsWith(it, ignoreCase = true) }) {
+            return withoutBin
+        }
+        val dispositionExt = contentDispositionFileName?.let { name ->
+            KNOWN_EXTENSIONS.firstOrNull { name.endsWith(it, ignoreCase = true) }
+        }
+        val pathSegment = url.substringBefore('?').substringBefore('#').substringAfterLast('/')
+        val knownExt = dispositionExt
+            ?: KNOWN_EXTENSIONS.firstOrNull { pathSegment.endsWith(it, ignoreCase = true) }
+            ?: return guessedFileName
+        return "$withoutBin$knownExt"
+    }
+
+    private fun inferMimeFromNameOrUrl(raw: String?): String? {
+        val candidate = raw
+            ?.substringBefore('?')
+            ?.substringBefore('#')
+            ?.trim()
+            ?.lowercase(Locale.ROOT)
+            ?: return null
+        return when {
+            candidate.endsWith(".apk") -> "application/vnd.android.package-archive"
+            candidate.endsWith(".zip") -> "application/zip"
+            candidate.endsWith(".pdf") -> "application/pdf"
+            candidate.endsWith(".txt") || candidate.endsWith(".log") || candidate.endsWith(".md") -> "text/plain"
+            candidate.endsWith(".json") -> "application/json"
+            candidate.endsWith(".csv") -> "text/csv"
+            candidate.endsWith(".png") -> "image/png"
+            candidate.endsWith(".jpg") || candidate.endsWith(".jpeg") -> "image/jpeg"
+            candidate.endsWith(".webp") -> "image/webp"
+            candidate.endsWith(".gif") -> "image/gif"
+            candidate.endsWith(".svg") -> "image/svg+xml"
+            candidate.endsWith(".mp4") -> "video/mp4"
+            candidate.endsWith(".webm") -> "video/webm"
+            candidate.endsWith(".mp3") -> "audio/mpeg"
+            else -> null
+        }
+    }
+
+    private val KNOWN_EXTENSIONS = listOf(
+        ".apk",
+        ".zip",
+        ".pdf",
+        ".txt",
+        ".json",
+        ".csv",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".gif",
+        ".svg",
+        ".mp4",
+        ".webm",
+        ".mp3",
+    )
+}
+
+@Composable
+internal fun FocalDownloadStartedPill(
+    fileName: String,
+    showDownloadsButton: Boolean,
+    onOpenDownloads: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = FocalTheme.colors
+    val typography = FocalTheme.typography
+    val pillShape = RoundedCornerShape(24.dp)
+    val pillTint = rememberUpdatedState(colors.effectiveSheetGlass)
+
+    SmokedGlassBox(
+        shape = pillShape,
+        glassTintState = pillTint,
+        borderSpecular = colors.borderSpecular,
+        modifier = modifier
+            .consumeClicks()
+            .testTag("download_started_pill"),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Icon(
+                imageVector = FocalGlyphs.Download,
+                contentDescription = null,
+                tint = colors.inkPrimary,
+                modifier = Modifier.size(15.dp),
+            )
+            Text(
+                text = "Downloading $fileName",
+                style = typography.controlPillLabel.copy(fontWeight = FontWeight.SemiBold),
+                color = colors.inkPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            if (showDownloadsButton) {
+                Box(
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .background(colors.surfacePillActive)
+                        .clickable(onClick = onOpenDownloads)
+                        .padding(horizontal = 12.dp, vertical = 5.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = "Downloads",
+                        style = typography.controlPillLabel.copy(fontWeight = FontWeight.SemiBold),
+                        color = colors.inkOnPillActive,
+                    )
+                }
+            }
+            Box(
+                modifier = Modifier
+                    .size(24.dp)
+                    .clip(CircleShape)
+                    .clickable(onClick = onDismiss),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = FocalGlyphs.Close,
+                    contentDescription = "Dismiss download notice",
+                    tint = colors.inkSecondary,
+                    modifier = Modifier.size(14.dp),
+                )
+            }
+        }
+    }
+}
+
 

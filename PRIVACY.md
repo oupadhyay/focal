@@ -67,3 +67,4 @@ All personal browsing state remains strictly on your device inside Focal's priva
 | `POST_NOTIFICATIONS` | Optional runtime permission to display media playback and download notifications on Android 13+. |
 | `USE_BIOMETRIC` | Optional device biometric/credential prompt when **Lock Private Aperture** is enabled. |
 | `REQUEST_INSTALL_PACKAGES` | Used strictly when you confirm an in-app Focal update (`PackageInstaller.Session`) so you can update directly inside Focal without downloading APKs manually. |
+| `UPDATE_PACKAGES_WITHOUT_USER_ACTION` | Standard Android 12+ permission allowing Focal to complete repeat in-app self-updates seamlessly after your initial one-time install-source grant. |

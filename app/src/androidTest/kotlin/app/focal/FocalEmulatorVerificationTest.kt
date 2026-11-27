@@ -1,7 +1,10 @@
 package app.focal
 
 import android.content.ClipboardManager
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.net.Uri
 import android.os.SystemClock
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.assertIsDisplayed
@@ -22,6 +25,7 @@ import app.focal.design.AppChromeTheme
 import app.focal.design.FocalAppearanceStore
 import app.focal.feature.search.LaunchKeyboardStore
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -81,6 +85,38 @@ class FocalEmulatorVerificationTest {
             resourceType = "script",
         )
         assertTrue("Expected native adblock-rs to block doubleclick.net", adDecision.matched)
+
+        // Verify real Android API 34 PackageManagerService resolves Focal for GitHub Release
+        // MIME-typed HTTPS downloads and browser selector intents (and ignores local file://)
+        val pm = app.packageManager
+        fun resolvesFocal(intent: Intent): Boolean =
+            pm.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY).any {
+                it.activityInfo?.packageName == app.packageName &&
+                    it.activityInfo?.name == MainActivity::class.java.name
+            }
+        val githubApkUri = Uri.parse(
+            "https://github.com/oupadhyay/focal/releases/download/v0.1.73/focal-arm64-v8a.apk",
+        )
+        assertTrue(
+            "Android PackageManager must list Focal for GitHub HTTPS APK download intents",
+            resolvesFocal(Intent(Intent.ACTION_VIEW).setDataAndType(githubApkUri, "application/vnd.android.package-archive")),
+        )
+        assertTrue(
+            "Android PackageManager must list Focal for GitHub HTTPS octet-stream download intents",
+            resolvesFocal(Intent(Intent.ACTION_VIEW).setDataAndType(githubApkUri, "application/octet-stream")),
+        )
+        assertTrue(
+            "Android PackageManager must list Focal for browser selector intents",
+            resolvesFocal(
+                Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_BROWSER).apply {
+                    data = githubApkUri
+                },
+            ),
+        )
+        assertFalse(
+            "Android PackageManager must NOT match Focal for local file:// intents",
+            resolvesFocal(Intent(Intent.ACTION_VIEW).setDataAndType(Uri.parse("file:///sdcard/photo.jpg"), "image/jpeg")),
+        )
 
         // Wait for first-boot Gboard IME animation + LaunchKeyboardStore 180ms stabilize debounce
         // (uses composeRule.waitUntil so Compose's test clock advances LaunchedEffect delays)
