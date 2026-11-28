@@ -540,6 +540,16 @@ class WebViewSession internal constructor(
             }
         }
 
+        (view as? FocalWebView)?.onPullToRefreshGesture = { rawPullDp, isActive, released ->
+            _events.tryEmit(
+                EngineSessionEvent.PullToRefreshGesture(
+                    rawPullDp = rawPullDp,
+                    isActive = isActive,
+                    released = released,
+                ),
+            )
+        }
+
         view.setFindListener { activeMatchOrdinal, numberOfMatches, isDoneCounting ->
             _state.update { current ->
                 if (current.findInPageState.query.isBlank()) {
@@ -1679,6 +1689,14 @@ class WebViewSession internal constructor(
         }
     }
 
+    override fun setPullToRefreshEnabled(enabled: Boolean) {
+        if (disposed.get()) return
+        runOnMain {
+            if (disposed.get()) return@runOnMain
+            (webView as? FocalWebView)?.pullToRefreshEnabled = enabled
+        }
+    }
+
     override fun setElementZapperActive(active: Boolean) {
         if (disposed.get()) return
         _state.update { it.copy(isElementZapperActive = active) }
@@ -1822,6 +1840,10 @@ class WebViewSession internal constructor(
                     runCatching { webView.removeOnLayoutChangeListener(listener) }
                 }
                 layoutChangeListener = null
+                (webView as? FocalWebView)?.apply {
+                    pullToRefreshEnabled = false
+                    onPullToRefreshGesture = null
+                }
                 runCatching { webView.setFindListener(null) }
                 if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
                     runCatching { WebViewCompat.removeWebMessageListener(webView, JS_BRIDGE_NAME) }

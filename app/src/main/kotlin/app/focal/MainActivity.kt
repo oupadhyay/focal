@@ -75,8 +75,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -119,6 +121,7 @@ import app.focal.engine.api.PageTranslationStatus
 import app.focal.feature.browser.BrowserViewportScreen
 import app.focal.feature.browser.LinkPeekSheet
 import app.focal.feature.browser.PinchSummarySheet
+import app.focal.feature.browser.PullToRefreshPhysics
 import app.focal.feature.browser.ScrollVelocityBarController
 import app.focal.feature.media.FocalMediaBridge
 import app.focal.feature.reader.GlobalSettingsSheet
@@ -814,6 +817,23 @@ private fun FocalRootCoordinator(
         revealBottomBarSmoothly()
     }
 
+    val haptics = LocalHapticFeedback.current
+    val pullToRefreshProgressState = remember { mutableFloatStateOf(0f) }
+    var isPullRefreshing by remember { mutableStateOf(false) }
+    var pullToRefreshAnimJob by remember { mutableStateOf<Job?>(null) }
+    var pullToRefreshHapticSent by remember { mutableStateOf(false) }
+
+    val resetPullToRefresh: () -> Unit = {
+        pullToRefreshAnimJob?.cancel()
+        pullToRefreshHapticSent = false
+        isPullRefreshing = false
+        pullToRefreshProgressState.floatValue = 0f
+    }
+
+    LaunchedEffect(activeSession?.sessionId) {
+        resetPullToRefresh()
+    }
+
     var isSummarizing by remember { mutableStateOf(false) }
     var activeGroundedSummary by remember { mutableStateOf<GroundedPageSummary?>(null) }
 
@@ -871,6 +891,25 @@ private fun FocalRootCoordinator(
     val hasLoadedWebUrl = activeSession != null &&
         !activeSessionState?.url.isNullOrBlank() &&
         activeSessionState?.url != "about:blank"
+
+    LaunchedEffect(
+        activeSession,
+        hasLoadedWebUrl,
+        overlaySheet == ActiveOverlaySheet.None,
+        isInPictureInPictureMode,
+        isFindInPageOpen,
+        activeSessionState?.isElementZapperActive,
+    ) {
+        val enabled = hasLoadedWebUrl &&
+            overlaySheet == ActiveOverlaySheet.None &&
+            !isInPictureInPictureMode &&
+            !isFindInPageOpen &&
+            activeSessionState?.isElementZapperActive != true
+        activeSession?.setPullToRefreshEnabled(enabled)
+        if (!enabled) {
+            resetPullToRefresh()
+        }
+    }
 
     // Keep system status bar icons contrasted against Reader paper or top app chrome canvas,
     // and bottom navigation bar icons contrasted against Reader paper, live page bottom bar, or app chrome.
@@ -1013,6 +1052,60 @@ private fun FocalRootCoordinator(
                     ) {
                         computeCleanWebSampleRect()?.let { rect ->
                             adaptiveGlass.onViewportScrolled(activity.window, rect)
+                        }
+                    }
+                }
+                is EngineSessionEvent.PullToRefreshGesture -> {
+                    if (event.isActive) {
+                        pullToRefreshAnimJob?.cancel()
+                        isPullRefreshing = false
+                        val progress = PullToRefreshPhysics.progressForRawPullDp(event.rawPullDp)
+                        pullToRefreshProgressState.floatValue = progress
+                        if (progress >= 1f && !pullToRefreshHapticSent) {
+                            pullToRefreshHapticSent = true
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        } else if (progress < 0.88f) {
+                            pullToRefreshHapticSent = false
+                        }
+                    } else {
+                        pullToRefreshHapticSent = false
+                        pullToRefreshAnimJob?.cancel()
+                        if (event.released && PullToRefreshPhysics.shouldTriggerRefresh(event.rawPullDp)) {
+                            isPullRefreshing = true
+                            session.reload()
+                            pullToRefreshAnimJob = scope.launch {
+                                Animatable(pullToRefreshProgressState.floatValue).animateTo(
+                                    targetValue = PullToRefreshPhysics.REFRESH_HOLD_PROGRESS,
+                                    animationSpec = FocalMotion.smartPillSpring(),
+                                ) {
+                                    pullToRefreshProgressState.floatValue = value
+                                }
+                                val startMs = SystemClock.uptimeMillis()
+                                delay(420L)
+                                while (
+                                    session.state.value.isLoading &&
+                                    (SystemClock.uptimeMillis() - startMs) < 4_500L
+                                ) {
+                                    delay(90L)
+                                }
+                                Animatable(pullToRefreshProgressState.floatValue).animateTo(
+                                    targetValue = 0f,
+                                    animationSpec = FocalMotion.smartPillSpring(),
+                                ) {
+                                    pullToRefreshProgressState.floatValue = value
+                                }
+                                isPullRefreshing = false
+                            }
+                        } else {
+                            isPullRefreshing = false
+                            pullToRefreshAnimJob = scope.launch {
+                                Animatable(pullToRefreshProgressState.floatValue).animateTo(
+                                    targetValue = 0f,
+                                    animationSpec = FocalMotion.smartPillSpring(),
+                                ) {
+                                    pullToRefreshProgressState.floatValue = value
+                                }
+                            }
                         }
                     }
                 }
@@ -1345,6 +1438,8 @@ private fun FocalRootCoordinator(
                 },
                 historyBackPreview = historyBackPreview,
                 predictiveBackSwipeEdgeState = predictiveBackSwipeEdgeState,
+                pullToRefreshProgressState = pullToRefreshProgressState,
+                isPullRefreshing = isPullRefreshing,
             )
 
             // Active Floating Sheet Layer (suppressed during PiP; coupled 1:1 with Predictive Back)

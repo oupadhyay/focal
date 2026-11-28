@@ -123,6 +123,12 @@ sealed interface EngineSessionEvent {
         val isTouching: Boolean,
     ) : EngineSessionEvent
 
+    data class PullToRefreshGesture(
+        val rawPullDp: Float,
+        val isActive: Boolean,
+        val released: Boolean,
+    ) : EngineSessionEvent
+
     data class NavigationCommitted(
         val url: String,
         val isMainFrame: Boolean,
@@ -213,6 +219,7 @@ interface EngineSession {
 
     fun setGlobalPrivacyControl(enabled: Boolean) {}
     fun setBottomChromeInsetPx(insetPx: Int) {}
+    fun setPullToRefreshEnabled(enabled: Boolean) {}
     fun setElementZapperActive(active: Boolean) {}
     fun getHistoryBackPreview(): Bitmap? = null
     fun getHistoryForwardPreview(): Bitmap? = null

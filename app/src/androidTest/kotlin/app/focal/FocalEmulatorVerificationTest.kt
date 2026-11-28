@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.SystemClock
+import android.view.MotionEvent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasSetTextAction
@@ -259,6 +260,50 @@ class FocalEmulatorVerificationTest {
             webViewportBounds.bottom <= bottomBarTabsBounds.top + 2f,
         )
         captureEmulatorScreenshot("05_emulator_live_webview.png")
+
+        // 5b. Pull down from top of live Chromium WebView at real 60Hz VSync cadence to verify Smoked Glass pull-to-refresh
+        val instr = InstrumentationRegistry.getInstrumentation()
+        val pullCx = (webViewportBounds.left + webViewportBounds.right) * 0.5f
+        val pullStartY = webViewportBounds.top + (webViewportBounds.height * 0.22f)
+        val pullEndY = webViewportBounds.top + (webViewportBounds.height * 0.68f)
+        val pullDownTime = SystemClock.uptimeMillis()
+        val pullDown = MotionEvent.obtain(pullDownTime, pullDownTime, MotionEvent.ACTION_DOWN, pullCx, pullStartY, 0)
+        try {
+            instr.sendPointerSync(pullDown)
+        } finally {
+            pullDown.recycle()
+        }
+        val pullSteps = 20
+        for (s in 1..pullSteps) {
+            SystemClock.sleep(16L)
+            val now = SystemClock.uptimeMillis()
+            val y = pullStartY + (pullEndY - pullStartY) * (s.toFloat() / pullSteps)
+            val moveEv = MotionEvent.obtain(pullDownTime, now, MotionEvent.ACTION_MOVE, pullCx, y, 0)
+            try {
+                instr.sendPointerSync(moveEv)
+            } finally {
+                moveEv.recycle()
+            }
+        }
+        SystemClock.sleep(120L)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("pull_to_refresh_puck").assertIsDisplayed()
+        captureEmulatorScreenshot("05b_emulator_pull_to_refresh.png")
+        val pullUp = MotionEvent.obtain(
+            pullDownTime,
+            SystemClock.uptimeMillis(),
+            MotionEvent.ACTION_UP,
+            pullCx,
+            pullEndY,
+            0,
+        )
+        try {
+            instr.sendPointerSync(pullUp)
+        } finally {
+            pullUp.recycle()
+        }
+        SystemClock.sleep(1_400L)
+        composeRule.waitForIdle()
 
         // 6. Open Page Menu (Actions + Bookmarks + on-device Translate Page row + Site Settings subtab)
         composeRule.onNodeWithContentDescription("Page Menu").performClick()

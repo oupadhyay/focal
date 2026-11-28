@@ -137,6 +137,8 @@ fun BrowserViewportScreen(
     onBottomChromeInsetChanged: (Int) -> Unit = {},
     historyBackPreview: Bitmap? = null,
     predictiveBackSwipeEdgeState: IntState? = null,
+    pullToRefreshProgressState: FloatState? = null,
+    isPullRefreshing: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val colors = FocalTheme.colors
@@ -342,6 +344,28 @@ fun BrowserViewportScreen(
                         continuityHandoff = continuityHandoff,
                         onOpenContinuityHandoff = onOpenContinuityHandoff,
                         onTapStartSearch = onOpenSearchSheet,
+                    )
+                }
+            }
+        }
+
+        // Layer 1.4: Optical Smoked Glass Pull-to-Refresh Puck (top-center below status bar)
+        if (
+            pullToRefreshProgressState != null &&
+            hasLoadedWebUrl &&
+            !isOverlaySheetOpen &&
+            !isInPictureInPictureMode &&
+            !sessionState.isElementZapperActive
+        ) {
+            FocalTheme(
+                darkGlass = adaptiveBottomBarDarkGlass,
+                isPrivateAperture = isPrivateAperture,
+            ) {
+                CompositionLocalProvider(LocalFocalBackdropLayer provides null) {
+                    FocalPullToRefreshPuck(
+                        pullProgressState = pullToRefreshProgressState,
+                        isRefreshing = isPullRefreshing,
+                        modifier = Modifier.align(Alignment.TopCenter),
                     )
                 }
             }

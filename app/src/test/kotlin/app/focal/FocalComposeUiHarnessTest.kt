@@ -51,6 +51,7 @@ import app.focal.engine.api.IndexedDomParagraph
 import app.focal.engine.api.OriginOverrides
 import app.focal.engine.api.ReadableDocument
 import app.focal.feature.browser.FindInPageBar
+import app.focal.feature.browser.FocalPullToRefreshPuck
 import app.focal.feature.browser.LinkPeekSheet
 import app.focal.feature.media.FocalMediaBridge
 import app.focal.feature.reader.GlobalSettingsSheet
@@ -1508,6 +1509,46 @@ class FocalComposeUiHarnessTest {
             "Expected fast physics fling to glide >= 2 tabs from tab-0, but landed on $selectedTabIdResult",
             landedIdx >= 2,
         )
+    }
+
+    @Test
+    fun pullToRefreshPuck_rendersArmedAndRefreshingStatesCleanly() {
+        val progressState = androidx.compose.runtime.mutableFloatStateOf(0f)
+        var refreshing by mutableStateOf(false)
+
+        composeRule.setContent {
+            FocalTheme(darkGlass = true, isPrivateAperture = false) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(FocalTheme.colors.canvasBackground),
+                ) {
+                    FocalPullToRefreshPuck(
+                        pullProgressState = progressState,
+                        isRefreshing = refreshing,
+                        modifier = Modifier.align(Alignment.TopCenter),
+                    )
+                }
+            }
+        }
+
+        // Idle: puck is completely hidden (zero overhead)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("pull_to_refresh_puck").assertDoesNotExist()
+
+        // Armed (>= 1.0f): puck is visible & snaps to active contrast pill
+        progressState.floatValue = 1.05f
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("pull_to_refresh_puck").assertIsDisplayed()
+        val snap = composeRule.captureSnapshotPng("18_pull_to_refresh_puck.png")
+        assertTrue(snap.length() > 1_000L)
+
+        // Refreshing hold state
+        refreshing = true
+        progressState.floatValue = 0.56f
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("pull_to_refresh_puck").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Refreshing page").assertIsDisplayed()
     }
 
     @Test

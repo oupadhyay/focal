@@ -195,7 +195,7 @@ class WarmWebViewPool(
         WebSettingsCompat.ExperimentalSpeculativeLoading::class,
     )
     private fun createConfiguredWebView(wrapper: MutableContextWrapper): WebView {
-        return WebView(wrapper).apply {
+        return FocalWebView(wrapper).apply {
             // Programmatic WebViews lack XML resource IDs, which causes Android's default AUTO
             // heuristic to skip OS Autofill unless explicitly marked IMPORTANT_FOR_AUTOFILL_YES.
             importantForAutofill = android.view.View.IMPORTANT_FOR_AUTOFILL_YES
