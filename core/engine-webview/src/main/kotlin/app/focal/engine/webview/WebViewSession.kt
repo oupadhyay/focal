@@ -14,6 +14,7 @@ import android.os.Message
 import android.os.SystemClock
 import android.util.LruCache
 import android.view.MotionEvent
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.GeolocationPermissions
@@ -214,6 +215,9 @@ class WebViewSession internal constructor(
     private var lastTouchXRatio: Float = 0.5f
     private var lastTouchYRatio: Float = 0.5f
     private var lastScrollY: Int = 0
+    private var isTouchActive: Boolean = false
+    private var suppressScrollEventsUntilMs: Long = 0L
+    private var layoutChangeListener: View.OnLayoutChangeListener? = null
 
     private val _state = MutableStateFlow(
         EngineSessionState(
@@ -485,19 +489,55 @@ class WebViewSession internal constructor(
     @SuppressLint("ClickableViewAccessibility")
     private fun installTouchAndScrollListeners(view: WebView) {
         view.setOnTouchListener { v, event ->
-            if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-                val w = v.width.coerceAtLeast(1).toFloat()
-                val h = v.height.coerceAtLeast(1).toFloat()
-                lastTouchXRatio = (event.x / w).coerceIn(0f, 1f)
-                lastTouchYRatio = (event.y / h).coerceIn(0f, 1f)
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    val w = v.width.coerceAtLeast(1).toFloat()
+                    val h = v.height.coerceAtLeast(1).toFloat()
+                    lastTouchXRatio = (event.x / w).coerceIn(0f, 1f)
+                    lastTouchYRatio = (event.y / h).coerceIn(0f, 1f)
+                    if (!isTouchActive) {
+                        isTouchActive = true
+                        _events.tryEmit(EngineSessionEvent.ScrollTouchStateChanged(isTouching = true))
+                    }
+                }
+                MotionEvent.ACTION_UP,
+                MotionEvent.ACTION_CANCEL,
+                -> {
+                    if (isTouchActive) {
+                        isTouchActive = false
+                        _events.tryEmit(EngineSessionEvent.ScrollTouchStateChanged(isTouching = false))
+                    }
+                }
             }
             false
         }
 
+        val onLayoutChange = View.OnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
+            if ((bottom - top) != (oldBottom - oldTop)) {
+                // Ignore synthetic Chromium scroll-clamp callbacks triggered by viewport bottom-bar/IME resize
+                suppressScrollEventsUntilMs = SystemClock.uptimeMillis() + 140L
+            }
+        }
+        layoutChangeListener = onLayoutChange
+        view.addOnLayoutChangeListener(onLayoutChange)
+
         view.setOnScrollChangeListener { _, _, scrollY, _, oldScrollY ->
             val dy = scrollY - oldScrollY
             lastScrollY = scrollY
-            _events.tryEmit(EngineSessionEvent.ScrollDeltaChanged(scrollY = scrollY, deltaY = dy))
+            val nowMs = SystemClock.uptimeMillis()
+            if (nowMs < suppressScrollEventsUntilMs) {
+                return@setOnScrollChangeListener
+            }
+            if (dy != 0 || scrollY <= 0) {
+                _events.tryEmit(
+                    EngineSessionEvent.ScrollDeltaChanged(
+                        scrollY = scrollY,
+                        deltaY = dy,
+                        timestampMs = nowMs,
+                        isTouchActive = isTouchActive,
+                    ),
+                )
+            }
         }
 
         view.setFindListener { activeMatchOrdinal, numberOfMatches, isDoneCounting ->
@@ -1778,6 +1818,10 @@ class WebViewSession internal constructor(
                 gpcScriptHandler = null
                 documentScriptHandlers.forEach { handler -> runCatching { handler.remove() } }
                 documentScriptHandlers.clear()
+                layoutChangeListener?.let { listener ->
+                    runCatching { webView.removeOnLayoutChangeListener(listener) }
+                }
+                layoutChangeListener = null
                 runCatching { webView.setFindListener(null) }
                 if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
                     runCatching { WebViewCompat.removeWebMessageListener(webView, JS_BRIDGE_NAME) }

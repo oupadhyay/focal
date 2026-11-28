@@ -438,19 +438,30 @@ fun BrowserViewportScreen(
                             .graphicsLayer {
                                 val dimProgress = overlayDimProgressState.value
                                 val scrollHideFraction = bottomBarScrollHideFraction.floatValue.coerceIn(0f, 1f)
+                                val fullHideTravelPx = maxOf(
+                                    92.dp.toPx(),
+                                    measuredDockHeightPx.toFloat() + 12.dp.toPx(),
+                                )
                                 val scrollHideY = if (fullHideBottomBarOnScroll) {
-                                    scrollHideFraction * 92.dp.toPx()
+                                    scrollHideFraction * fullHideTravelPx
                                 } else {
                                     scrollHideFraction * 18.dp.toPx()
                                 }
                                 val sheetHideY = dimProgress * 28.dp.toPx()
                                 val scrollAlpha = if (fullHideBottomBarOnScroll) {
-                                    (1f - scrollHideFraction).coerceIn(0f, 1f)
+                                    (1f - scrollHideFraction * 1.12f).coerceIn(0f, 1f)
+                                } else {
+                                    1f
+                                }
+                                val scrollScale = if (fullHideBottomBarOnScroll) {
+                                    1f - (scrollHideFraction * 0.04f)
                                 } else {
                                     1f
                                 }
                                 val sheetAlpha = (1f - dimProgress * 1.15f).coerceIn(0f, 1f)
                                 translationY = scrollHideY + sheetHideY
+                                scaleX = scrollScale
+                                scaleY = scrollScale
                                 alpha = scrollAlpha * sheetAlpha
                             },
                         verticalArrangement = Arrangement.spacedBy(8.dp),

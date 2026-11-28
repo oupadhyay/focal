@@ -12,6 +12,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.SystemClock
 import android.util.Rational
 import android.webkit.CookieManager
 import android.webkit.URLUtil
@@ -26,6 +27,7 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -117,6 +119,7 @@ import app.focal.engine.api.PageTranslationStatus
 import app.focal.feature.browser.BrowserViewportScreen
 import app.focal.feature.browser.LinkPeekSheet
 import app.focal.feature.browser.PinchSummarySheet
+import app.focal.feature.browser.ScrollVelocityBarController
 import app.focal.feature.media.FocalMediaBridge
 import app.focal.feature.reader.GlobalSettingsSheet
 import app.focal.feature.reader.PageMenuAndSiteOverridesSheet
@@ -752,18 +755,63 @@ private fun FocalRootCoordinator(
     val predictiveBackSwipeEdgeState = remember { mutableIntStateOf(0) }
     val bottomBarScrollHideState = remember { mutableFloatStateOf(0f) }
     var bottomBarHiddenTarget by remember { mutableStateOf(false) }
+    val scrollBarController = remember { ScrollVelocityBarController() }
+    var bottomBarSnapJob by remember { mutableStateOf<Job?>(null) }
+    var bottomBarSettleTimerJob by remember { mutableStateOf<Job?>(null) }
+    var isWebViewTouchScrolling by remember { mutableStateOf(false) }
 
-    // Spring-animate bottomBarScrollHideState instead of snapping 0f -> 1f (P1-3)
-    LaunchedEffect(bottomBarHiddenTarget) {
-        val target = if (bottomBarHiddenTarget) 1f else 0f
-        if (bottomBarScrollHideState.floatValue != target) {
-            Animatable(bottomBarScrollHideState.floatValue).animateTo(
-                targetValue = target,
-                animationSpec = FocalMotion.smartPillSpring(),
-            ) {
-                bottomBarScrollHideState.floatValue = value
+    val revealBottomBarSmoothly: () -> Unit = {
+        bottomBarSettleTimerJob?.cancel()
+        bottomBarSnapJob?.cancel()
+        scrollBarController.reset()
+        bottomBarHiddenTarget = false
+        if (bottomBarScrollHideState.floatValue > 0.001f) {
+            bottomBarSnapJob = scope.launch {
+                Animatable(bottomBarScrollHideState.floatValue).animateTo(
+                    targetValue = 0f,
+                    animationSpec = FocalMotion.smartPillSpring(),
+                ) {
+                    bottomBarScrollHideState.floatValue = value
+                }
+                scrollBarController.syncFraction(0f, hidden = false)
+            }
+        } else {
+            bottomBarScrollHideState.floatValue = 0f
+        }
+    }
+
+    val scheduleBottomBarSettle: () -> Unit = {
+        bottomBarSettleTimerJob?.cancel()
+        bottomBarSettleTimerJob = scope.launch {
+            delay(90L)
+            if (isWebViewTouchScrolling) return@launch
+            val plan = scrollBarController.computeSettlePlan(density = density.density) ?: return@launch
+            bottomBarSnapJob?.cancel()
+            bottomBarSnapJob = scope.launch {
+                Animatable(bottomBarScrollHideState.floatValue).animateTo(
+                    targetValue = plan.targetFraction,
+                    animationSpec = spring(
+                        dampingRatio = 0.92f,
+                        stiffness = plan.springStiffness,
+                    ),
+                    initialVelocity = plan.initialVelocityFractionPerSec,
+                ) {
+                    bottomBarScrollHideState.floatValue = value
+                }
+                scrollBarController.syncFraction(plan.targetFraction, hidden = plan.targetHidden)
+                bottomBarHiddenTarget = plan.targetHidden
             }
         }
+    }
+
+    LaunchedEffect(
+        activeSession?.sessionId,
+        isFindInPageOpen,
+        overlaySheet != ActiveOverlaySheet.None,
+        browserSettings.fullHideBottomBarOnScroll,
+    ) {
+        isWebViewTouchScrolling = false
+        revealBottomBarSmoothly()
     }
 
     var isSummarizing by remember { mutableStateOf(false) }
@@ -916,8 +964,6 @@ private fun FocalRootCoordinator(
     // Sync active EngineSession UI events (Link Peek, Scroll Luminance, Navigation, PageLoaded, Downloads, Uploads, Permissions, Zapper)
     LaunchedEffect(activeSession) {
         val session = activeSession ?: return@LaunchedEffect
-        val hideDeltaPx = with(density) { 18.dp.roundToPx() }
-        val showDeltaPx = -with(density) { 8.dp.roundToPx() }
 
         session.events.collect { event ->
             when (event) {
@@ -929,11 +975,36 @@ private fun FocalRootCoordinator(
                         ),
                     )
                 }
+                is EngineSessionEvent.ScrollTouchStateChanged -> {
+                    isWebViewTouchScrolling = event.isTouching
+                    if (event.isTouching) {
+                        bottomBarSettleTimerJob?.cancel()
+                        bottomBarSnapJob?.cancel()
+                        scrollBarController.syncFraction(
+                            fraction = bottomBarScrollHideState.floatValue,
+                            hidden = bottomBarHiddenTarget,
+                        )
+                    } else {
+                        scheduleBottomBarSettle()
+                    }
+                }
                 is EngineSessionEvent.ScrollDeltaChanged -> {
-                    if (event.deltaY > hideDeltaPx) {
-                        bottomBarHiddenTarget = true
-                    } else if (event.deltaY < showDeltaPx || event.scrollY <= 0) {
-                        bottomBarHiddenTarget = false
+                    bottomBarSnapJob?.cancel()
+                    val eventTimeMs = if (event.timestampMs > 0L) event.timestampMs else SystemClock.uptimeMillis()
+                    val step = scrollBarController.onScrollDelta(
+                        scrollY = event.scrollY,
+                        deltaY = event.deltaY,
+                        timestampMs = eventTimeMs,
+                        density = density.density,
+                    )
+                    bottomBarScrollHideState.floatValue = step.fraction
+                    if (bottomBarHiddenTarget != step.settledHidden) {
+                        bottomBarHiddenTarget = step.settledHidden
+                    }
+                    if (!event.isTouchActive && !isWebViewTouchScrolling) {
+                        scheduleBottomBarSettle()
+                    } else {
+                        bottomBarSettleTimerJob?.cancel()
                     }
                     if (
                         latestOverlaySheet == ActiveOverlaySheet.None &&
@@ -946,7 +1017,8 @@ private fun FocalRootCoordinator(
                     }
                 }
                 is EngineSessionEvent.NavigationCommitted -> {
-                    bottomBarHiddenTarget = false
+                    isWebViewTouchScrolling = false
+                    revealBottomBarSmoothly()
                     // Delay past WebView's transient white blank-canvas flash before first read
                     scheduleSettledGlassSamples(longArrayOf(180L, 550L))
                 }

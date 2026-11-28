@@ -115,6 +115,12 @@ sealed interface EngineSessionEvent {
     data class ScrollDeltaChanged(
         val scrollY: Int,
         val deltaY: Int,
+        val timestampMs: Long = 0L,
+        val isTouchActive: Boolean = false,
+    ) : EngineSessionEvent
+
+    data class ScrollTouchStateChanged(
+        val isTouching: Boolean,
     ) : EngineSessionEvent
 
     data class NavigationCommitted(
