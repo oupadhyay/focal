@@ -44,8 +44,13 @@ class PullToRefreshPhysicsTest {
         val events = mutableListOf<Triple<Float, Boolean, Boolean>>()
 
         class TestableFocalWebView : FocalWebView(app) {
+            var fakeProgress: Int = 100
+            override fun getProgress(): Int = fakeProgress
             fun triggerOverscroll(deltaX: Int, deltaY: Int, scrollY: Int, isTouchEvent: Boolean): Boolean =
                 overScrollBy(deltaX, deltaY, 0, scrollY, 0, 1000, 0, 0, isTouchEvent)
+            fun triggerOnOverScrolled(scrollY: Int, clampedY: Boolean) {
+                onOverScrolled(0, scrollY, false, clampedY)
+            }
         }
 
         val webView = TestableFocalWebView().apply {
@@ -57,8 +62,8 @@ class PullToRefreshPhysicsTest {
 
         val t0 = SystemClock.uptimeMillis()
 
-        // 1. Without overScrollBy (simulating Google Maps preventDefault() or inner <div> scroll),
-        // pulling down must NEVER trigger pull-to-refresh.
+        // 1. Loaded page (progress=100) without onOverScrolled (simulating Google Maps preventDefault()
+        // or inner <div> scroll): pulling down must NEVER trigger pull-to-refresh.
         val mapDown = MotionEvent.obtain(t0, t0, MotionEvent.ACTION_DOWN, 540f, 300f, 0)
         val mapMove = MotionEvent.obtain(t0, t0 + 16, MotionEvent.ACTION_MOVE, 540f, 700f, 0)
         val mapUp = MotionEvent.obtain(t0, t0 + 32, MotionEvent.ACTION_UP, 540f, 700f, 0)
@@ -77,13 +82,14 @@ class PullToRefreshPhysicsTest {
         edgeDown.recycle(); edgeMove.recycle()
         assertTrue("Edge-back touches must never trigger pull-to-refresh", events.isEmpty())
 
-        // 3. Real top-of-page overscroll (including async VSync isTouchEvent=false while finger is down)
-        // arms, tracks pull smoothly, and releases cleanly.
+        // 3. Real Chromium onOverScrolled(clampedY=true, scrollY=0) path arms, tracks pull smoothly,
+        // and releases cleanly.
         val t1 = t0 + 200
         val down = MotionEvent.obtain(t1, t1, MotionEvent.ACTION_DOWN, 540f, 300f, 0)
+        val preMove = MotionEvent.obtain(t1, t1 + 8, MotionEvent.ACTION_MOVE, 540f, 360f, 0)
         webView.onTouchEvent(down)
-        val overscrollRet = webView.triggerOverscroll(deltaX = 0, deltaY = -20, scrollY = 0, isTouchEvent = false)
-        assertFalse("Top overscroll during active touch should be intercepted", overscrollRet)
+        webView.onTouchEvent(preMove)
+        webView.triggerOnOverScrolled(scrollY = 0, clampedY = true)
 
         val move1 = MotionEvent.obtain(t1, t1 + 16, MotionEvent.ACTION_MOVE, 540f, 450f, 0)
         val move2 = MotionEvent.obtain(t1, t1 + 32, MotionEvent.ACTION_MOVE, 540f, 720f, 0)
@@ -91,7 +97,7 @@ class PullToRefreshPhysicsTest {
         assertTrue(webView.onTouchEvent(move1))
         assertTrue(webView.onTouchEvent(move2))
         assertTrue(webView.onTouchEvent(up))
-        down.recycle(); move1.recycle(); move2.recycle(); up.recycle()
+        down.recycle(); preMove.recycle(); move1.recycle(); move2.recycle(); up.recycle()
 
         assertTrue("Pull-to-refresh should emit active drag updates", events.any { it.second && it.first > 0f })
         val releaseEvent = events.last()
@@ -104,6 +110,7 @@ class PullToRefreshPhysicsTest {
 
         // 4. Post-release fling bounce (finger lifted -> isTouchEvent=false & isFingerDown=false) must NOT arm.
         val countBeforeFling = events.size
+        webView.triggerOnOverScrolled(scrollY = 0, clampedY = true)
         webView.triggerOverscroll(deltaX = 0, deltaY = -60, scrollY = 0, isTouchEvent = false)
         assertEquals("Fling overscroll after finger lift must not emit pull-to-refresh", countBeforeFling, events.size)
     }

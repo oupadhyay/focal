@@ -273,34 +273,37 @@ class FocalEmulatorVerificationTest {
         } finally {
             pullDown.recycle()
         }
-        val pullSteps = 20
-        for (s in 1..pullSteps) {
-            SystemClock.sleep(16L)
-            val now = SystemClock.uptimeMillis()
-            val y = pullStartY + (pullEndY - pullStartY) * (s.toFloat() / pullSteps)
-            val moveEv = MotionEvent.obtain(pullDownTime, now, MotionEvent.ACTION_MOVE, pullCx, y, 0)
-            try {
-                instr.sendPointerSync(moveEv)
-            } finally {
-                moveEv.recycle()
-            }
-        }
-        SystemClock.sleep(120L)
-        composeRule.waitForIdle()
-        composeRule.onNodeWithTag("pull_to_refresh_puck").assertIsDisplayed()
-        captureEmulatorScreenshot("05b_emulator_pull_to_refresh.png")
-        val pullUp = MotionEvent.obtain(
-            pullDownTime,
-            SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_UP,
-            pullCx,
-            pullEndY,
-            0,
-        )
         try {
-            instr.sendPointerSync(pullUp)
+            val pullSteps = 22
+            for (s in 1..pullSteps) {
+                SystemClock.sleep(16L)
+                val now = SystemClock.uptimeMillis()
+                val y = pullStartY + (pullEndY - pullStartY) * (s.toFloat() / pullSteps)
+                val moveEv = MotionEvent.obtain(pullDownTime, now, MotionEvent.ACTION_MOVE, pullCx, y, 0)
+                try {
+                    instr.sendPointerSync(moveEv)
+                } finally {
+                    moveEv.recycle()
+                }
+            }
+            SystemClock.sleep(140L)
+            composeRule.waitForIdle()
+            composeRule.onNodeWithTag("pull_to_refresh_puck").assertIsDisplayed()
+            captureEmulatorScreenshot("05b_emulator_pull_to_refresh.png")
         } finally {
-            pullUp.recycle()
+            val pullUp = MotionEvent.obtain(
+                pullDownTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_UP,
+                pullCx,
+                pullEndY,
+                0,
+            )
+            try {
+                instr.sendPointerSync(pullUp)
+            } finally {
+                pullUp.recycle()
+            }
         }
         SystemClock.sleep(1_400L)
         composeRule.waitForIdle()

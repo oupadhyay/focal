@@ -41,7 +41,35 @@ open class FocalWebView(context: Context) : WebView(context) {
     private var activePointerId: Int = MotionEvent.INVALID_POINTER_ID
     private var downRawX: Float = 0f
     private var downRawY: Float = 0f
+    private var lastMoveDx: Float = 0f
+    private var lastMoveDy: Float = 0f
     private var pullAnchorRawY: Float = 0f
+
+    /**
+     * Chromium's `AwContents` invokes `WebView.PrivateAccess.super_overScrollBy`, which calls
+     * `View.overScrollBy` directly (bypassing subclass `overScrollBy` overrides) and then dispatches
+     * the virtual [onOverScrolled] callback with `clampedY = true` when the root viewport hits top.
+     */
+    override fun onOverScrolled(
+        scrollX: Int,
+        scrollY: Int,
+        clampedX: Boolean,
+        clampedY: Boolean,
+    ) {
+        if (
+            pullToRefreshEnabled &&
+            isFingerDown &&
+            startedAtTop &&
+            !pullLatched &&
+            clampedY &&
+            scrollY <= 0 &&
+            lastMoveDy > 0f &&
+            lastMoveDy >= abs(lastMoveDx)
+        ) {
+            armedByOverscroll = true
+        }
+        super.onOverScrolled(scrollX, scrollY, clampedX, clampedY)
+    }
 
     override fun overScrollBy(
         deltaX: Int,
@@ -124,6 +152,8 @@ open class FocalWebView(context: Context) : WebView(context) {
                 }
                 val currentRawX = if (pointerIndex >= 0) event.rawX else downRawX
                 val currentRawY = if (pointerIndex >= 0) event.rawY else downRawY
+                lastMoveDx = currentRawX - downRawX
+                lastMoveDy = currentRawY - downRawY
 
                 if (pullLatched) {
                     val rawPullDp = ((currentRawY - pullAnchorRawY).coerceAtLeast(0f)) / density
@@ -132,13 +162,23 @@ open class FocalWebView(context: Context) : WebView(context) {
                 }
 
                 // Let Chromium process the move first so inner <div> scrollers, maps (preventDefault),
-                // and CSS overscroll-behavior-y can consume it before overScrollBy arms pull-to-refresh.
+                // and CSS overscroll-behavior-y can consume it before onOverScrolled arms pull-to-refresh.
                 val handled = super.onTouchEvent(event)
 
-                if (pullToRefreshEnabled && startedAtTop && armedByOverscroll && !pullLatched) {
-                    val dy = currentRawY - downRawY
-                    val dx = abs(currentRawX - downRawX)
-                    if (dy > touchSlopPx && dy > dx * 1.35f && scrollY <= 0 && !canScrollVertically(-1)) {
+                if (pullToRefreshEnabled && startedAtTop && !pullLatched) {
+                    val dy = lastMoveDy
+                    val dx = abs(lastMoveDx)
+                    val stalledLoadPull = progress < 100 &&
+                        dy > touchSlopPx * 2f &&
+                        dy > dx * 1.8f &&
+                        scrollY <= 0 &&
+                        !canScrollVertically(-1)
+                    val overscrollPull = armedByOverscroll &&
+                        dy > touchSlopPx &&
+                        dy > dx * 1.35f &&
+                        scrollY <= 0 &&
+                        !canScrollVertically(-1)
+                    if (overscrollPull || stalledLoadPull) {
                         pullLatched = true
                         pullAnchorRawY = downRawY + touchSlopPx * 0.5f
                         dispatchSyntheticCancelToSuper(event)
@@ -210,6 +250,8 @@ open class FocalWebView(context: Context) : WebView(context) {
         startedAtTop = false
         armedByOverscroll = false
         pullLatched = false
+        lastMoveDx = 0f
+        lastMoveDy = 0f
         activePointerId = MotionEvent.INVALID_POINTER_ID
     }
 }
