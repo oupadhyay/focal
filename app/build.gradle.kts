@@ -89,6 +89,12 @@ android {
             all {
                 it.maxHeapSize = "2g"
                 it.systemProperty("robolectric.graphicsMode", "NATIVE")
+                System.getProperty("robolectric.dependency.repo.url")?.let { repoUrl ->
+                    it.systemProperty("robolectric.dependency.repo.url", repoUrl)
+                }
+                System.getProperty("robolectric.dependency.repo.id")?.let { repoId ->
+                    it.systemProperty("robolectric.dependency.repo.id", repoId)
+                }
             }
         }
     }

@@ -65,8 +65,19 @@ jobs:
         with:
           gradle-version: "8.11.1"
 
+      - name: Cache Robolectric Android SDK jars
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository/org/robolectric
+          key: robolectric-sdk-4.14.1-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: robolectric-sdk-4.14.1-
+
       - name: Assemble Focal Release (R8) + Debug + AndroidTest APKs & run JVM unit tests
-        run: gradle :app:assembleRelease :app:assembleDebug :app:assembleDebugAndroidTest testDebugUnitTest --continue --no-daemon --stacktrace
+        run: >
+          gradle :app:assembleRelease :app:assembleDebug :app:assembleDebugAndroidTest testDebugUnitTest
+          -Drobolectric.dependency.repo.url=https://maven-central.storage-download.googleapis.com/maven2
+          -Drobolectric.dependency.repo.id=google-maven-central
+          --continue --no-daemon --stacktrace
 
       - name: Verify deterministic APK signature, monotonic versionCode & APK sizes
         run: |
